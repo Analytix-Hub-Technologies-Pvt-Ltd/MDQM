@@ -119,3 +119,16 @@ class MasterTable(Base):
     
     table_name = Column(String) 
     master_value = Column(String)
+
+
+class DbConnection(Base):
+    __tablename__ = "db_connections"
+    __table_args__ = {'schema': 'metadata'}
+
+    connection_id = Column(Integer, primary_key=True, index=True)
+    connection_name = Column(String, unique=True, nullable=False)
+    host = Column(String, nullable=False)
+    port = Column(String, default="5432")
+    username = Column(String, nullable=False)
+    password = Column(String, nullable=True)
+    created_at = Column(DateTime, default=func.now())
