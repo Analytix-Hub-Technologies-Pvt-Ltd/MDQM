@@ -1,14 +1,22 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   getAllJobs,
   getTablesByJob,
+  getTableDetails,
   runJobEngine,
   deleteJob,
   deleteTable,
   renameJob,
   renameTable,
+  addRule,
   createNewJob,
   uploadCsvToJob,
+  previewCsvFile,
+  connectToDb,
+  listDatabases,
+  listSavedConnections,
+  saveDbConnection,
+  testDbConnection,
 } from "../api";
 import {
   ChevronRight,
@@ -16,7 +24,6 @@ import {
   Play,
   MoreVertical,
   Plus,
-  FileText,
   Database,
   FolderPlus,
   Download,
@@ -46,8 +53,15 @@ export default function JobList() {
 
   // Add Form States
   const [newJobName, setNewJobName] = useState("");
-  const [selectedJobForUpload, setSelectedJobForUpload] = useState("");
   const [uploadFile, setUploadFile] = useState(null);
+  const [previewColumns, setPreviewColumns] = useState([]);
+  const [previewColumnTypes, setPreviewColumnTypes] = useState({});
+  const [previewRows, setPreviewRows] = useState([]);
+  const [previewEditable, setPreviewEditable] = useState([]);
+  const [showFilePreview, setShowFilePreview] = useState(false);
+  const [previewPage, setPreviewPage] = useState(1);
+  const previewPageSize = 8;
+  const [createDataMode, setCreateDataMode] = useState("file");
   const [dbCreds, setDbCreds] = useState({
     host: "",
     port: "",
@@ -55,9 +69,43 @@ export default function JobList() {
     pass: "",
     dbname: "",
   });
+  const [databaseOptions, setDatabaseOptions] = useState([
+    "postgres",
+    "mdms",
+    "analytics_db",
+    "customer_db",
+  ]);
+  const [selectedDatabases, setSelectedDatabases] = useState([]);
+  const [savedConnections, setSavedConnections] = useState([]);
+  const [selectedConnectionId, setSelectedConnectionId] = useState("");
+  const [connectionName, setConnectionName] = useState("");
+  const [dbDropdownOpen, setDbDropdownOpen] = useState(false);
+  const dbDropdownRef = useRef(null);
 
   // Add this near your other useState hooks
   const [expandedTables, setExpandedTables] = useState({});
+  const [showRuleStep, setShowRuleStep] = useState(false);
+  const [createdJobId, setCreatedJobId] = useState(null);
+  const [createdTableId, setCreatedTableId] = useState(null);
+  const [ruleColumns, setRuleColumns] = useState([]);
+  const [ruleDrafts, setRuleDrafts] = useState({});
+  const resetCreateFlow = () => {
+    setShowAddModal(false);
+    setNewJobName("");
+    setUploadFile(null);
+    setShowFilePreview(false);
+    setPreviewColumns([]);
+    setPreviewColumnTypes({});
+    setPreviewRows([]);
+    setPreviewEditable([]);
+    setPreviewPage(1);
+    setShowRuleStep(false);
+    setCreatedJobId(null);
+    setCreatedTableId(null);
+    setRuleColumns([]);
+    setRuleDrafts({});
+  };
+
 
   const toggleTableExpansion = (tableId) => {
     setExpandedTables((prev) => ({
@@ -69,6 +117,12 @@ export default function JobList() {
   useEffect(() => {
     fetchJobs();
   }, []);
+
+  useEffect(() => {
+    if (showAddModal) {
+      fetchSavedConnections();
+    }
+  }, [showAddModal]);
 
   const fetchJobs = async () => {
     try {
@@ -161,28 +215,276 @@ export default function JobList() {
     }
   };
 
-  const handleCreateJob = async () => {
-    if (!newJobName) return;
+  const handleUploadCsv = async () => {
+    if (!newJobName || !uploadFile) {
+      alert("Enter a job name and choose a CSV file.");
+      return;
+    }
     try {
-      await createNewJob(newJobName);
+      const createRes = await createNewJob(newJobName);
+      const jobId = createRes?.data?.job_id;
+      if (!jobId) {
+        throw new Error("Unable to create job");
+      }
+      await uploadCsvToJob(
+        jobId,
+        uploadFile,
+        showFilePreview ? previewEditable : []
+      );
+      const tablesRes = await getTablesByJob(jobId);
+      const createdTables = tablesRes?.data || [];
+      const latestTable = [...createdTables].sort((a, b) => b.table_id - a.table_id)[0];
+      if (!latestTable?.table_id) {
+        throw new Error("Uploaded table not found for rule setup.");
+      }
+      const tableDetailsRes = await getTableDetails(jobId, latestTable.table_id);
+      const cols = tableDetailsRes?.data?.columns || [];
+      setCreatedJobId(jobId);
+      setCreatedTableId(latestTable.table_id);
+      setRuleColumns(cols);
+      setRuleDrafts(
+        cols.reduce((acc, col) => {
+          acc[col.column_name] = { rule_type: "fuzzy_match", rule_value: "80", is_active: true };
+          return acc;
+        }, {})
+      );
+      setShowRuleStep(true);
       fetchJobs();
-      setShowAddModal(false);
-      setNewJobName("");
     } catch (err) {
-      alert("Failed to create job", err);
+      alert(err?.response?.data?.detail || "Failed to create job and upload file");
     }
   };
 
-  const handleUploadCsv = async () => {
-    if (!selectedJobForUpload || !uploadFile) return;
+  const setRuleDraft = (columnName, key, value) => {
+    setRuleDrafts((prev) => ({
+      ...prev,
+      [columnName]: {
+        rule_type: "fuzzy_match",
+        rule_value: "80",
+        is_active: true,
+        ...(prev[columnName] || {}),
+        [key]: value,
+      },
+    }));
+  };
+
+  const handleAddRuleForColumn = async (column) => {
+    if (!createdJobId || !createdTableId) return;
+    const draft = ruleDrafts[column.column_name] || {
+      rule_type: "fuzzy_match",
+      rule_value: "80",
+      is_active: true,
+    };
     try {
-      await uploadCsvToJob(selectedJobForUpload, uploadFile);
-      setShowAddModal(false);
-      fetchJobs();
+      await addRule({
+        job_id: createdJobId,
+        table_id: createdTableId,
+        column_name: column.column_name,
+        rule_type: draft.rule_type,
+        data_type: column.data_type || "String",
+        rule_value: draft.rule_value || null,
+        is_active: draft.is_active !== false,
+        master_data: [],
+      });
+      alert(`Rule added for ${column.column_name}`);
     } catch (err) {
-      alert("Failed to upload file");
+      alert(err?.response?.data?.detail || `Failed to add rule for ${column.column_name}`);
     }
   };
+
+  const handlePreviewCsv = async () => {
+    if (!uploadFile) {
+      alert("Choose a CSV file first.");
+      return;
+    }
+    try {
+      const res = await previewCsvFile(uploadFile);
+      const cols = res?.data?.columns || [];
+      const types = res?.data?.column_types || {};
+      const rows = res?.data?.rows || [];
+      setPreviewColumns(cols);
+      setPreviewColumnTypes(types);
+      setPreviewRows(rows);
+      setPreviewEditable(
+        cols.map((col) => ({
+          originalName: col,
+          name: col,
+          dataType: types[col] || "string",
+          value: rows?.[0]?.[col] ?? "",
+        }))
+      );
+      setPreviewPage(1);
+      setShowFilePreview(true);
+    } catch (err) {
+      alert(err?.response?.data?.detail || "Failed to preview file.");
+    }
+  };
+
+  const handleConnectDbPipeline = async () => {
+    if (
+      !newJobName ||
+      !selectedConnectionId ||
+      selectedDatabases.length === 0
+    ) {
+      alert("Please enter job name, choose a saved connection and select database(s).");
+      return;
+    }
+
+    try {
+      await connectToDb({
+        job_name: newJobName,
+        connection_id: Number(selectedConnectionId),
+        dbnames: selectedDatabases,
+      });
+      alert("Job created from database successfully.");
+      setShowAddModal(false);
+      setNewJobName("");
+      setDbCreds({ host: "", port: "", user: "", pass: "", dbname: "" });
+      setDatabaseOptions([]);
+      setSelectedDatabases([]);
+      fetchJobs();
+    } catch (err) {
+      alert(
+        err?.response?.data?.detail ||
+          "Failed to connect database and create job."
+      );
+    }
+  };
+
+  const handleFetchDatabases = async () => {
+    if (!selectedConnectionId) {
+      alert("Please choose a saved connection first.");
+      return;
+    }
+    try {
+      const res = await listDatabases({
+        connection_id: Number(selectedConnectionId),
+      });
+      const list = res?.data?.databases || [];
+      setDatabaseOptions(list);
+      if (list.length > 0) setSelectedDatabases([list[0]]);
+    } catch (err) {
+      alert(err?.response?.data?.detail || "Failed to fetch database list.");
+    }
+  };
+
+  const fetchSavedConnections = async () => {
+    try {
+      const res = await listSavedConnections();
+      const items = res?.data || [];
+      setSavedConnections(items);
+      if (items.length > 0 && !selectedConnectionId) {
+        setSelectedConnectionId(String(items[0].connection_id));
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    if (!dbCreds.host || !dbCreds.port || !dbCreds.user) {
+      alert("Please fill host, port and username.");
+      return;
+    }
+    try {
+      await testDbConnection({
+        host: dbCreds.host,
+        port: dbCreds.port,
+        user: dbCreds.user,
+        pass: dbCreds.pass,
+      });
+      alert("Connection successful.");
+    } catch (err) {
+      alert(err?.response?.data?.detail || "Connection test failed.");
+    }
+  };
+
+  const handleSaveConnection = async () => {
+    if (!connectionName || !dbCreds.host || !dbCreds.port || !dbCreds.user) {
+      alert("Fill connection name, host, port and username.");
+      return;
+    }
+    try {
+      await saveDbConnection({
+        connection_name: connectionName,
+        host: dbCreds.host,
+        port: dbCreds.port,
+        user: dbCreds.user,
+        pass: dbCreds.pass,
+      });
+      alert("Connection saved.");
+      setConnectionName("");
+      await fetchSavedConnections();
+    } catch (err) {
+      alert(err?.response?.data?.detail || "Failed to save connection.");
+    }
+  };
+
+  const toggleDatabaseSelection = (dbName) => {
+    setSelectedDatabases((prev) =>
+      prev.includes(dbName) ? prev.filter((d) => d !== dbName) : [...prev, dbName]
+    );
+  };
+
+  const selectAllDatabases = () => setSelectedDatabases(databaseOptions);
+  const clearSelectedDatabases = () => setSelectedDatabases([]);
+
+  const handleEditableChange = (index, field, value) => {
+    setPreviewEditable((prev) =>
+      prev.map((item, i) => (i === index ? { ...item, [field]: value } : item))
+    );
+  };
+
+  const handleApplyColumnUpdate = (index) => {
+    const item = previewEditable[index];
+    const oldCol = item.originalName;
+    const newCol = item.name.trim() || oldCol;
+
+    const nextRows = previewRows.map((row, rowIdx) => {
+      const copy = { ...row };
+      if (newCol !== oldCol) {
+        copy[newCol] = copy[oldCol];
+        delete copy[oldCol];
+      }
+      if (rowIdx === 0) copy[newCol] = item.value;
+      return copy;
+    });
+
+    const nextColumns = previewColumns.map((c) => (c === oldCol ? newCol : c));
+    const nextTypes = { ...previewColumnTypes };
+    if (newCol !== oldCol) delete nextTypes[oldCol];
+    nextTypes[newCol] = item.dataType || "string";
+
+    setPreviewRows(nextRows);
+    setPreviewColumns(nextColumns);
+    setPreviewColumnTypes(nextTypes);
+    setPreviewEditable((prev) =>
+      prev.map((it, i) =>
+        i === index
+          ? { ...it, originalName: newCol, name: newCol, dataType: item.dataType, value: item.value }
+          : it
+      )
+    );
+  };
+
+  const totalPreviewPages = Math.max(
+    1,
+    Math.ceil(previewEditable.length / previewPageSize)
+  );
+  const pagedPreview = previewEditable.slice(
+    (previewPage - 1) * previewPageSize,
+    previewPage * previewPageSize
+  );
+
+  useEffect(() => {
+    const onClickOutside = (event) => {
+      if (dbDropdownRef.current && !dbDropdownRef.current.contains(event.target)) {
+        setDbDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, []);
 
   const calcPercent = (good, total) =>
     total > 0 ? ((good / total) * 100).toFixed(1) : "0.0";
@@ -233,13 +535,23 @@ export default function JobList() {
                           job.end_time.split("T")[1].substring(0, 8)
                         : "Never"}
                     </span>
+                    <span className={`inline-block mt-1 text-[10px] uppercase tracking-wider px-2 py-0.5 ${ (job.total_tables || 0) > 0 ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}>
+                      {(job.total_tables || 0) > 0 ? "Ready" : "No Data"}
+                    </span>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-4">
                   <button
-                    onClick={(e) => handleRunJob(job.job_id, e)}
-                    className="bg-green-600 cursor-pointer text-white px-6 py-3 text-md uppercase tracking-widest hover:bg-green-700 flex items-center gap-2"
+                    onClick={(e) => {
+                      if ((job.total_tables || 0) === 0) {
+                        e.stopPropagation();
+                        alert("No tables attached to this job. Upload/import data first.");
+                        return;
+                      }
+                      handleRunJob(job.job_id, e);
+                    }}
+                    className={`text-white px-6 py-3 text-md uppercase tracking-widest flex items-center gap-2 ${(job.total_tables || 0) === 0 ? "bg-gray-400 cursor-not-allowed" : "bg-green-600 cursor-pointer hover:bg-green-700"}`}
                   >
                     ▷ Run Job
                   </button>
@@ -280,13 +592,18 @@ export default function JobList() {
                           <div
                             onClick={(e) => {
                               e.stopPropagation();
+                              if ((job.total_tables || 0) === 0) {
+                                alert("No tables attached to this job. Upload/import data first.");
+                                setActionMenu({ type: null, id: null });
+                                return;
+                              }
                               window.open(
                                 `http://localhost:8000/jobs/${job.job_id}/download?t=${Date.now()}`,
                                 "_blank",
                               );
                               setActionMenu({ type: null, id: null });
                             }}
-                            className="px-4 py-2 text-xs uppercase tracking-wider hover:bg-gray-100 cursor-pointer flex items-center gap-2"
+                            className={`px-4 py-2 text-xs uppercase tracking-wider flex items-center gap-2 ${(job.total_tables || 0) === 0 ? "text-gray-400 cursor-not-allowed bg-gray-50" : "hover:bg-gray-100 cursor-pointer"}`}
                           >
                             <Download size={12} /> Download Zip
                           </div>
@@ -551,11 +868,11 @@ export default function JobList() {
 
       {/* --- ADD DATA MODAL --- */}
       {showAddModal && (
-        <div className="fixed inset-0 bg-opacity-60 flex items-center justify-center z-50 p-4">
-          <div className="bg-white w-150 border border-[#23243B] shadow-2xl flex flex-col">
-            <div className="flex justify-between items-center p-4 border-b border-gray-200 bg-[#FBFBFB]">
+        <div className="fixed inset-0 bg-black/30 backdrop-blur-[2px] flex items-center justify-center z-50 p-2 sm:p-4">
+          <div className="bg-white w-full max-w-5xl border border-[#DADDE5] rounded-xl shadow-2xl flex flex-col overflow-hidden max-h-[96vh]">
+            <div className="flex justify-between items-center p-5 border-b border-gray-200 bg-gradient-to-r from-[#FBFBFB] to-[#F3F4F8]">
               <span className="font-bold uppercase tracking-widest text-[#23243B]">
-                Add New Data Pipeline
+                Add New Job
               </span>
               <X
                 size={20}
@@ -564,95 +881,444 @@ export default function JobList() {
               />
             </div>
 
-            <div className="flex border-b border-gray-200">
+            <div className="grid grid-cols-2 border-b border-gray-200 bg-white">
               <button
                 onClick={() => setAddModalTab("create")}
-                className={`flex-1 py-3 text-xs font-bold uppercase tracking-widest flex justify-center items-center gap-2 ${addModalTab === "create" ? "border-b-2 border-[#23243B] text-[#23243B]" : "text-gray-400 hover:bg-gray-50"}`}
+                className={`py-3 text-[11px] sm:text-xs font-bold uppercase tracking-wider sm:tracking-widest flex justify-center items-center gap-2 transition-colors ${addModalTab === "create" ? "border-b-2 border-[#23243B] text-[#23243B] bg-[#F8FAFC]" : "text-gray-400 hover:bg-gray-50"}`}
               >
                 <FolderPlus size={16} /> Create Job
               </button>
               <button
-                onClick={() => setAddModalTab("import")}
-                className={`flex-1 py-3 text-xs font-bold uppercase tracking-widest flex justify-center items-center gap-2 ${addModalTab === "import" ? "border-b-2 border-[#23243B] text-[#23243B]" : "text-gray-400 hover:bg-gray-50"}`}
-              >
-                <FileText size={16} /> Add Data
-              </button>
-              <button
                 onClick={() => setAddModalTab("connect")}
-                className={`flex-1 py-3 text-xs font-bold uppercase tracking-widest flex justify-center items-center gap-2 ${addModalTab === "connect" ? "border-b-2 border-[#23243B] text-[#23243B]" : "text-gray-400 hover:bg-gray-50"}`}
+                className={`py-3 text-[11px] sm:text-xs font-bold uppercase tracking-wider sm:tracking-widest flex justify-center items-center gap-2 transition-colors ${addModalTab === "connect" ? "border-b-2 border-[#23243B] text-[#23243B] bg-[#F8FAFC]" : "text-gray-400 hover:bg-gray-50"}`}
               >
                 <Database size={16} /> Connect DB
               </button>
             </div>
 
-            <div className="p-8">
+            <div className="p-4 sm:p-6 md:p-8 bg-[#FCFCFD] overflow-y-auto">
               {/* TAB 1: CREATE JOB */}
               {addModalTab === "create" && (
                 <div className="flex flex-col gap-6">
-                  <div>
-                    <label className="text-[10px] uppercase tracking-wider text-gray-500 font-bold">
-                      New Job Name
-                    </label>
-                    <input
-                      className="w-full bg-transparent border-b border-[#A1A3AF] p-2 text-sm outline-none focus:border-[#23243B]"
-                      placeholder="e.g. CUSTOMER_DATA_CLEANUP"
-                      value={newJobName}
-                      onChange={(e) => setNewJobName(e.target.value)}
-                    />
-                  </div>
-                  <button
-                    onClick={handleCreateJob}
-                    className="w-full py-4 bg-[#23243B] text-white text-sm font-bold uppercase tracking-widest hover:bg-black"
-                  >
-                    Initialize Job
-                  </button>
+                  {showRuleStep && (
+                    <>
+                      <div className="rounded-lg border border-[#D6D9E0] p-4 bg-gradient-to-br from-white to-[#F8FAFF]">
+                        <h3 className="text-sm font-bold uppercase tracking-widest text-[#23243B]">
+                          Step 3: Validation Rules
+                        </h3>
+                        <p className="text-xs text-gray-500 mt-1">
+                          Add rules for uploaded columns before leaving this flow.
+                        </p>
+                      </div>
+                      <div className="border border-[#D6D9E0] rounded-lg overflow-x-auto bg-white">
+                        <table className="min-w-[760px] w-full text-xs">
+                          <thead className="bg-[#F1F5F9]">
+                            <tr>
+                              <th className="text-left p-2 border-b border-[#E5E7EB]">Column</th>
+                              <th className="text-left p-2 border-b border-[#E5E7EB]">Data Type</th>
+                              <th className="text-left p-2 border-b border-[#E5E7EB]">Validation Logic</th>
+                              <th className="text-left p-2 border-b border-[#E5E7EB]">Value</th>
+                              <th className="text-left p-2 border-b border-[#E5E7EB]">Active</th>
+                              <th className="text-left p-2 border-b border-[#E5E7EB]">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {ruleColumns.map((col) => {
+                              const draft = ruleDrafts[col.column_name] || {
+                                rule_type: "fuzzy_match",
+                                rule_value: "80",
+                                is_active: true,
+                              };
+                              return (
+                                <tr key={col.column_name} className="odd:bg-white even:bg-[#FAFAFA]">
+                                  <td className="p-2 border-b border-[#F1F5F9] font-semibold">{col.column_name}</td>
+                                  <td className="p-2 border-b border-[#F1F5F9]">{col.data_type || "String"}</td>
+                                  <td className="p-2 border-b border-[#F1F5F9]">
+                                    <select
+                                      value={draft.rule_type}
+                                      onChange={(e) => setRuleDraft(col.column_name, "rule_type", e.target.value)}
+                                      className="w-full min-w-[170px] border border-[#D1D5DB] rounded-md p-1.5"
+                                    >
+                                      <option value="fuzzy_match">fuzzy match</option>
+                                      <option value="not_equals">not equals</option>
+                                      <option value="equals">equals</option>
+                                      <option value="contains">contains</option>
+                                      <option value="is_positive">is positive</option>
+                                    </select>
+                                  </td>
+                                  <td className="p-2 border-b border-[#F1F5F9]">
+                                    <input
+                                      value={draft.rule_value ?? ""}
+                                      onChange={(e) => setRuleDraft(col.column_name, "rule_value", e.target.value)}
+                                      className="w-full min-w-[120px] border border-[#D1D5DB] rounded-md p-1.5"
+                                    />
+                                  </td>
+                                  <td className="p-2 border-b border-[#F1F5F9]">
+                                    <input
+                                      type="checkbox"
+                                      checked={draft.is_active !== false}
+                                      onChange={(e) => setRuleDraft(col.column_name, "is_active", e.target.checked)}
+                                    />
+                                  </td>
+                                  <td className="p-2 border-b border-[#F1F5F9]">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleAddRuleForColumn(col)}
+                                      className="px-3 py-1.5 text-[10px] uppercase font-bold border border-[#23243B] rounded-md text-[#23243B] hover:bg-[#23243B] hover:text-white"
+                                    >
+                                      Add New Rule
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1">
+                        <button
+                          onClick={() => setShowRuleStep(false)}
+                          className="w-full py-3 border border-[#23243B] rounded-md text-[#23243B] text-xs font-bold uppercase tracking-widest hover:bg-gray-50 transition-colors"
+                        >
+                          Back
+                        </button>
+                        <button
+                          onClick={() => {
+                            resetCreateFlow();
+                            fetchJobs();
+                          }}
+                          className="w-full py-3 bg-[#23243B] rounded-md text-white text-xs font-bold uppercase tracking-widest hover:bg-black transition-colors"
+                        >
+                          Finish
+                        </button>
+                      </div>
+                    </>
+                  )}
+
+                  {!showRuleStep && (
+                    <>
+                  {!(createDataMode === "file" && showFilePreview) && (
+                    <>
+                      <div>
+                        <label className="text-[10px] uppercase tracking-wider text-gray-500 font-bold">
+                          New Job Name
+                        </label>
+                        <input
+                          className="w-full bg-transparent border-b border-[#A1A3AF] p-2 text-sm outline-none focus:border-[#23243B]"
+                          placeholder="e.g. CUSTOMER_DATA_CLEANUP"
+                          value={newJobName}
+                          onChange={(e) => setNewJobName(e.target.value)}
+                        />
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <button
+                          onClick={() => setCreateDataMode("file")}
+                          className={`py-3 text-xs font-bold uppercase tracking-widest border ${createDataMode === "file" ? "bg-[#23243B] text-white border-[#23243B]" : "bg-white text-[#23243B] border-[#A1A3AF]"}`}
+                        >
+                          File Input
+                        </button>
+                        <button
+                          onClick={() => setCreateDataMode("db")}
+                          className={`py-3 text-xs font-bold uppercase tracking-widest border ${createDataMode === "db" ? "bg-[#23243B] text-white border-[#23243B]" : "bg-white text-[#23243B] border-[#A1A3AF]"}`}
+                        >
+                          DB Connected
+                        </button>
+                      </div>
+                    </>
+                  )}
+
+                  {createDataMode === "file" && !showFilePreview ? (
+                    <>
+                      <div>
+                        <label className="text-[10px] uppercase tracking-wider text-gray-500 font-bold mb-2 block">
+                          Upload CSV File
+                        </label>
+                        <input
+                          type="file"
+                          accept=".csv"
+                          onChange={(e) => {
+                            setUploadFile(e.target.files[0]);
+                            setShowFilePreview(false);
+                            setPreviewColumns([]);
+                            setPreviewColumnTypes({});
+                            setPreviewRows([]);
+                            setPreviewEditable([]);
+                            setPreviewPage(1);
+                          }}
+                          className="w-full text-sm text-gray-500 file:mr-4 file:py-2.5 file:px-4 file:border-0 file:text-xs file:font-bold file:uppercase file:rounded-md file:bg-[#23243B] file:text-white hover:file:bg-black cursor-pointer"
+                        />
+                      </div>
+                      <button
+                        onClick={handlePreviewCsv}
+                        className="w-full mt-2 py-3.5 rounded-md bg-[#23243B] text-white text-sm font-bold uppercase tracking-widest hover:bg-black transition-colors"
+                      >
+                        Next
+                      </button>
+                    </>
+                  ) : (
+                    createDataMode === "db" && (
+                    <>
+                      <div>
+                        <label className="text-[10px] uppercase text-gray-500 font-bold">
+                          Saved Connection
+                        </label>
+                        <div className="flex gap-2">
+                          <select
+                            className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none bg-transparent"
+                            value={selectedConnectionId}
+                            onChange={(e) => setSelectedConnectionId(e.target.value)}
+                          >
+                            <option value="">Select a saved connection...</option>
+                            {savedConnections.map((c) => (
+                              <option key={c.connection_id} value={c.connection_id}>
+                                {c.connection_name} ({c.host}:{c.port})
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => setAddModalTab("connect")}
+                            className="px-3 py-2 text-xs font-bold uppercase border border-[#23243B] text-[#23243B] hover:bg-[#23243B] hover:text-white"
+                          >
+                            Manage
+                          </button>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="text-[10px] uppercase text-gray-500 font-bold">
+                          Choose Database(s)
+                        </label>
+                        <div className="flex gap-2" ref={dbDropdownRef}>
+                          <div className="w-full relative">
+                            <button
+                              type="button"
+                              onClick={() => setDbDropdownOpen((prev) => !prev)}
+                              className="w-full cursor-pointer border border-[#A1A3AF] p-2 text-sm bg-white flex items-center justify-between"
+                            >
+                              <span className="truncate text-left">
+                                {selectedDatabases.length > 0
+                                  ? `${selectedDatabases.length} database(s) selected`
+                                  : "Select database(s)..."}
+                              </span>
+                              <span className="text-xs text-gray-500">▼</span>
+                            </button>
+                            {dbDropdownOpen && (
+                              <div className="absolute z-50 mt-1 w-full max-h-56 overflow-y-auto border border-[#A1A3AF] bg-white p-2 shadow-lg rounded">
+                                <div className="flex justify-between mb-2">
+                                  <button
+                                    type="button"
+                                    className="text-[10px] uppercase font-bold text-[#23243B] hover:underline"
+                                    onClick={selectAllDatabases}
+                                  >
+                                    Select All
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="text-[10px] uppercase font-bold text-[#23243B] hover:underline"
+                                    onClick={clearSelectedDatabases}
+                                  >
+                                    Clear
+                                  </button>
+                                </div>
+                                {databaseOptions.length === 0 ? (
+                                  <div className="text-xs text-gray-500">No databases found. Click Fetch to load from selected connection.</div>
+                                ) : (
+                                  databaseOptions.map((dbName) => (
+                                    <label key={dbName} className="flex items-center gap-2 py-1 text-sm cursor-pointer">
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedDatabases.includes(dbName)}
+                                        onChange={() => toggleDatabaseSelection(dbName)}
+                                      />
+                                      <span>{dbName}</span>
+                                    </label>
+                                  ))
+                                )}
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={handleFetchDatabases}
+                            className="px-3 py-2 text-xs font-bold uppercase border border-[#23243B] text-[#23243B] hover:bg-[#23243B] hover:text-white"
+                          >
+                            Fetch
+                          </button>
+                        </div>
+                        {selectedDatabases.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {selectedDatabases.map((db) => (
+                              <span
+                                key={db}
+                                className="text-[10px] uppercase tracking-wider bg-[#23243B] text-white px-2 py-1"
+                              >
+                                {db}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        onClick={handleConnectDbPipeline}
+                        className="w-full mt-2 py-4 bg-[#23243B] text-white text-sm font-bold uppercase tracking-widest hover:bg-black"
+                      >
+                        Create Job From Database
+                      </button>
+                    </>
+                    )
+                  )}
+
+                  {createDataMode === "file" && showFilePreview && (
+                    <>
+                      <div className="rounded-lg border border-[#D6D9E0] p-4 bg-gradient-to-br from-white to-[#F8FAFF]">
+                        <h3 className="text-sm font-bold uppercase tracking-widest text-[#23243B]">
+                          Step 2: File Preview (First 11 Rows)
+                        </h3>
+                        <p className="text-xs text-gray-500 mt-1">
+                          Verify columns, detected types and values before upload.
+                        </p>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
+                          <div className="border border-[#E5E7EB] rounded bg-white p-2">
+                            <div className="text-[10px] uppercase text-gray-500">Job Name</div>
+                            <div className="text-xs font-semibold truncate">{newJobName || "-"}</div>
+                          </div>
+                          <div className="border border-[#E5E7EB] rounded bg-white p-2">
+                            <div className="text-[10px] uppercase text-gray-500">Columns</div>
+                            <div className="text-xs font-semibold">{previewColumns.length}</div>
+                          </div>
+                          <div className="border border-[#E5E7EB] rounded bg-white p-2">
+                            <div className="text-[10px] uppercase text-gray-500">Rows Shown</div>
+                            <div className="text-xs font-semibold">{previewRows.length}</div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="border border-[#D6D9E0] rounded-lg overflow-x-auto bg-white">
+                        <table className="min-w-[700px] sm:min-w-[820px] w-full text-xs">
+                          <thead className="bg-[#F1F5F9]">
+                            <tr>
+                              <th className="text-left p-2 border-b border-[#E5E7EB] whitespace-nowrap">Column</th>
+                              <th className="text-left p-2 border-b border-[#E5E7EB] whitespace-nowrap">Data Type</th>
+                              <th className="text-left p-2 border-b border-[#E5E7EB] whitespace-nowrap">Value</th>
+                              <th className="text-left p-2 border-b border-[#E5E7EB] whitespace-nowrap">Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {pagedPreview.map((item, localIdx) => {
+                              const idx = (previewPage - 1) * previewPageSize + localIdx;
+                              return (
+                              <tr key={`${item.originalName}-${idx}`} className="odd:bg-white even:bg-[#FAFAFA] align-top hover:bg-[#F8FAFC]">
+                                <td className="p-2 border-b border-[#F1F5F9] whitespace-nowrap font-semibold">
+                                  <input
+                                    value={item.name}
+                                    onChange={(e) => handleEditableChange(idx, "name", e.target.value)}
+                                    className="w-full min-w-[180px] border border-[#D1D5DB] rounded-md p-1.5 focus:outline-none focus:ring-2 focus:ring-[#23243B]/20"
+                                  />
+                                </td>
+                                <td className="p-2 border-b border-[#F1F5F9] whitespace-nowrap">
+                                  <select
+                                    value={item.dataType}
+                                    onChange={(e) => handleEditableChange(idx, "dataType", e.target.value)}
+                                    className="w-full min-w-[120px] border border-[#D1D5DB] rounded-md p-1.5 focus:outline-none focus:ring-2 focus:ring-[#23243B]/20"
+                                  >
+                                    <option value="string">String</option>
+                                    <option value="int64">Integer</option>
+                                    <option value="float64">Float</option>
+                                    <option value="datetime64[ns]">Date</option>
+                                    <option value="bool">Boolean</option>
+                                  </select>
+                                </td>
+                                <td className="p-2 border-b border-[#F1F5F9] whitespace-nowrap">
+                                  <input
+                                    value={item.value}
+                                    onChange={(e) => handleEditableChange(idx, "value", e.target.value)}
+                                    className="w-full min-w-[220px] border border-[#D1D5DB] rounded-md p-1.5 focus:outline-none focus:ring-2 focus:ring-[#23243B]/20"
+                                  />
+                                </td>
+                                <td className="p-2 border-b border-[#F1F5F9] whitespace-nowrap">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleApplyColumnUpdate(idx)}
+                                    className="px-3 py-1.5 text-[10px] uppercase font-bold border border-[#23243B] rounded-md text-[#23243B] hover:bg-[#23243B] hover:text-white transition-colors"
+                                  >
+                                    Update
+                                  </button>
+                                </td>
+                              </tr>
+                            )})}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="flex items-center justify-between mt-3 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setPreviewPage((p) => Math.max(1, p - 1))}
+                          disabled={previewPage === 1}
+                          className="px-3 py-2 text-xs font-bold uppercase border border-[#23243B] rounded-md disabled:opacity-40 hover:bg-[#23243B] hover:text-white transition-colors"
+                        >
+                          Previous
+                        </button>
+                        <span className="text-xs text-gray-600 font-medium">
+                          Page {previewPage} of {totalPreviewPages}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setPreviewPage((p) => Math.min(totalPreviewPages, p + 1))}
+                          disabled={previewPage === totalPreviewPages}
+                          className="px-3 py-2 text-xs font-bold uppercase border border-[#23243B] rounded-md disabled:opacity-40 hover:bg-[#23243B] hover:text-white transition-colors"
+                        >
+                          Next
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-1">
+                        <button
+                          onClick={resetCreateFlow}
+                          className="w-full py-3 border border-red-300 rounded-md text-red-600 text-xs font-bold uppercase tracking-widest hover:bg-red-50 transition-colors"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={() => {
+                            setShowFilePreview(false);
+                            setPreviewColumns([]);
+                            setPreviewColumnTypes({});
+                            setPreviewRows([]);
+                            setPreviewEditable([]);
+                            setPreviewPage(1);
+                          }}
+                          className="w-full py-3 border border-[#23243B] rounded-md text-[#23243B] text-xs font-bold uppercase tracking-widest hover:bg-gray-50 transition-colors"
+                        >
+                          Back
+                        </button>
+                        <button
+                          onClick={handleUploadCsv}
+                          className="w-full py-3 bg-[#23243B] rounded-md text-white text-xs font-bold uppercase tracking-widest hover:bg-black transition-colors"
+                        >
+                          Next
+                        </button>
+                      </div>
+                    </>
+                  )}
+                    </>
+                  )}
                 </div>
               )}
 
-              {/* TAB 2: IMPORT CSV */}
-              {addModalTab === "import" && (
-                <div className="flex flex-col gap-6">
-                  <div>
-                    <label className="text-[10px] uppercase tracking-wider text-gray-500 font-bold mb-2 block">
-                      Select Target Job
-                    </label>
-                    <select
-                      className="w-full bg-transparent border-b border-[#A1A3AF] p-2 text-sm outline-none focus:border-[#23243B]"
-                      value={selectedJobForUpload}
-                      onChange={(e) => setSelectedJobForUpload(e.target.value)}
-                    >
-                      <option value="">Select a Job...</option>
-                      {jobs.map((j) => (
-                        <option key={j.job_id} value={j.job_id}>
-                          {j.job_name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-[10px] uppercase tracking-wider text-gray-500 font-bold mb-2 block">
-                      Upload CSV File
-                    </label>
-                    <input
-                      type="file"
-                      accept=".csv"
-                      onChange={(e) => setUploadFile(e.target.files[0])}
-                      className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:border-0 file:text-xs file:font-bold file:uppercase file:bg-[#23243B] file:text-white hover:file:bg-black cursor-pointer"
-                    />
-                  </div>
-                  <button
-                    onClick={handleUploadCsv}
-                    className="w-full mt-4 py-4 bg-[#23243B] text-white text-sm font-bold uppercase tracking-widest hover:bg-black"
-                  >
-                    Upload & Attach to Job
-                  </button>
-                </div>
-              )}
-
-              {/* TAB 3: CONNECT DB */}
+              {/* TAB 2: CONNECT DB */}
               {addModalTab === "connect" && (
                 <div className="flex flex-col gap-4">
-                  <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[10px] uppercase text-gray-500 font-bold">
+                      Connection Name
+                    </label>
+                    <input
+                      className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none"
+                      placeholder="e.g. PROD_POSTGRES"
+                      value={connectionName}
+                      onChange={(e) => setConnectionName(e.target.value)}
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                       <label className="text-[10px] uppercase text-gray-500 font-bold">
                         Host
@@ -660,6 +1326,10 @@ export default function JobList() {
                       <input
                         className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none"
                         placeholder="localhost"
+                        value={dbCreds.host}
+                        onChange={(e) =>
+                          setDbCreds((prev) => ({ ...prev, host: e.target.value }))
+                        }
                       />
                     </div>
                     <div>
@@ -669,10 +1339,14 @@ export default function JobList() {
                       <input
                         className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none"
                         placeholder="5432"
+                        value={dbCreds.port}
+                        onChange={(e) =>
+                          setDbCreds((prev) => ({ ...prev, port: e.target.value }))
+                        }
                       />
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                       <label className="text-[10px] uppercase text-gray-500 font-bold">
                         Username
@@ -680,6 +1354,10 @@ export default function JobList() {
                       <input
                         className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none"
                         placeholder="postgres"
+                        value={dbCreds.user}
+                        onChange={(e) =>
+                          setDbCreds((prev) => ({ ...prev, user: e.target.value }))
+                        }
                       />
                     </div>
                     <div>
@@ -690,23 +1368,58 @@ export default function JobList() {
                         type="password"
                         className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none"
                         placeholder="••••••••"
+                        value={dbCreds.pass}
+                        onChange={(e) =>
+                          setDbCreds((prev) => ({ ...prev, pass: e.target.value }))
+                        }
                       />
                     </div>
                   </div>
                   <div>
                     <label className="text-[10px] uppercase text-gray-500 font-bold">
-                      Database Name
+                      Database
                     </label>
                     <input
                       className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none"
-                      placeholder="my_database"
+                      placeholder="e.g. mdms"
+                      value={dbCreds.dbname}
+                      onChange={(e) =>
+                        setDbCreds((prev) => ({ ...prev, dbname: e.target.value }))
+                      }
                     />
                   </div>
-                  <button className="w-full mt-2 py-4 bg-[#23243B] text-white text-sm font-bold uppercase tracking-widest hover:bg-black flex justify-center items-center gap-2">
-                    <Database size={16} /> Authenticate & Fetch Schema
-                  </button>
+                  <div>
+                    <label className="text-[10px] uppercase text-gray-500 font-bold">
+                      Saved Connections
+                    </label>
+                    <div className="border border-[#A1A3AF] p-2 max-h-28 overflow-y-auto text-sm">
+                      {savedConnections.length === 0 ? (
+                        <span className="text-gray-500">No saved connections yet.</span>
+                      ) : (
+                        savedConnections.map((c) => (
+                          <div key={c.connection_id} className="py-1">
+                            {c.connection_name} ({c.host}:{c.port})
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <button
+                      onClick={handleTestConnection}
+                      className="w-full mt-2 py-3 bg-white border border-[#23243B] text-[#23243B] text-sm font-bold uppercase tracking-widest hover:bg-gray-50"
+                    >
+                      Test Connection
+                    </button>
+                    <button
+                      onClick={handleSaveConnection}
+                      className="w-full mt-2 py-3 bg-[#23243B] text-white text-sm font-bold uppercase tracking-widest hover:bg-black"
+                    >
+                      Save Connection
+                    </button>
+                  </div>
                   <span className="text-[10px] text-center text-gray-400 uppercase tracking-widest mt-2">
-                    Note: Schema fetch requires backend endpoint configuration.
+                    Save once here, then use DB Connected in Create Job.
                   </span>
                 </div>
               )}

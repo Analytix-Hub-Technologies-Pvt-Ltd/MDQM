@@ -68,10 +68,19 @@ export const renameTable = async (tableId, newName) => {
     return axios.put(`${API_URL}/tables/${tableId}/rename`, { name: newName });
 };
 
-export const uploadCsvToJob = async (jobId, file) => {
+export const uploadCsvToJob = async (jobId, file, previewEdits = []) => {
     const formData = new FormData();
     formData.append("file", file);
+    formData.append("preview_edits", JSON.stringify(previewEdits));
     return axios.post(`${API_URL}/jobs/${jobId}/upload`, formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+    });
+};
+
+export const previewCsvFile = async (file) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    return axios.post(`${API_URL}/files/preview`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
     });
 };
@@ -83,6 +92,22 @@ export const createNewJob = async (jobName) => {
 // Note: DB Connection and Download endpoints will require specific backend logic
 export const connectToDb = async (credentials) => {
     return axios.post(`${API_URL}/db/connect`, credentials);
+};
+
+export const listDatabases = async (credentials) => {
+    return axios.post(`${API_URL}/db/list-databases`, credentials);
+};
+
+export const listSavedConnections = async () => {
+    return axios.get(`${API_URL}/db/connections`);
+};
+
+export const saveDbConnection = async (payload) => {
+    return axios.post(`${API_URL}/db/connections`, payload);
+};
+
+export const testDbConnection = async (payload) => {
+    return axios.post(`${API_URL}/db/test-connection`, payload);
 };
 
 // Add to frontend/src/api.js
