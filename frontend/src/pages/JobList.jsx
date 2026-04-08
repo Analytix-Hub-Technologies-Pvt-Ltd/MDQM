@@ -12,8 +12,9 @@ import {
   createNewJob,
   uploadCsvToJob,
   previewCsvFile,
+  previewDbTable,
   connectToDb,
-  listDatabases,
+  listSchemasTables,
   listSavedConnections,
   saveDbConnection,
   testDbConnection,
@@ -34,6 +35,77 @@ import {
 } from "lucide-react";
 import ColumnAudit from "./ColumnAudit";
 
+const RULE_OPTIONS_BY_TYPE = {
+  String: ["fuzzy_match", "contains", "starts_with", "ends_with", "equals", "not_equals", "is_email"],
+  Integer: ["equals", "not_equals", "greater_than", "less_than", "is_positive", "is_negative"],
+  Float: ["equals", "not_equals", "greater_than", "less_than", "is_positive", "is_negative"],
+  Date: ["before_date", "after_date", "date_format_check"],
+  Boolean: ["is_true", "is_false", "equals", "not_equals"],
+};
+
+const RULE_LABELS = {
+  fuzzy_match: "fuzzy match",
+  contains: "contains",
+  starts_with: "starts with",
+  ends_with: "ends with",
+  equals: "equals",
+  not_equals: "not equals",
+  is_email: "is email",
+  greater_than: "greater than",
+  less_than: "less than",
+  is_positive: "is positive",
+  is_negative: "is negative",
+  before_date: "before date",
+  after_date: "after date",
+  date_format_check: "date format check",
+  is_true: "is true",
+  is_false: "is false",
+};
+
+const RULES_REQUIRING_VALUE = new Set([
+  "fuzzy_match",
+  "contains",
+  "starts_with",
+  "ends_with",
+  "equals",
+  "not_equals",
+  "greater_than",
+  "less_than",
+  "before_date",
+  "after_date",
+  "date_format_check",
+]);
+
+const normalizeDataType = (type = "") => {
+  const t = String(type).toLowerCase();
+  if (t.includes("int")) return "Integer";
+  if (t.includes("float") || t.includes("double") || t.includes("decimal")) return "Float";
+  if (t.includes("date") || t.includes("time")) return "Date";
+  if (t.includes("bool")) return "Boolean";
+  return "String";
+};
+
+const defaultRuleDraftForType = (type) => {
+  const normalized = normalizeDataType(type);
+  if (normalized === "String") {
+    return { rule_type: "fuzzy_match", rule_value: "80", is_active: false, master_data_text: "" };
+  }
+  if (normalized === "Integer" || normalized === "Float") {
+    return { rule_type: "greater_than", rule_value: "0", is_active: false, master_data_text: "" };
+  }
+  if (normalized === "Date") {
+    return { rule_type: "date_format_check", rule_value: "%Y-%m-%d", is_active: false, master_data_text: "" };
+  }
+  return { rule_type: "equals", rule_value: "true", is_active: false, master_data_text: "" };
+};
+
+const parseLookupValuesFromText = (text = "") => {
+  return text
+    .split(/\r?\n|,/)
+    .map((v) => v.trim())
+    .filter(Boolean);
+};
+
 export default function JobList() {
   const [jobs, setJobs] = useState([]);
   const [tables, setTables] = useState({});
@@ -41,7 +113,6 @@ export default function JobList() {
 
   // Modals & Menus
   const [showAddModal, setShowAddModal] = useState(false);
-  const [addModalTab, setAddModalTab] = useState("create"); // create, import, connect
   const [actionMenu, setActionMenu] = useState({ type: null, id: null }); // type: 'job'|'table'
   const [renameModal, setRenameModal] = useState({
     isOpen: false,
@@ -57,6 +128,7 @@ export default function JobList() {
   const [previewColumns, setPreviewColumns] = useState([]);
   const [previewColumnTypes, setPreviewColumnTypes] = useState({});
   const [previewRows, setPreviewRows] = useState([]);
+  const [previewTotalRows, setPreviewTotalRows] = useState(0);
   const [previewEditable, setPreviewEditable] = useState([]);
   const [showFilePreview, setShowFilePreview] = useState(false);
   const [previewPage, setPreviewPage] = useState(1);
@@ -69,13 +141,11 @@ export default function JobList() {
     pass: "",
     dbname: "",
   });
-  const [databaseOptions, setDatabaseOptions] = useState([
-    "postgres",
-    "mdms",
-    "analytics_db",
-    "customer_db",
-  ]);
-  const [selectedDatabases, setSelectedDatabases] = useState([]);
+  const [schemaOptions, setSchemaOptions] = useState([]);
+  const [selectedSchema, setSelectedSchema] = useState("");
+  const [tablesBySchema, setTablesBySchema] = useState({});
+  const [tableOptions, setTableOptions] = useState([]);
+  const [selectedTables, setSelectedTables] = useState([]);
   const [savedConnections, setSavedConnections] = useState([]);
   const [selectedConnectionId, setSelectedConnectionId] = useState("");
   const [connectionName, setConnectionName] = useState("");
@@ -85,10 +155,12 @@ export default function JobList() {
   // Add this near your other useState hooks
   const [expandedTables, setExpandedTables] = useState({});
   const [showRuleStep, setShowRuleStep] = useState(false);
+  const [showOutputStep, setShowOutputStep] = useState(false);
   const [createdJobId, setCreatedJobId] = useState(null);
   const [createdTableId, setCreatedTableId] = useState(null);
   const [ruleColumns, setRuleColumns] = useState([]);
   const [ruleDrafts, setRuleDrafts] = useState({});
+  const [outputSummary, setOutputSummary] = useState(null);
   const resetCreateFlow = () => {
     setShowAddModal(false);
     setNewJobName("");
@@ -97,13 +169,18 @@ export default function JobList() {
     setPreviewColumns([]);
     setPreviewColumnTypes({});
     setPreviewRows([]);
+    setPreviewTotalRows(0);
     setPreviewEditable([]);
     setPreviewPage(1);
     setShowRuleStep(false);
+    setShowOutputStep(false);
     setCreatedJobId(null);
     setCreatedTableId(null);
     setRuleColumns([]);
     setRuleDrafts({});
+    setOutputSummary(null);
+    setConnectionName("");
+    setDbCreds({ host: "", port: "", user: "", pass: "", dbname: "" });
   };
 
 
@@ -216,79 +293,208 @@ export default function JobList() {
   };
 
   const handleUploadCsv = async () => {
-    if (!newJobName || !uploadFile) {
-      alert("Enter a job name and choose a CSV file.");
+    if (!newJobName) {
+      alert("Enter a job name.");
+      return;
+    }
+    if (createDataMode === "file" && !uploadFile) {
+      alert("Choose a CSV file.");
+      return;
+    }
+    const cols = previewEditable.map((item) => ({
+      column_name: item.name || item.originalName,
+      data_type: normalizeDataType(item.dataType),
+    }));
+    if (cols.length === 0) {
+      alert("Preview data not found. Please preview the file again.");
+      return;
+    }
+    setRuleColumns(cols);
+    setRuleDrafts(
+      cols.reduce((acc, col) => {
+        acc[col.column_name] = defaultRuleDraftForType(col.data_type);
+        return acc;
+      }, {})
+    );
+    setShowRuleStep(true);
+  };
+
+  const handlePreviewDb = async () => {
+    if (!dbCreds.dbname || !selectedSchema || selectedTables.length === 0) {
+      alert("Please select database, schema and at least one table.");
       return;
     }
     try {
-      const createRes = await createNewJob(newJobName);
-      const jobId = createRes?.data?.job_id;
-      if (!jobId) {
-        throw new Error("Unable to create job");
-      }
-      await uploadCsvToJob(
-        jobId,
-        uploadFile,
-        showFilePreview ? previewEditable : []
+      const payload = selectedConnectionId
+        ? {
+            connection_id: Number(selectedConnectionId),
+            dbname: dbCreds.dbname,
+            schema_name: selectedSchema,
+            table_name: selectedTables[0],
+          }
+        : {
+            host: dbCreds.host,
+            port: dbCreds.port || "5432",
+            user: dbCreds.user,
+            pass: dbCreds.pass || "",
+            dbname: dbCreds.dbname,
+            schema_name: selectedSchema,
+            table_name: selectedTables[0],
+          };
+      const res = await previewDbTable(payload);
+      const cols = res?.data?.columns || [];
+      const types = res?.data?.column_types || {};
+      const rows = res?.data?.rows || [];
+      const totalRows = Number(res?.data?.total_rows || rows.length || 0);
+      setPreviewColumns(cols);
+      setPreviewColumnTypes(types);
+      setPreviewRows(rows);
+      setPreviewTotalRows(totalRows);
+      setPreviewEditable(
+        cols.map((col) => ({
+          originalName: col,
+          name: col,
+          dataType: types[col] || "string",
+          value: rows?.[0]?.[col] ?? "",
+        }))
       );
-      const tablesRes = await getTablesByJob(jobId);
-      const createdTables = tablesRes?.data || [];
-      const latestTable = [...createdTables].sort((a, b) => b.table_id - a.table_id)[0];
-      if (!latestTable?.table_id) {
-        throw new Error("Uploaded table not found for rule setup.");
-      }
-      const tableDetailsRes = await getTableDetails(jobId, latestTable.table_id);
-      const cols = tableDetailsRes?.data?.columns || [];
-      setCreatedJobId(jobId);
-      setCreatedTableId(latestTable.table_id);
-      setRuleColumns(cols);
-      setRuleDrafts(
-        cols.reduce((acc, col) => {
-          acc[col.column_name] = { rule_type: "fuzzy_match", rule_value: "80", is_active: true };
-          return acc;
-        }, {})
-      );
-      setShowRuleStep(true);
-      fetchJobs();
+      setPreviewPage(1);
+      setShowFilePreview(true);
     } catch (err) {
-      alert(err?.response?.data?.detail || "Failed to create job and upload file");
+      alert(err?.response?.data?.detail || "Failed to preview selected table.");
     }
   };
 
   const setRuleDraft = (columnName, key, value) => {
+    const base = prev => defaultRuleDraftForType(prev?.data_type);
     setRuleDrafts((prev) => ({
       ...prev,
       [columnName]: {
-        rule_type: "fuzzy_match",
-        rule_value: "80",
-        is_active: true,
+        ...defaultRuleDraftForType("String"),
         ...(prev[columnName] || {}),
         [key]: value,
       },
     }));
   };
 
-  const handleAddRuleForColumn = async (column) => {
-    if (!createdJobId || !createdTableId) return;
-    const draft = ruleDrafts[column.column_name] || {
-      rule_type: "fuzzy_match",
-      rule_value: "80",
-      is_active: true,
-    };
+  const handleLookupFileUpload = async (columnName, file) => {
+    if (!file) return;
     try {
-      await addRule({
-        job_id: createdJobId,
-        table_id: createdTableId,
-        column_name: column.column_name,
-        rule_type: draft.rule_type,
-        data_type: column.data_type || "String",
-        rule_value: draft.rule_value || null,
-        is_active: draft.is_active !== false,
-        master_data: [],
-      });
-      alert(`Rule added for ${column.column_name}`);
+      const text = await file.text();
+      const values = parseLookupValuesFromText(text);
+      if (values.length === 0) {
+        alert("No lookup values found in the uploaded file.");
+        return;
+      }
+      setRuleDraft(columnName, "master_data_text", values.join(", "));
     } catch (err) {
-      alert(err?.response?.data?.detail || `Failed to add rule for ${column.column_name}`);
+      alert("Failed to read lookup file.");
+    }
+  };
+
+  const handleFinishCreateJob = async () => {
+    if (!newJobName) {
+      alert("Enter a job name.");
+      return;
+    }
+
+    const activeColumns = ruleColumns.filter((col) => {
+      const draft = ruleDrafts[col.column_name] || defaultRuleDraftForType(col.data_type);
+      return draft.is_active !== false;
+    });
+
+    for (const col of activeColumns) {
+      const draft = ruleDrafts[col.column_name] || defaultRuleDraftForType(col.data_type);
+      if (RULES_REQUIRING_VALUE.has(draft.rule_type) && !String(draft.rule_value || "").trim()) {
+        alert(`Please enter a value for ${col.column_name}`);
+        return;
+      }
+      if (draft.rule_type === "fuzzy_match" && !String(draft.master_data_text || "").trim()) {
+        alert(`Please enter lookup values for ${col.column_name} (comma separated).`);
+        return;
+      }
+    }
+
+    try {
+      let jobId;
+      let latestTable;
+      if (createDataMode === "file") {
+        if (!uploadFile) {
+          alert("Choose a CSV file.");
+          return;
+        }
+        const createRes = await createNewJob(newJobName);
+        jobId = createRes?.data?.job_id;
+        if (!jobId) throw new Error("Unable to create job");
+        await uploadCsvToJob(
+          jobId,
+          uploadFile,
+          showFilePreview ? previewEditable : []
+        );
+        const tablesRes = await getTablesByJob(jobId);
+        const createdTables = tablesRes?.data || [];
+        latestTable = [...createdTables].sort((a, b) => b.table_id - a.table_id)[0];
+      } else {
+        const payload = {
+          job_name: newJobName,
+          dbname: dbCreds.dbname,
+          schema_name: selectedSchema,
+          table_names: selectedTables,
+        };
+        if (selectedConnectionId) {
+          payload.connection_id = Number(selectedConnectionId);
+        } else {
+          payload.host = dbCreds.host;
+          payload.port = dbCreds.port || "5432";
+          payload.user = dbCreds.user;
+          payload.pass = dbCreds.pass || "";
+        }
+        const dbRes = await connectToDb(payload);
+        jobId = dbRes?.data?.created_jobs?.[0]?.job_id;
+        if (!jobId) throw new Error("Unable to create DB job");
+        const tablesRes = await getTablesByJob(jobId);
+        const createdTables = tablesRes?.data || [];
+        latestTable = [...createdTables].sort((a, b) => b.table_id - a.table_id)[0];
+      }
+      if (!latestTable?.table_id) throw new Error("Uploaded table not found for rule setup.");
+
+      const addRuleCalls = activeColumns.map((col) => {
+        const draft = ruleDrafts[col.column_name] || defaultRuleDraftForType(col.data_type);
+        const masterData =
+          draft.rule_type === "fuzzy_match"
+            ? String(draft.master_data_text || "")
+                .split(",")
+                .map((v) => v.trim())
+                .filter(Boolean)
+            : [];
+        return addRule({
+          job_id: jobId,
+          table_id: latestTable.table_id,
+          column_name: col.column_name,
+          rule_type: draft.rule_type,
+          data_type: normalizeDataType(col.data_type),
+          rule_value: draft.rule_value || null,
+          is_active: true,
+          master_data: masterData,
+        });
+      });
+      await Promise.all(addRuleCalls);
+
+      const tableDetailsRes = await getTableDetails(jobId, latestTable.table_id);
+      const outputCols = tableDetailsRes?.data?.columns || [];
+      setOutputSummary({
+        jobId,
+        tableId: latestTable.table_id,
+        tableName: latestTable.table_name,
+        rowCount: latestTable.row_count,
+        columnCount: outputCols.length,
+        outputFile: `${latestTable.table_name}.csv`,
+      });
+      setShowRuleStep(false);
+      setShowOutputStep(true);
+      fetchJobs();
+    } catch (err) {
+      alert(err?.response?.data?.detail || "Failed to complete all steps and create job.");
     }
   };
 
@@ -302,9 +508,11 @@ export default function JobList() {
       const cols = res?.data?.columns || [];
       const types = res?.data?.column_types || {};
       const rows = res?.data?.rows || [];
+      const totalRows = Number(res?.data?.total_rows || rows.length || 0);
       setPreviewColumns(cols);
       setPreviewColumnTypes(types);
       setPreviewRows(rows);
+      setPreviewTotalRows(totalRows);
       setPreviewEditable(
         cols.map((col) => ({
           originalName: col,
@@ -323,25 +531,44 @@ export default function JobList() {
   const handleConnectDbPipeline = async () => {
     if (
       !newJobName ||
-      !selectedConnectionId ||
-      selectedDatabases.length === 0
+      !dbCreds.host ||
+      !dbCreds.user ||
+      !dbCreds.dbname ||
+      !selectedSchema ||
+      selectedTables.length === 0
     ) {
-      alert("Please enter job name, choose a saved connection and select database(s).");
+      alert("Please enter job name, DB credentials, database, schema and select table(s).");
       return;
     }
 
     try {
-      await connectToDb({
+      const payload = {
         job_name: newJobName,
-        connection_id: Number(selectedConnectionId),
-        dbnames: selectedDatabases,
+        dbname: dbCreds.dbname,
+        schema_name: selectedSchema,
+        table_names: selectedTables,
+      };
+      if (selectedConnectionId) {
+        payload.connection_id = Number(selectedConnectionId);
+      } else {
+        payload.host = dbCreds.host;
+        payload.port = dbCreds.port || "5432";
+        payload.user = dbCreds.user;
+        payload.pass = dbCreds.pass || "";
+      }
+      await connectToDb({
+        ...payload,
       });
       alert("Job created from database successfully.");
       setShowAddModal(false);
       setNewJobName("");
       setDbCreds({ host: "", port: "", user: "", pass: "", dbname: "" });
-      setDatabaseOptions([]);
-      setSelectedDatabases([]);
+      setSchemaOptions([]);
+      setSelectedSchema("");
+      setTablesBySchema({});
+      setTableOptions([]);
+      setSelectedTables([]);
+      setSelectedConnectionId("");
       fetchJobs();
     } catch (err) {
       alert(
@@ -351,20 +578,40 @@ export default function JobList() {
     }
   };
 
-  const handleFetchDatabases = async () => {
-    if (!selectedConnectionId) {
-      alert("Please choose a saved connection first.");
+  const handleFetchTables = async () => {
+    if (!selectedConnectionId && (!dbCreds.host || !dbCreds.user)) {
+      alert("Please enter host and username first.");
+      return;
+    }
+    if (!dbCreds.dbname) {
+      alert("Please enter database name first.");
       return;
     }
     try {
-      const res = await listDatabases({
-        connection_id: Number(selectedConnectionId),
-      });
-      const list = res?.data?.databases || [];
-      setDatabaseOptions(list);
-      if (list.length > 0) setSelectedDatabases([list[0]]);
+      const payload = selectedConnectionId
+        ? {
+            connection_id: Number(selectedConnectionId),
+            dbname: dbCreds.dbname,
+          }
+        : {
+            host: dbCreds.host,
+            port: dbCreds.port || "5432",
+            user: dbCreds.user,
+            pass: dbCreds.pass || "",
+            dbname: dbCreds.dbname,
+          };
+      const res = await listSchemasTables(payload);
+      const schemas = res?.data?.schemas || [];
+      const tableMap = res?.data?.tables_by_schema || {};
+      setSchemaOptions(schemas);
+      setTablesBySchema(tableMap);
+      const firstSchema = schemas[0] || "";
+      setSelectedSchema(firstSchema);
+      const firstTables = tableMap[firstSchema] || [];
+      setTableOptions(firstTables);
+      setSelectedTables(firstTables.length > 0 ? [firstTables[0]] : []);
     } catch (err) {
-      alert(err?.response?.data?.detail || "Failed to fetch database list.");
+      alert(err?.response?.data?.detail || "Failed to fetch schema/table list.");
     }
   };
 
@@ -373,12 +620,25 @@ export default function JobList() {
       const res = await listSavedConnections();
       const items = res?.data || [];
       setSavedConnections(items);
-      if (items.length > 0 && !selectedConnectionId) {
-        setSelectedConnectionId(String(items[0].connection_id));
-      }
     } catch (err) {
       console.error(err);
     }
+  };
+
+  const handleSavedConnectionChange = (value) => {
+    setSelectedConnectionId(value);
+    const selected = savedConnections.find(
+      (c) => String(c.connection_id) === String(value)
+    );
+    if (!selected) return;
+    setConnectionName(selected.connection_name || "");
+    setDbCreds((prev) => ({
+      ...prev,
+      host: selected.host || "",
+      port: selected.port || "5432",
+      user: selected.user || "",
+      pass: "",
+    }));
   };
 
   const handleTestConnection = async () => {
@@ -420,14 +680,14 @@ export default function JobList() {
     }
   };
 
-  const toggleDatabaseSelection = (dbName) => {
-    setSelectedDatabases((prev) =>
-      prev.includes(dbName) ? prev.filter((d) => d !== dbName) : [...prev, dbName]
+  const toggleTableSelection = (tableName) => {
+    setSelectedTables((prev) =>
+      prev.includes(tableName) ? prev.filter((d) => d !== tableName) : [...prev, tableName]
     );
   };
 
-  const selectAllDatabases = () => setSelectedDatabases(databaseOptions);
-  const clearSelectedDatabases = () => setSelectedDatabases([]);
+  const selectAllTables = () => setSelectedTables(tableOptions);
+  const clearSelectedTables = () => setSelectedTables([]);
 
   const handleEditableChange = (index, field, value) => {
     setPreviewEditable((prev) =>
@@ -881,24 +1141,8 @@ export default function JobList() {
               />
             </div>
 
-            <div className="grid grid-cols-2 border-b border-gray-200 bg-white">
-              <button
-                onClick={() => setAddModalTab("create")}
-                className={`py-3 text-[11px] sm:text-xs font-bold uppercase tracking-wider sm:tracking-widest flex justify-center items-center gap-2 transition-colors ${addModalTab === "create" ? "border-b-2 border-[#23243B] text-[#23243B] bg-[#F8FAFC]" : "text-gray-400 hover:bg-gray-50"}`}
-              >
-                <FolderPlus size={16} /> Create Job
-              </button>
-              <button
-                onClick={() => setAddModalTab("connect")}
-                className={`py-3 text-[11px] sm:text-xs font-bold uppercase tracking-wider sm:tracking-widest flex justify-center items-center gap-2 transition-colors ${addModalTab === "connect" ? "border-b-2 border-[#23243B] text-[#23243B] bg-[#F8FAFC]" : "text-gray-400 hover:bg-gray-50"}`}
-              >
-                <Database size={16} /> Connect DB
-              </button>
-            </div>
-
             <div className="p-4 sm:p-6 md:p-8 bg-[#FCFCFD] overflow-y-auto">
               {/* TAB 1: CREATE JOB */}
-              {addModalTab === "create" && (
                 <div className="flex flex-col gap-6">
                   {showRuleStep && (
                     <>
@@ -919,39 +1163,75 @@ export default function JobList() {
                               <th className="text-left p-2 border-b border-[#E5E7EB]">Validation Logic</th>
                               <th className="text-left p-2 border-b border-[#E5E7EB]">Value</th>
                               <th className="text-left p-2 border-b border-[#E5E7EB]">Active</th>
-                              <th className="text-left p-2 border-b border-[#E5E7EB]">Actions</th>
                             </tr>
                           </thead>
                           <tbody>
                             {ruleColumns.map((col) => {
                               const draft = ruleDrafts[col.column_name] || {
-                                rule_type: "fuzzy_match",
-                                rule_value: "80",
-                                is_active: true,
+                                ...defaultRuleDraftForType(col.data_type),
                               };
+                              const normalizedType = normalizeDataType(col.data_type);
+                              const allowedRules = RULE_OPTIONS_BY_TYPE[normalizedType] || RULE_OPTIONS_BY_TYPE.String;
                               return (
                                 <tr key={col.column_name} className="odd:bg-white even:bg-[#FAFAFA]">
                                   <td className="p-2 border-b border-[#F1F5F9] font-semibold">{col.column_name}</td>
-                                  <td className="p-2 border-b border-[#F1F5F9]">{col.data_type || "String"}</td>
+                                  <td className="p-2 border-b border-[#F1F5F9]">{normalizedType}</td>
                                   <td className="p-2 border-b border-[#F1F5F9]">
                                     <select
                                       value={draft.rule_type}
-                                      onChange={(e) => setRuleDraft(col.column_name, "rule_type", e.target.value)}
+                                      onChange={(e) => {
+                                        const nextRule = e.target.value;
+                                        setRuleDraft(col.column_name, "rule_type", nextRule);
+                                        if (nextRule === "fuzzy_match") {
+                                          setRuleDraft(col.column_name, "rule_value", "80");
+                                        } else if (!RULES_REQUIRING_VALUE.has(nextRule)) {
+                                          setRuleDraft(col.column_name, "rule_value", "");
+                                        }
+                                      }}
                                       className="w-full min-w-[170px] border border-[#D1D5DB] rounded-md p-1.5"
                                     >
-                                      <option value="fuzzy_match">fuzzy match</option>
-                                      <option value="not_equals">not equals</option>
-                                      <option value="equals">equals</option>
-                                      <option value="contains">contains</option>
-                                      <option value="is_positive">is positive</option>
+                                      {allowedRules.map((rule) => (
+                                        <option key={rule} value={rule}>
+                                          {RULE_LABELS[rule] || rule}
+                                        </option>
+                                      ))}
                                     </select>
                                   </td>
                                   <td className="p-2 border-b border-[#F1F5F9]">
-                                    <input
-                                      value={draft.rule_value ?? ""}
-                                      onChange={(e) => setRuleDraft(col.column_name, "rule_value", e.target.value)}
-                                      className="w-full min-w-[120px] border border-[#D1D5DB] rounded-md p-1.5"
-                                    />
+                                    {RULES_REQUIRING_VALUE.has(draft.rule_type) ? (
+                                      <input
+                                        placeholder={
+                                          draft.rule_type === "date_format_check"
+                                            ? "%Y-%m-%d"
+                                            : draft.rule_type === "fuzzy_match"
+                                              ? "Threshold (e.g., 80)"
+                                              : "Enter value"
+                                        }
+                                        value={draft.rule_value ?? ""}
+                                        onChange={(e) => setRuleDraft(col.column_name, "rule_value", e.target.value)}
+                                        className="w-full min-w-[120px] border border-[#D1D5DB] rounded-md p-1.5"
+                                      />
+                                    ) : (
+                                      <span className="text-xs text-gray-400">No value required</span>
+                                    )}
+                                    {draft.rule_type === "fuzzy_match" && (
+                                      <>
+                                        <input
+                                          placeholder="Lookup values (comma separated)"
+                                          value={draft.master_data_text ?? ""}
+                                          onChange={(e) => setRuleDraft(col.column_name, "master_data_text", e.target.value)}
+                                          className="w-full min-w-[120px] border border-[#D1D5DB] rounded-md p-1.5 mt-1"
+                                        />
+                                        <div className="mt-1 flex items-center gap-2">
+                                          <input
+                                            type="file"
+                                            accept=".txt,.csv"
+                                            onChange={(e) => handleLookupFileUpload(col.column_name, e.target.files?.[0])}
+                                            className="w-full text-[11px] text-gray-500 file:mr-2 file:py-1.5 file:px-2 file:border-0 file:text-[10px] file:font-bold file:uppercase file:rounded-md file:bg-[#23243B] file:text-white hover:file:bg-black cursor-pointer"
+                                          />
+                                        </div>
+                                      </>
+                                    )}
                                   </td>
                                   <td className="p-2 border-b border-[#F1F5F9]">
                                     <input
@@ -959,15 +1239,6 @@ export default function JobList() {
                                       checked={draft.is_active !== false}
                                       onChange={(e) => setRuleDraft(col.column_name, "is_active", e.target.checked)}
                                     />
-                                  </td>
-                                  <td className="p-2 border-b border-[#F1F5F9]">
-                                    <button
-                                      type="button"
-                                      onClick={() => handleAddRuleForColumn(col)}
-                                      className="px-3 py-1.5 text-[10px] uppercase font-bold border border-[#23243B] rounded-md text-[#23243B] hover:bg-[#23243B] hover:text-white"
-                                    >
-                                      Add New Rule
-                                    </button>
                                   </td>
                                 </tr>
                               );
@@ -984,18 +1255,68 @@ export default function JobList() {
                         </button>
                         <button
                           onClick={() => {
-                            resetCreateFlow();
-                            fetchJobs();
+                            handleFinishCreateJob();
                           }}
                           className="w-full py-3 bg-[#23243B] rounded-md text-white text-xs font-bold uppercase tracking-widest hover:bg-black transition-colors"
                         >
-                          Finish
+                          Next
                         </button>
                       </div>
                     </>
                   )}
 
-                  {!showRuleStep && (
+                  {showOutputStep && (
+                    <>
+                      <div className="rounded-lg border border-[#D6D9E0] p-4 bg-gradient-to-br from-white to-[#F8FAFF]">
+                        <h3 className="text-sm font-bold uppercase tracking-widest text-[#23243B]">
+                          Step 4: Output Summary
+                        </h3>
+                        <p className="text-xs text-gray-500 mt-1">
+                          Output file and table details are generated successfully.
+                        </p>
+                      </div>
+                      <div className="border border-[#D6D9E0] rounded-lg bg-white p-4 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                        <div className="border border-[#E5E7EB] rounded p-2">
+                          <div className="text-[10px] uppercase text-gray-500">Output File</div>
+                          <div className="font-semibold break-all">{outputSummary?.outputFile || "-"}</div>
+                        </div>
+                        <div className="border border-[#E5E7EB] rounded p-2">
+                          <div className="text-[10px] uppercase text-gray-500">Table Output</div>
+                          <div className="font-semibold break-all">{outputSummary?.tableName || "-"}</div>
+                        </div>
+                        <div className="border border-[#E5E7EB] rounded p-2">
+                          <div className="text-[10px] uppercase text-gray-500">Rows</div>
+                          <div className="font-semibold">{outputSummary?.rowCount ?? "-"}</div>
+                        </div>
+                        <div className="border border-[#E5E7EB] rounded p-2">
+                          <div className="text-[10px] uppercase text-gray-500">Columns</div>
+                          <div className="font-semibold">{outputSummary?.columnCount ?? "-"}</div>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1">
+                        <button
+                          onClick={() => {
+                            setShowOutputStep(false);
+                            setShowRuleStep(true);
+                          }}
+                          className="w-full py-3 border border-[#23243B] rounded-md text-[#23243B] text-xs font-bold uppercase tracking-widest hover:bg-gray-50 transition-colors"
+                        >
+                          Back
+                        </button>
+                        <button
+                          onClick={() => {
+                            resetCreateFlow();
+                            fetchJobs();
+                          }}
+                          className="w-full py-3 bg-[#23243B] rounded-md text-white text-xs font-bold uppercase tracking-widest hover:bg-black transition-colors"
+                        >
+                          Done
+                        </button>
+                      </div>
+                    </>
+                  )}
+
+                  {!showRuleStep && !showOutputStep && (
                     <>
                   {!(createDataMode === "file" && showFilePreview) && (
                     <>
@@ -1042,6 +1363,7 @@ export default function JobList() {
                             setPreviewColumns([]);
                             setPreviewColumnTypes({});
                             setPreviewRows([]);
+                            setPreviewTotalRows(0);
                             setPreviewEditable([]);
                             setPreviewPage(1);
                           }}
@@ -1058,15 +1380,18 @@ export default function JobList() {
                   ) : (
                     createDataMode === "db" && (
                     <>
-                      <div>
-                        <label className="text-[10px] uppercase text-gray-500 font-bold">
-                          Saved Connection
-                        </label>
-                        <div className="flex gap-2">
+                      <div className="mt-2 border border-[#D6D9E0] rounded-lg p-4 bg-white">
+                        <div className="text-[10px] uppercase tracking-wider text-gray-500 font-bold mb-3">
+                          Connection Details
+                        </div>
+                        <div>
+                          <label className="text-[10px] uppercase text-gray-500 font-bold">
+                            Saved Connection
+                          </label>
                           <select
                             className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none bg-transparent"
                             value={selectedConnectionId}
-                            onChange={(e) => setSelectedConnectionId(e.target.value)}
+                            onChange={(e) => handleSavedConnectionChange(e.target.value)}
                           >
                             <option value="">Select a saved connection...</option>
                             {savedConnections.map((c) => (
@@ -1075,18 +1400,144 @@ export default function JobList() {
                               </option>
                             ))}
                           </select>
+                        </div>
+                        <div className="mt-3">
+                          <label className="text-[10px] uppercase text-gray-500 font-bold">
+                            Connection Name
+                          </label>
+                          <input
+                            className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none"
+                            placeholder="e.g. PROD_POSTGRES"
+                            value={connectionName}
+                            autoComplete="off"
+                            onChange={(e) => setConnectionName(e.target.value)}
+                          />
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3">
+                          <div>
+                            <label className="text-[10px] uppercase text-gray-500 font-bold">
+                              Host
+                            </label>
+                            <input
+                              className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none"
+                              placeholder="localhost"
+                              value={dbCreds.host}
+                              autoComplete="off"
+                              onChange={(e) =>
+                                setDbCreds((prev) => ({ ...prev, host: e.target.value }))
+                              }
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] uppercase text-gray-500 font-bold">
+                              Port
+                            </label>
+                            <input
+                              className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none"
+                              placeholder="5432"
+                              value={dbCreds.port}
+                              autoComplete="off"
+                              onChange={(e) =>
+                                setDbCreds((prev) => ({ ...prev, port: e.target.value }))
+                              }
+                            />
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3">
+                          <div>
+                            <label className="text-[10px] uppercase text-gray-500 font-bold">
+                              Username
+                            </label>
+                            <input
+                              className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none"
+                              placeholder="postgres"
+                              value={dbCreds.user}
+                              autoComplete="off"
+                              onChange={(e) =>
+                                setDbCreds((prev) => ({ ...prev, user: e.target.value }))
+                              }
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] uppercase text-gray-500 font-bold">
+                              Password
+                            </label>
+                            <input
+                              type="password"
+                              className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none"
+                              placeholder="••••••••"
+                              value={dbCreds.pass}
+                              autoComplete="new-password"
+                              onChange={(e) =>
+                                setDbCreds((prev) => ({ ...prev, pass: e.target.value }))
+                              }
+                            />
+                          </div>
+                        </div>
+                        <div className="mt-3">
+                          <label className="text-[10px] uppercase text-gray-500 font-bold">
+                            Database
+                          </label>
+                          <input
+                            className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none"
+                            placeholder="e.g. mdms"
+                            value={dbCreds.dbname}
+                            autoComplete="off"
+                            onChange={(e) =>
+                              setDbCreds((prev) => ({ ...prev, dbname: e.target.value }))
+                            }
+                          />
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-3">
                           <button
                             type="button"
-                            onClick={() => setAddModalTab("connect")}
-                            className="px-3 py-2 text-xs font-bold uppercase border border-[#23243B] text-[#23243B] hover:bg-[#23243B] hover:text-white"
+                            onClick={handleTestConnection}
+                            className="w-full py-2 border border-[#23243B] text-[#23243B] text-xs font-bold uppercase hover:bg-gray-50"
                           >
-                            Manage
+                            Test Connection
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleFetchTables}
+                            className="w-full py-2 border border-[#23243B] text-[#23243B] text-xs font-bold uppercase hover:bg-gray-50"
+                          >
+                            Connect
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleSaveConnection}
+                            className="w-full py-2 bg-[#23243B] text-white text-xs font-bold uppercase hover:bg-black"
+                          >
+                            Save Connection
                           </button>
                         </div>
                       </div>
                       <div>
                         <label className="text-[10px] uppercase text-gray-500 font-bold">
-                          Choose Database(s)
+                          Choose Schema
+                        </label>
+                        <select
+                          className="w-full border border-[#A1A3AF] p-2 text-sm bg-white"
+                          value={selectedSchema}
+                          onChange={(e) => {
+                            const schema = e.target.value;
+                            setSelectedSchema(schema);
+                            const scopedTables = tablesBySchema[schema] || [];
+                            setTableOptions(scopedTables);
+                            setSelectedTables(scopedTables.length > 0 ? [scopedTables[0]] : []);
+                          }}
+                        >
+                          <option value="">Select schema...</option>
+                          {schemaOptions.map((schema) => (
+                            <option key={schema} value={schema}>
+                              {schema}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[10px] uppercase text-gray-500 font-bold">
+                          Choose Table(s)
                         </label>
                         <div className="flex gap-2" ref={dbDropdownRef}>
                           <div className="w-full relative">
@@ -1096,9 +1547,9 @@ export default function JobList() {
                               className="w-full cursor-pointer border border-[#A1A3AF] p-2 text-sm bg-white flex items-center justify-between"
                             >
                               <span className="truncate text-left">
-                                {selectedDatabases.length > 0
-                                  ? `${selectedDatabases.length} database(s) selected`
-                                  : "Select database(s)..."}
+                                {selectedTables.length > 0
+                                  ? `${selectedTables.length} table(s) selected`
+                                  : "Select table(s)..."}
                               </span>
                               <span className="text-xs text-gray-500">▼</span>
                             </button>
@@ -1108,29 +1559,29 @@ export default function JobList() {
                                   <button
                                     type="button"
                                     className="text-[10px] uppercase font-bold text-[#23243B] hover:underline"
-                                    onClick={selectAllDatabases}
+                                    onClick={selectAllTables}
                                   >
                                     Select All
                                   </button>
                                   <button
                                     type="button"
                                     className="text-[10px] uppercase font-bold text-[#23243B] hover:underline"
-                                    onClick={clearSelectedDatabases}
+                                    onClick={clearSelectedTables}
                                   >
                                     Clear
                                   </button>
                                 </div>
-                                {databaseOptions.length === 0 ? (
-                                  <div className="text-xs text-gray-500">No databases found. Click Fetch to load from selected connection.</div>
+                                {tableOptions.length === 0 ? (
+                                  <div className="text-xs text-gray-500">No tables found. Click Connect to load from selected DB/schema.</div>
                                 ) : (
-                                  databaseOptions.map((dbName) => (
-                                    <label key={dbName} className="flex items-center gap-2 py-1 text-sm cursor-pointer">
+                                  tableOptions.map((tableName) => (
+                                    <label key={tableName} className="flex items-center gap-2 py-1 text-sm cursor-pointer">
                                       <input
                                         type="checkbox"
-                                        checked={selectedDatabases.includes(dbName)}
-                                        onChange={() => toggleDatabaseSelection(dbName)}
+                                        checked={selectedTables.includes(tableName)}
+                                        onChange={() => toggleTableSelection(tableName)}
                                       />
-                                      <span>{dbName}</span>
+                                      <span>{tableName}</span>
                                     </label>
                                   ))
                                 )}
@@ -1139,40 +1590,40 @@ export default function JobList() {
                           </div>
                           <button
                             type="button"
-                            onClick={handleFetchDatabases}
+                            onClick={handleFetchTables}
                             className="px-3 py-2 text-xs font-bold uppercase border border-[#23243B] text-[#23243B] hover:bg-[#23243B] hover:text-white"
                           >
-                            Fetch
+                            Connect
                           </button>
                         </div>
-                        {selectedDatabases.length > 0 && (
+                        {selectedTables.length > 0 && (
                           <div className="mt-2 flex flex-wrap gap-1">
-                            {selectedDatabases.map((db) => (
+                            {selectedTables.map((tableName) => (
                               <span
-                                key={db}
+                                key={tableName}
                                 className="text-[10px] uppercase tracking-wider bg-[#23243B] text-white px-2 py-1"
                               >
-                                {db}
+                                {tableName}
                               </span>
                             ))}
                           </div>
                         )}
                       </div>
                       <button
-                        onClick={handleConnectDbPipeline}
+                        onClick={handlePreviewDb}
                         className="w-full mt-2 py-4 bg-[#23243B] text-white text-sm font-bold uppercase tracking-widest hover:bg-black"
                       >
-                        Create Job From Database
+                        Next
                       </button>
                     </>
                     )
                   )}
 
-                  {createDataMode === "file" && showFilePreview && (
+                  {showFilePreview && (
                     <>
                       <div className="rounded-lg border border-[#D6D9E0] p-4 bg-gradient-to-br from-white to-[#F8FAFF]">
                         <h3 className="text-sm font-bold uppercase tracking-widest text-[#23243B]">
-                          Step 2: File Preview (First 11 Rows)
+                          Step 2: {createDataMode === "db" ? "Table" : "File"} Preview (First 11 Rows)
                         </h3>
                         <p className="text-xs text-gray-500 mt-1">
                           Verify columns, detected types and values before upload.
@@ -1187,8 +1638,8 @@ export default function JobList() {
                             <div className="text-xs font-semibold">{previewColumns.length}</div>
                           </div>
                           <div className="border border-[#E5E7EB] rounded bg-white p-2">
-                            <div className="text-[10px] uppercase text-gray-500">Rows Shown</div>
-                            <div className="text-xs font-semibold">{previewRows.length}</div>
+                            <div className="text-[10px] uppercase text-gray-500">Rows Found</div>
+                            <div className="text-xs font-semibold">{previewTotalRows}</div>
                           </div>
                         </div>
                       </div>
@@ -1283,6 +1734,7 @@ export default function JobList() {
                             setPreviewColumns([]);
                             setPreviewColumnTypes({});
                             setPreviewRows([]);
+                            setPreviewTotalRows(0);
                             setPreviewEditable([]);
                             setPreviewPage(1);
                           }}
@@ -1302,127 +1754,6 @@ export default function JobList() {
                     </>
                   )}
                 </div>
-              )}
-
-              {/* TAB 2: CONNECT DB */}
-              {addModalTab === "connect" && (
-                <div className="flex flex-col gap-4">
-                  <div>
-                    <label className="text-[10px] uppercase text-gray-500 font-bold">
-                      Connection Name
-                    </label>
-                    <input
-                      className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none"
-                      placeholder="e.g. PROD_POSTGRES"
-                      value={connectionName}
-                      onChange={(e) => setConnectionName(e.target.value)}
-                    />
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-[10px] uppercase text-gray-500 font-bold">
-                        Host
-                      </label>
-                      <input
-                        className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none"
-                        placeholder="localhost"
-                        value={dbCreds.host}
-                        onChange={(e) =>
-                          setDbCreds((prev) => ({ ...prev, host: e.target.value }))
-                        }
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] uppercase text-gray-500 font-bold">
-                        Port
-                      </label>
-                      <input
-                        className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none"
-                        placeholder="5432"
-                        value={dbCreds.port}
-                        onChange={(e) =>
-                          setDbCreds((prev) => ({ ...prev, port: e.target.value }))
-                        }
-                      />
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-[10px] uppercase text-gray-500 font-bold">
-                        Username
-                      </label>
-                      <input
-                        className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none"
-                        placeholder="postgres"
-                        value={dbCreds.user}
-                        onChange={(e) =>
-                          setDbCreds((prev) => ({ ...prev, user: e.target.value }))
-                        }
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] uppercase text-gray-500 font-bold">
-                        Password
-                      </label>
-                      <input
-                        type="password"
-                        className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none"
-                        placeholder="••••••••"
-                        value={dbCreds.pass}
-                        onChange={(e) =>
-                          setDbCreds((prev) => ({ ...prev, pass: e.target.value }))
-                        }
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="text-[10px] uppercase text-gray-500 font-bold">
-                      Database
-                    </label>
-                    <input
-                      className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none"
-                      placeholder="e.g. mdms"
-                      value={dbCreds.dbname}
-                      onChange={(e) =>
-                        setDbCreds((prev) => ({ ...prev, dbname: e.target.value }))
-                      }
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] uppercase text-gray-500 font-bold">
-                      Saved Connections
-                    </label>
-                    <div className="border border-[#A1A3AF] p-2 max-h-28 overflow-y-auto text-sm">
-                      {savedConnections.length === 0 ? (
-                        <span className="text-gray-500">No saved connections yet.</span>
-                      ) : (
-                        savedConnections.map((c) => (
-                          <div key={c.connection_id} className="py-1">
-                            {c.connection_name} ({c.host}:{c.port})
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <button
-                      onClick={handleTestConnection}
-                      className="w-full mt-2 py-3 bg-white border border-[#23243B] text-[#23243B] text-sm font-bold uppercase tracking-widest hover:bg-gray-50"
-                    >
-                      Test Connection
-                    </button>
-                    <button
-                      onClick={handleSaveConnection}
-                      className="w-full mt-2 py-3 bg-[#23243B] text-white text-sm font-bold uppercase tracking-widest hover:bg-black"
-                    >
-                      Save Connection
-                    </button>
-                  </div>
-                  <span className="text-[10px] text-center text-gray-400 uppercase tracking-widest mt-2">
-                    Save once here, then use DB Connected in Create Job.
-                  </span>
-                </div>
-              )}
             </div>
           </div>
         </div>

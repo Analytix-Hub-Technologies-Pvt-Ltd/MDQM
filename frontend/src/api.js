@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_URL = 'http://localhost:8000';
+const API_URL = 'http://127.0.0.1:8000';
 
 // --- JOBS ---
 export const getAllJobs = async () => {
@@ -96,6 +96,14 @@ export const connectToDb = async (credentials) => {
 
 export const listDatabases = async (credentials) => {
     return axios.post(`${API_URL}/db/list-databases`, credentials);
+};
+
+export const listSchemasTables = async (payload) => {
+    return axios.post(`${API_URL}/db/list-schemas-tables`, payload);
+};
+
+export const previewDbTable = async (payload) => {
+    return axios.post(`${API_URL}/db/preview-table`, payload);
 };
 
 export const listSavedConnections = async () => {
