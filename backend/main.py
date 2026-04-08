@@ -92,6 +92,8 @@ class DbConnectPayload(BaseModel):
     password: Optional[str] = Field(default=None, alias="pass")
     dbname: Optional[str] = None
     dbnames: Optional[List[str]] = None
+    schema_name: Optional[str] = "public"
+    table_names: Optional[List[str]] = None
     connection_id: Optional[int] = None
 
 class DbListPayload(BaseModel):
@@ -99,6 +101,7 @@ class DbListPayload(BaseModel):
     port: str = "5432"
     user: Optional[str] = None
     password: Optional[str] = Field(default=None, alias="pass")
+    dbname: Optional[str] = None
     connection_id: Optional[int] = None
 
 class DbConnectionSavePayload(BaseModel):
@@ -151,6 +154,88 @@ def create_job(payload: JobCreate, db: Session = Depends(get_db)):
 @app.post("/db/connect")
 def connect_db_and_create_pipeline(payload: DbConnectPayload, db: Session = Depends(get_db)):
     host, port, user, db_password = _resolve_connection_details(db, payload)
+    if payload.dbname and payload.table_names:
+        db_name = payload.dbname
+        schema_name = (payload.schema_name or "public").strip() or "public"
+        selected_tables = [t for t in (payload.table_names or []) if t]
+        if not selected_tables:
+            raise HTTPException(status_code=400, detail="Select at least one table.")
+
+        ext_url = (
+            f"postgresql://{quote_plus(user)}:{quote_plus(db_password)}"
+            f"@{host}:{port}/{db_name}"
+        )
+        try:
+            ext_engine = sa_create_engine(ext_url)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"DB connection failed for {db_name}: {str(e)}")
+
+        new_job = models.Job(job_name=payload.job_name, status="Pending")
+        db.add(new_job)
+        db.commit()
+        db.refresh(new_job)
+
+        upload_dir = "uploads"
+        os.makedirs(upload_dir, exist_ok=True)
+        imported = 0
+        for idx, table_name in enumerate(selected_tables, start=1):
+            try:
+                query = f'SELECT * FROM "{schema_name}"."{table_name}"'
+                df = pd.read_sql(query, ext_engine)
+            except Exception:
+                continue
+
+            stored_table_name = f"{db_name}__{schema_name}__{table_name}"
+            csv_path = os.path.join(upload_dir, f"{stored_table_name}.csv")
+            df.to_csv(csv_path, index=False)
+
+            db.add(
+                models.TableMetadata(
+                    job_id=new_job.job_id,
+                    table_id=idx,
+                    table_name=stored_table_name,
+                    row_count=len(df)
+                )
+            )
+            db.flush()
+
+            for col_name, dtype in df.dtypes.items():
+                str_type = "String"
+                if "int" in str(dtype):
+                    str_type = "Integer"
+                elif "float" in str(dtype):
+                    str_type = "Float"
+                elif "datetime" in str(dtype):
+                    str_type = "Date"
+                elif "bool" in str(dtype):
+                    str_type = "Boolean"
+                db.add(
+                    models.ColumnMetadata(
+                        job_id=new_job.job_id,
+                        table_id=idx,
+                        column_name=col_name,
+                        data_type=str_type
+                    )
+                )
+            imported += 1
+
+        db.commit()
+        if imported == 0:
+            raise HTTPException(status_code=400, detail="Connected, but unable to import selected tables.")
+        return {
+            "created_jobs": [
+                {
+                    "job_id": new_job.job_id,
+                    "job_name": new_job.job_name,
+                    "database": db_name,
+                    "schema": schema_name,
+                    "imported_tables": imported,
+                }
+            ],
+            "imported_tables": imported,
+            "message": f"Created job from {imported} selected table(s)."
+        }
+
     selected_databases = payload.dbnames or ([payload.dbname] if payload.dbname else [])
     selected_databases = [d for d in selected_databases if d]
     if not selected_databases:
@@ -263,6 +348,46 @@ def list_databases(payload: DbListPayload, db: Session = Depends(get_db)):
         return {"databases": db_names}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Unable to fetch databases: {str(e)}")
+
+@app.post("/db/list-schemas-tables")
+def list_schemas_tables(payload: DbListPayload, db: Session = Depends(get_db)):
+    host, port, user, db_password = _resolve_connection_details(db, payload)
+    if not payload.dbname:
+        raise HTTPException(status_code=400, detail="dbname is required.")
+    ext_url = (
+        f"postgresql://{quote_plus(user)}:{quote_plus(db_password)}"
+        f"@{host}:{port}/{payload.dbname}"
+    )
+    try:
+        ext_engine = sa_create_engine(ext_url)
+        schemas_df = pd.read_sql(
+            """
+            SELECT schema_name
+            FROM information_schema.schemata
+            WHERE schema_name NOT IN ('pg_catalog', 'information_schema')
+            ORDER BY schema_name
+            """,
+            ext_engine
+        )
+        table_rows = pd.read_sql(
+            """
+            SELECT table_schema, table_name
+            FROM information_schema.tables
+            WHERE table_type='BASE TABLE'
+              AND table_schema NOT IN ('pg_catalog', 'information_schema')
+            ORDER BY table_schema, table_name
+            """,
+            ext_engine
+        )
+        schema_names = schemas_df["schema_name"].astype(str).tolist()
+        tables_by_schema = {}
+        for _, row in table_rows.iterrows():
+            schema = str(row["table_schema"])
+            table_name = str(row["table_name"])
+            tables_by_schema.setdefault(schema, []).append(table_name)
+        return {"schemas": schema_names, "tables_by_schema": tables_by_schema}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Unable to fetch schemas/tables: {str(e)}")
 
 @app.get("/db/connections")
 def get_saved_connections(db: Session = Depends(get_db)):
@@ -394,6 +519,54 @@ def _apply_preview_edits(df: pd.DataFrame, preview_edits: List[dict]) -> pd.Data
     return df
 
 
+def _infer_preview_type(series: pd.Series) -> str:
+    raw_dtype = str(series.dtype).lower()
+    if "int" in raw_dtype:
+        return "int64"
+    if "float" in raw_dtype:
+        return "float64"
+    if "datetime" in raw_dtype or "date" in raw_dtype:
+        return "datetime64[ns]"
+    if "bool" in raw_dtype:
+        return "bool"
+
+    s = series.dropna().astype(str).str.strip()
+    s = s[s != ""]
+    if s.empty:
+        return "string"
+
+    lowered = s.str.lower()
+    bool_values = {"true", "false", "yes", "no", "1", "0"}
+    if lowered.isin(bool_values).all():
+        return "bool"
+
+    numeric = pd.to_numeric(s, errors="coerce")
+    if (numeric.notna().mean()) >= 0.9:
+        non_null = numeric.dropna()
+        if not non_null.empty and (non_null % 1 == 0).all():
+            return "int64"
+        return "float64"
+
+    dates = pd.to_datetime(s, errors="coerce", format="mixed", dayfirst=True)
+    if (dates.notna().mean()) >= 0.9:
+        return "datetime64[ns]"
+
+    return "string"
+
+
+def _to_metadata_type(series: pd.Series) -> str:
+    inferred = _infer_preview_type(series)
+    if inferred == "int64":
+        return "Integer"
+    if inferred == "float64":
+        return "Float"
+    if inferred == "datetime64[ns]":
+        return "Date"
+    if inferred == "bool":
+        return "Boolean"
+    return "String"
+
+
 @app.post("/jobs/{job_id}/upload")
 async def upload_file(
     job_id: int,
@@ -463,7 +636,7 @@ async def upload_file(
         # ==========================================================
 
         row_count = len(df)
-        columns = df.dtypes.items()
+        metadata_columns = [(col_name, _to_metadata_type(df[col_name])) for col_name in df.columns]
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid File format: {str(e)}")
 
@@ -476,13 +649,7 @@ async def upload_file(
     db.add(new_table)
     db.commit()
 
-    for col_name, dtype in columns:
-        str_type = "String"
-        if "int" in str(dtype): str_type = "Integer"
-        elif "float" in str(dtype): str_type = "Float"
-        elif "datetime" in str(dtype): str_type = "Date"
-        elif "bool" in str(dtype): str_type = "Boolean"
-
+    for col_name, str_type in metadata_columns:
         col_meta = models.ColumnMetadata(
             job_id=job_id,
             table_id=next_table_id,
@@ -500,15 +667,24 @@ async def preview_file(file: UploadFile = File(...)):
         name = (file.filename or "").lower()
         if name.endswith(".xlsx") or name.endswith(".xls"):
             df = pd.read_excel(file.file, nrows=11)
+            file.file.seek(0)
+            total_rows = len(pd.read_excel(file.file))
         else:
             df = pd.read_csv(file.file, nrows=11)
-        column_types = {str(col): str(dtype) for col, dtype in df.dtypes.items()}
+            file.file.seek(0)
+            try:
+                total_rows = len(pd.read_csv(file.file))
+            except Exception:
+                file.file.seek(0)
+                total_rows = len(pd.read_csv(file.file, engine="python", on_bad_lines="skip", encoding_errors="ignore"))
+        column_types = {str(col): _infer_preview_type(df[col]) for col in df.columns}
         df = df.fillna("")
         return {
             "columns": [str(c) for c in df.columns.tolist()],
             "column_types": column_types,
             "rows": df.astype(str).to_dict(orient="records"),
             "preview_rows": len(df),
+            "total_rows": int(total_rows),
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Preview failed: {str(e)}")
