@@ -2,14 +2,18 @@ from datetime import datetime
 from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import func, distinct, inspect, update, create_engine as sa_create_engine, text
-from pydantic import BaseModel, Field
+from sqlalchemy import func, distinct, inspect, update, create_engine
+from pydantic import BaseModel
 from typing import List, Optional
 import shutil
 import os
 import json
-import pandas as pd
+import psycopg2
+from psycopg2 import sql as psql
 from urllib.parse import quote_plus
+import smtplib
+from email.message import EmailMessage
+import pandas as pd
 import models
 from database import SessionLocal, engine
 from engine.orchestrator import run_data_quality_job
@@ -30,11 +34,19 @@ models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Data Quality Engine")
 
-# --- 1. ENABLE CORS (FIXED PORT) ---
+# --- 1. ENABLE CORS ---
+# Vite picks the next free port if 5173 is busy (e.g. 5174), so allow common dev origins.
+_DEV_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+for _host in ("localhost", "127.0.0.1"):
+    for _port in (5173, 5174, 5175, 5176):
+        _DEV_ORIGINS.append(f"http://{_host}:{_port}")
+
 app.add_middleware(
     CORSMiddleware,
-    # Allow BOTH React ports to be safe
-    allow_origins=["http://localhost:3000", "http://localhost:5173"], 
+    allow_origins=_DEV_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -84,63 +96,316 @@ class FuzzyReplace(BaseModel):
 class JobCreate(BaseModel):
     job_name: str
 
-class DbConnectPayload(BaseModel):
-    job_name: str
-    host: Optional[str] = None
-    port: str = "5432"
-    user: Optional[str] = None
-    password: Optional[str] = Field(default=None, alias="pass")
-    dbname: Optional[str] = None
-    dbnames: Optional[List[str]] = None
-    schema_name: Optional[str] = "public"
-    table_names: Optional[List[str]] = None
-    connection_id: Optional[int] = None
+# Saved DB connections (local dev file; avoids extra DB migration)
+CONNECTIONS_FILE = os.path.join(os.path.dirname(__file__), "saved_connections.json")
 
-class DbListPayload(BaseModel):
-    host: Optional[str] = None
-    port: str = "5432"
-    user: Optional[str] = None
-    password: Optional[str] = Field(default=None, alias="pass")
-    dbname: Optional[str] = None
-    connection_id: Optional[int] = None
 
-class DbConnectionSavePayload(BaseModel):
-    connection_name: str
-    host: str
-    port: str = "5432"
-    user: str
-    password: Optional[str] = Field(default=None, alias="pass")
+def _read_saved_connections():
+    if not os.path.exists(CONNECTIONS_FILE):
+        return []
+    try:
+        with open(CONNECTIONS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except Exception:
+        return []
 
-class DbConnectionTestPayload(BaseModel):
-    host: str
-    port: str = "5432"
-    user: str
-    password: Optional[str] = Field(default=None, alias="pass")
 
-def _resolve_connection_details(db: Session, payload) -> tuple[str, str, str, str]:
-    if getattr(payload, "connection_id", None):
-        conn = db.query(models.DbConnection).filter(models.DbConnection.connection_id == payload.connection_id).first()
-        if not conn:
-            raise HTTPException(status_code=404, detail="Saved DB connection not found.")
-        conn_password = (conn.password or "").strip()
-        if not conn_password and conn.host in ["localhost", "127.0.0.1"] and conn.username == "postgres":
-            conn_password = os.getenv("POSTGRES_PASSWORD", "")
-        return conn.host, conn.port, conn.username, conn_password
+def _write_saved_connections(items):
+    with open(CONNECTIONS_FILE, "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=True, indent=2)
 
-    host = getattr(payload, "host", None)
-    user = getattr(payload, "user", None)
-    port = getattr(payload, "port", "5432")
-    password = getattr(payload, "password", None) or ""
-    if not password and host in ["localhost", "127.0.0.1"] and user == "postgres":
-        password = os.getenv("POSTGRES_PASSWORD", "")
-    if not host or not user:
-        raise HTTPException(status_code=400, detail="Provide connection_id or host/user credentials.")
-    return host, port, user, password
+
 # --- 3. API ENDPOINTS ---
 
 @app.get("/")
 def read_root():
     return {"message": "MDQM Backend is Live"}
+
+
+@app.post("/files/preview")
+async def preview_file(file: UploadFile = File(...)):
+    """Return first rows + inferred column types for CSV / Excel (matches frontend JobList preview)."""
+    try:
+        if file.filename.lower().endswith((".xlsx", ".xls")):
+            df = pd.read_excel(file.file)
+        else:
+            df = pd.read_csv(file.file)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid file: {str(e)}")
+
+    rows = df.head(11).fillna("").to_dict(orient="records")
+    column_types = {col: str(dtype) for col, dtype in df.dtypes.items()}
+    return {
+        "columns": df.columns.tolist(),
+        "column_types": column_types,
+        "rows": rows,
+        "total_rows": int(len(df)),
+    }
+
+
+@app.get("/db/connections")
+def list_db_connections():
+    items = _read_saved_connections()
+    return [
+        {
+            "connection_id": item.get("connection_id"),
+            "connection_name": item.get("connection_name", ""),
+            "host": item.get("host", ""),
+            "port": item.get("port", "5432"),
+            "user": item.get("user", ""),
+        }
+        for item in items
+    ]
+
+
+@app.post("/db/connections")
+def save_db_connection(payload: dict = Body(...)):
+    items = _read_saved_connections()
+    next_id = max([int(i.get("connection_id", 0)) for i in items] + [0]) + 1
+    new_item = {
+        "connection_id": next_id,
+        "connection_name": payload.get("connection_name", ""),
+        "host": payload.get("host", ""),
+        "port": str(payload.get("port", "5432")),
+        "user": payload.get("user", ""),
+        "pass": payload.get("pass", ""),
+    }
+    items.append(new_item)
+    _write_saved_connections(items)
+    return {"message": "Connection saved", "connection_id": next_id}
+
+
+@app.post("/db/test-connection")
+def test_db_connection(payload: dict = Body(...)):
+    host = payload.get("host")
+    port = str(payload.get("port", "5432"))
+    user = payload.get("user")
+    password = payload.get("pass", "")
+    dbname = payload.get("dbname") or "postgres"
+
+    if not host or not user:
+        raise HTTPException(status_code=400, detail="host and user are required")
+
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            dbname=dbname,
+            connect_timeout=6,
+        )
+        return {"ok": True, "message": "Connection successful"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Connection failed: {str(e)}")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _resolve_connection_payload(payload: dict):
+    """Resolve credentials from direct fields or saved connection id."""
+    connection_id = payload.get("connection_id")
+    if connection_id is not None:
+        items = _read_saved_connections()
+        selected = next(
+            (i for i in items if str(i.get("connection_id")) == str(connection_id)),
+            None,
+        )
+        if not selected:
+            raise HTTPException(status_code=404, detail="Saved connection not found")
+        return {
+            "host": selected.get("host"),
+            "port": str(selected.get("port", "5432")),
+            "user": selected.get("user"),
+            "pass": selected.get("pass", ""),
+            "dbname": payload.get("dbname"),
+        }
+
+    return {
+        "host": payload.get("host"),
+        "port": str(payload.get("port", "5432")),
+        "user": payload.get("user"),
+        "pass": payload.get("pass", ""),
+        "dbname": payload.get("dbname"),
+    }
+
+
+@app.post("/db/list-schemas-tables")
+def list_schemas_tables(payload: dict = Body(...)):
+    creds = _resolve_connection_payload(payload)
+    if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
+        raise HTTPException(
+            status_code=400,
+            detail="host, user, and dbname are required (or provide connection_id + dbname)",
+        )
+
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            host=creds["host"],
+            port=creds["port"],
+            user=creds["user"],
+            password=creds["pass"],
+            dbname=creds["dbname"],
+            connect_timeout=8,
+        )
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT schema_name
+            FROM information_schema.schemata
+            WHERE schema_name NOT IN ('pg_catalog', 'information_schema')
+            ORDER BY schema_name
+            """
+        )
+        schemas = [row[0] for row in cur.fetchall()]
+
+        tables_by_schema = {}
+        for schema in schemas:
+            cur.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = %s
+                  AND table_type = 'BASE TABLE'
+                ORDER BY table_name
+                """,
+                (schema,),
+            )
+            tables_by_schema[schema] = [row[0] for row in cur.fetchall()]
+
+        cur.close()
+        return {"schemas": schemas, "tables_by_schema": tables_by_schema}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to list schemas/tables: {str(e)}")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+@app.post("/db/lookup-values")
+def db_lookup_values(payload: dict = Body(...)):
+    """
+    Fetch distinct values from a selected schema.table.column for fuzzy lookup.
+    """
+    creds = _resolve_connection_payload(payload)
+    schema_name = payload.get("schema_name")
+    table_name = payload.get("table_name")
+    column_name = payload.get("column_name")
+    raw_limit = payload.get("limit")
+    limit = None
+    if isinstance(raw_limit, str):
+        raw_limit = raw_limit.strip()
+    if raw_limit not in (None, ""):
+        try:
+            parsed = int(raw_limit)
+            if parsed > 0:
+                limit = parsed
+        except Exception:
+            raise HTTPException(status_code=400, detail="limit must be a positive integer")
+
+    if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
+        raise HTTPException(
+            status_code=400,
+            detail="host, user, and dbname are required (or provide connection_id + dbname)",
+        )
+    if not schema_name or not table_name or not column_name:
+        raise HTTPException(
+            status_code=400,
+            detail="schema_name, table_name, and column_name are required",
+        )
+
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            host=creds["host"],
+            port=creds["port"],
+            user=creds["user"],
+            password=creds["pass"],
+            dbname=creds["dbname"],
+            connect_timeout=8,
+        )
+        cur = conn.cursor()
+        # Cast to TEXT to avoid type-specific ORDER BY/DISTINCT issues.
+        base_query = psql.SQL(
+            """
+            SELECT DISTINCT CAST({col} AS TEXT) AS value
+            FROM {schema}.{table}
+            WHERE {col} IS NOT NULL
+            ORDER BY value
+            """
+        ).format(
+            col=psql.Identifier(column_name),
+            schema=psql.Identifier(schema_name),
+            table=psql.Identifier(table_name),
+        )
+        if limit is None:
+            cur.execute(base_query)
+        else:
+            cur.execute(
+                psql.SQL("{} LIMIT %s").format(base_query),
+                (limit,),
+            )
+        values = [str(row[0]).strip() for row in cur.fetchall() if str(row[0]).strip()]
+        cur.close()
+        return {"values": values}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to fetch lookup values: {str(e)}")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+@app.post("/db/table-columns")
+def db_table_columns(payload: dict = Body(...)):
+    """
+    List column names for a selected schema.table.
+    """
+    creds = _resolve_connection_payload(payload)
+    schema_name = payload.get("schema_name")
+    table_name = payload.get("table_name")
+
+    if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
+        raise HTTPException(
+            status_code=400,
+            detail="host, user, and dbname are required (or provide connection_id + dbname)",
+        )
+    if not schema_name or not table_name:
+        raise HTTPException(status_code=400, detail="schema_name and table_name are required")
+
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            host=creds["host"],
+            port=creds["port"],
+            user=creds["user"],
+            password=creds["pass"],
+            dbname=creds["dbname"],
+            connect_timeout=8,
+        )
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = %s
+              AND table_name = %s
+            ORDER BY ordinal_position
+            """,
+            (schema_name, table_name),
+        )
+        columns = [row[0] for row in cur.fetchall()]
+        cur.close()
+        return {"columns": columns}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to fetch table columns: {str(e)}")
+    finally:
+        if conn is not None:
+            conn.close()
+
 
 @app.post("/jobs/create")
 def create_job(payload: JobCreate, db: Session = Depends(get_db)):
@@ -151,429 +416,9 @@ def create_job(payload: JobCreate, db: Session = Depends(get_db)):
     db.refresh(new_job)
     return {"job_id": new_job.job_id, "message": "Job Created"}
 
-@app.post("/db/connect")
-def connect_db_and_create_pipeline(payload: DbConnectPayload, db: Session = Depends(get_db)):
-    host, port, user, db_password = _resolve_connection_details(db, payload)
-    if payload.dbname and payload.table_names:
-        db_name = payload.dbname
-        schema_name = (payload.schema_name or "public").strip() or "public"
-        selected_tables = [t for t in (payload.table_names or []) if t]
-        if not selected_tables:
-            raise HTTPException(status_code=400, detail="Select at least one table.")
-
-        ext_url = (
-            f"postgresql://{quote_plus(user)}:{quote_plus(db_password)}"
-            f"@{host}:{port}/{db_name}"
-        )
-        try:
-            ext_engine = sa_create_engine(ext_url)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"DB connection failed for {db_name}: {str(e)}")
-
-        new_job = models.Job(job_name=payload.job_name, status="Pending")
-        db.add(new_job)
-        db.commit()
-        db.refresh(new_job)
-
-        upload_dir = "uploads"
-        os.makedirs(upload_dir, exist_ok=True)
-        imported = 0
-        for idx, table_name in enumerate(selected_tables, start=1):
-            try:
-                query = f'SELECT * FROM "{schema_name}"."{table_name}"'
-                df = pd.read_sql(query, ext_engine)
-            except Exception:
-                continue
-
-            stored_table_name = f"{db_name}__{schema_name}__{table_name}"
-            csv_path = os.path.join(upload_dir, f"{stored_table_name}.csv")
-            df.to_csv(csv_path, index=False)
-
-            db.add(
-                models.TableMetadata(
-                    job_id=new_job.job_id,
-                    table_id=idx,
-                    table_name=stored_table_name,
-                    row_count=len(df)
-                )
-            )
-            db.flush()
-
-            for col_name, dtype in df.dtypes.items():
-                str_type = "String"
-                if "int" in str(dtype):
-                    str_type = "Integer"
-                elif "float" in str(dtype):
-                    str_type = "Float"
-                elif "datetime" in str(dtype):
-                    str_type = "Date"
-                elif "bool" in str(dtype):
-                    str_type = "Boolean"
-                db.add(
-                    models.ColumnMetadata(
-                        job_id=new_job.job_id,
-                        table_id=idx,
-                        column_name=col_name,
-                        data_type=str_type
-                    )
-                )
-            imported += 1
-
-        db.commit()
-        if imported == 0:
-            raise HTTPException(status_code=400, detail="Connected, but unable to import selected tables.")
-        return {
-            "created_jobs": [
-                {
-                    "job_id": new_job.job_id,
-                    "job_name": new_job.job_name,
-                    "database": db_name,
-                    "schema": schema_name,
-                    "imported_tables": imported,
-                }
-            ],
-            "imported_tables": imported,
-            "message": f"Created job from {imported} selected table(s)."
-        }
-
-    selected_databases = payload.dbnames or ([payload.dbname] if payload.dbname else [])
-    selected_databases = [d for d in selected_databases if d]
-    if not selected_databases:
-        raise HTTPException(status_code=400, detail="Select at least one database.")
-
-    upload_dir = "uploads"
-    os.makedirs(upload_dir, exist_ok=True)
-
-    created_jobs = []
-    total_imported_tables = 0
-
-    for db_name in selected_databases:
-        ext_url = (
-            f"postgresql://{quote_plus(user)}:{quote_plus(db_password)}"
-            f"@{host}:{port}/{db_name}"
-        )
-
-        try:
-            ext_engine = sa_create_engine(ext_url)
-            ext_inspector = inspect(ext_engine)
-            table_names = ext_inspector.get_table_names(schema="public")
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"DB connection failed for {db_name}: {str(e)}")
-
-        if not table_names:
-            continue
-
-        job_name = payload.job_name if len(selected_databases) == 1 else f"{payload.job_name}_{db_name}"
-        new_job = models.Job(job_name=job_name, status="Pending")
-        db.add(new_job)
-        db.commit()
-        db.refresh(new_job)
-
-        imported = 0
-        for idx, table_name in enumerate(table_names, start=1):
-            try:
-                query = f'SELECT * FROM "public"."{table_name}"'
-                df = pd.read_sql(query, ext_engine)
-            except Exception:
-                continue
-
-            stored_table_name = f"{db_name}__{table_name}"
-            csv_path = os.path.join(upload_dir, f"{stored_table_name}.csv")
-            df.to_csv(csv_path, index=False)
-
-            table_meta = models.TableMetadata(
-                job_id=new_job.job_id,
-                table_id=idx,
-                table_name=stored_table_name,
-                row_count=len(df)
-            )
-            db.add(table_meta)
-            db.flush()
-
-            for col_name, dtype in df.dtypes.items():
-                str_type = "String"
-                if "int" in str(dtype):
-                    str_type = "Integer"
-                elif "float" in str(dtype):
-                    str_type = "Float"
-                elif "datetime" in str(dtype):
-                    str_type = "Date"
-                elif "bool" in str(dtype):
-                    str_type = "Boolean"
-
-                db.add(
-                    models.ColumnMetadata(
-                        job_id=new_job.job_id,
-                        table_id=idx,
-                        column_name=col_name,
-                        data_type=str_type
-                    )
-                )
-            imported += 1
-
-        db.commit()
-        if imported > 0:
-            total_imported_tables += imported
-            created_jobs.append(
-                {"job_id": new_job.job_id, "job_name": new_job.job_name, "database": db_name, "imported_tables": imported}
-            )
-
-    if not created_jobs:
-        raise HTTPException(status_code=400, detail="Connected, but unable to import any tables from selected databases.")
-
-    return {
-        "created_jobs": created_jobs,
-        "imported_tables": total_imported_tables,
-        "message": f"Created {len(created_jobs)} pipeline(s) from selected database(s)."
-    }
-
-@app.post("/db/list-databases")
-def list_databases(payload: DbListPayload, db: Session = Depends(get_db)):
-    host, port, user, db_password = _resolve_connection_details(db, payload)
-    admin_url = (
-        f"postgresql://{quote_plus(user)}:{quote_plus(db_password)}"
-        f"@{host}:{port}/postgres"
-    )
-
-    try:
-        admin_engine = sa_create_engine(admin_url)
-        query = """
-            SELECT datname
-            FROM pg_database
-            WHERE datistemplate = false
-            ORDER BY datname
-        """
-        df = pd.read_sql(query, admin_engine)
-        db_names = df["datname"].astype(str).tolist()
-        return {"databases": db_names}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Unable to fetch databases: {str(e)}")
-
-@app.post("/db/list-schemas-tables")
-def list_schemas_tables(payload: DbListPayload, db: Session = Depends(get_db)):
-    host, port, user, db_password = _resolve_connection_details(db, payload)
-    if not payload.dbname:
-        raise HTTPException(status_code=400, detail="dbname is required.")
-    ext_url = (
-        f"postgresql://{quote_plus(user)}:{quote_plus(db_password)}"
-        f"@{host}:{port}/{payload.dbname}"
-    )
-    try:
-        ext_engine = sa_create_engine(ext_url)
-        schemas_df = pd.read_sql(
-            """
-            SELECT schema_name
-            FROM information_schema.schemata
-            WHERE schema_name NOT IN ('pg_catalog', 'information_schema')
-            ORDER BY schema_name
-            """,
-            ext_engine
-        )
-        table_rows = pd.read_sql(
-            """
-            SELECT table_schema, table_name
-            FROM information_schema.tables
-            WHERE table_type='BASE TABLE'
-              AND table_schema NOT IN ('pg_catalog', 'information_schema')
-            ORDER BY table_schema, table_name
-            """,
-            ext_engine
-        )
-        schema_names = schemas_df["schema_name"].astype(str).tolist()
-        tables_by_schema = {}
-        for _, row in table_rows.iterrows():
-            schema = str(row["table_schema"])
-            table_name = str(row["table_name"])
-            tables_by_schema.setdefault(schema, []).append(table_name)
-        return {"schemas": schema_names, "tables_by_schema": tables_by_schema}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Unable to fetch schemas/tables: {str(e)}")
-
-@app.get("/db/connections")
-def get_saved_connections(db: Session = Depends(get_db)):
-    connections = db.query(models.DbConnection).order_by(models.DbConnection.connection_name.asc()).all()
-    return [
-        {
-            "connection_id": c.connection_id,
-            "connection_name": c.connection_name,
-            "host": c.host,
-            "port": c.port,
-            "user": c.username
-        }
-        for c in connections
-    ]
-
-@app.post("/db/connections")
-def save_connection(payload: DbConnectionSavePayload, db: Session = Depends(get_db)):
-    existing = db.query(models.DbConnection).filter(models.DbConnection.connection_name == payload.connection_name).first()
-    if existing:
-        existing.host = payload.host
-        existing.port = payload.port
-        existing.username = payload.user
-        if payload.password is not None:
-            existing.password = payload.password
-        db.commit()
-        return {"connection_id": existing.connection_id, "message": "Connection updated."}
-    conn = models.DbConnection(
-        connection_name=payload.connection_name,
-        host=payload.host,
-        port=payload.port,
-        username=payload.user,
-        password=payload.password or ""
-    )
-    db.add(conn)
-    db.commit()
-    db.refresh(conn)
-    return {"connection_id": conn.connection_id, "message": "Connection saved."}
-
-@app.post("/db/test-connection")
-def test_connection(payload: DbConnectionTestPayload):
-    resolved_password = payload.password or ""
-    if not resolved_password and payload.host in ["localhost", "127.0.0.1"] and payload.user == "postgres":
-        resolved_password = os.getenv("POSTGRES_PASSWORD", "")
-    admin_url = (
-        f"postgresql://{quote_plus(payload.user)}:{quote_plus(resolved_password)}"
-        f"@{payload.host}:{payload.port}/postgres"
-    )
-    try:
-        test_engine = sa_create_engine(admin_url)
-        with test_engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
-        return {"message": "Connection successful."}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Connection test failed: {str(e)}")
-
 # 1. FIX: Changed the URL to match the frontend exactly
-def _apply_preview_edits(df: pd.DataFrame, preview_edits: List[dict]) -> pd.DataFrame:
-    if not preview_edits:
-        return df
-
-    # Ensure columns are unique to avoid pandas returning DataFrame for df[col]
-    # when duplicate labels exist.
-    seen = {}
-    unique_cols = []
-    for col in [str(c) for c in df.columns]:
-        count = seen.get(col, 0) + 1
-        seen[col] = count
-        unique_cols.append(col if count == 1 else f"{col}_{count}")
-    df.columns = unique_cols
-
-    rename_map = {}
-    used_names = set(str(c) for c in df.columns)
-    for edit in preview_edits:
-        if not isinstance(edit, dict):
-            continue
-        old_name = (edit.get("originalName") or "").strip()
-        new_name = (edit.get("name") or old_name).strip()
-        if old_name and new_name and old_name in df.columns and old_name != new_name:
-            candidate = new_name
-            suffix = 1
-            while candidate in used_names and candidate != old_name:
-                suffix += 1
-                candidate = f"{new_name}_{suffix}"
-            rename_map[old_name] = candidate
-            used_names.add(candidate)
-    if rename_map:
-        df = df.rename(columns=rename_map)
-
-    for edit in preview_edits:
-        if not isinstance(edit, dict):
-            continue
-        old_name = (edit.get("originalName") or "").strip()
-        new_name = (edit.get("name") or "").strip()
-        col_name = new_name if new_name in df.columns else old_name
-        if not col_name or col_name not in df.columns:
-            continue
-
-        if len(df.index) > 0 and "value" in edit:
-            # Cast to object before assignment to avoid strict dtype write errors
-            # (example: writing "2011" into an int64 column).
-            try:
-                df[col_name] = df[col_name].astype("object")
-            except Exception:
-                pass
-            df.loc[df.index[0], col_name] = edit.get("value")
-
-        requested_type = str(edit.get("dataType") or "").strip().lower()
-        try:
-            if requested_type in ["integer", "int", "int64"]:
-                df[col_name] = pd.to_numeric(df[col_name], errors="coerce").astype("Int64")
-            elif requested_type in ["float", "double", "float64"]:
-                df[col_name] = pd.to_numeric(df[col_name], errors="coerce")
-            elif requested_type in ["date", "datetime", "timestamp"]:
-                df[col_name] = pd.to_datetime(df[col_name], errors="coerce")
-            elif requested_type in ["boolean", "bool"]:
-                df[col_name] = (
-                    df[col_name]
-                    .astype(str)
-                    .str.strip()
-                    .str.lower()
-                    .map({"true": True, "1": True, "yes": True, "false": False, "0": False, "no": False})
-                )
-            elif requested_type in ["string", "str", "object", "text"]:
-                df[col_name] = df[col_name].astype(str)
-        except Exception:
-            # Keep upload resilient even if one column conversion fails.
-            pass
-
-    return df
-
-
-def _infer_preview_type(series: pd.Series) -> str:
-    raw_dtype = str(series.dtype).lower()
-    if "int" in raw_dtype:
-        return "int64"
-    if "float" in raw_dtype:
-        return "float64"
-    if "datetime" in raw_dtype or "date" in raw_dtype:
-        return "datetime64[ns]"
-    if "bool" in raw_dtype:
-        return "bool"
-
-    s = series.dropna().astype(str).str.strip()
-    s = s[s != ""]
-    if s.empty:
-        return "string"
-
-    lowered = s.str.lower()
-    bool_values = {"true", "false", "yes", "no", "1", "0"}
-    if lowered.isin(bool_values).all():
-        return "bool"
-
-    numeric = pd.to_numeric(s, errors="coerce")
-    if (numeric.notna().mean()) >= 0.9:
-        non_null = numeric.dropna()
-        if not non_null.empty and (non_null % 1 == 0).all():
-            return "int64"
-        return "float64"
-
-    dates = pd.to_datetime(s, errors="coerce", format="mixed", dayfirst=True)
-    if (dates.notna().mean()) >= 0.9:
-        return "datetime64[ns]"
-
-    return "string"
-
-
-def _to_metadata_type(series: pd.Series) -> str:
-    inferred = _infer_preview_type(series)
-    if inferred == "int64":
-        return "Integer"
-    if inferred == "float64":
-        return "Float"
-    if inferred == "datetime64[ns]":
-        return "Date"
-    if inferred == "bool":
-        return "Boolean"
-    return "String"
-
-
 @app.post("/jobs/{job_id}/upload")
-async def upload_file(
-    job_id: int,
-    file: UploadFile = File(...),
-    preview_edits: Optional[str] = Form(None),
-    db: Session = Depends(get_db),
-):
+async def upload_file(job_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
     upload_dir = "uploads"
     os.makedirs(upload_dir, exist_ok=True)
     
@@ -593,31 +438,16 @@ async def upload_file(
 
     try:
         # 2. FIX: Handle both Excel and CSV formats
-        if file.filename.lower().endswith(".xlsx") or file.filename.lower().endswith(".xls"):
+        if file.filename.endswith(".xlsx") or file.filename.endswith(".xls"):
             # Read the Excel file and instantly save it as our standardized CSV
             df = pd.read_excel(temp_file_path)
+            df.to_csv(final_csv_path, index=False)
+            
             # Delete the original Excel file to save space
             if os.path.exists(temp_file_path):
                 os.remove(temp_file_path)
         else:
-            # Always read from the actual uploaded temp file.
-            try:
-                df = pd.read_csv(temp_file_path)
-            except Exception:
-                # Fallback parser for mixed/dirty CSVs.
-                df = pd.read_csv(temp_file_path, engine="python", on_bad_lines="skip", encoding_errors="ignore")
-
-        parsed_preview_edits: List[dict] = []
-        if preview_edits:
-            try:
-                loaded = json.loads(preview_edits)
-                if isinstance(loaded, list):
-                    parsed_preview_edits = loaded
-            except Exception:
-                raise HTTPException(status_code=400, detail="Invalid preview_edits payload.")
-
-        df = _apply_preview_edits(df, parsed_preview_edits)
-        df.to_csv(final_csv_path, index=False)
+            df = pd.read_csv(final_csv_path)
             
         # ==========================================================
         # 3. FIX: THE MIXED-FORMAT DATE DETECTION MAGIC GOES HERE
@@ -636,7 +466,7 @@ async def upload_file(
         # ==========================================================
 
         row_count = len(df)
-        metadata_columns = [(col_name, _to_metadata_type(df[col_name])) for col_name in df.columns]
+        columns = df.dtypes.items()
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid File format: {str(e)}")
 
@@ -649,7 +479,13 @@ async def upload_file(
     db.add(new_table)
     db.commit()
 
-    for col_name, str_type in metadata_columns:
+    for col_name, dtype in columns:
+        str_type = "String"
+        if "int" in str(dtype): str_type = "Integer"
+        elif "float" in str(dtype): str_type = "Float"
+        elif "datetime" in str(dtype): str_type = "Date"
+        elif "bool" in str(dtype): str_type = "Boolean"
+
         col_meta = models.ColumnMetadata(
             job_id=job_id,
             table_id=next_table_id,
@@ -660,34 +496,6 @@ async def upload_file(
     db.commit()
     
     return {"job_id": job_id, "message": "File Uploaded and Processed Successfully"}
-
-@app.post("/files/preview")
-async def preview_file(file: UploadFile = File(...)):
-    try:
-        name = (file.filename or "").lower()
-        if name.endswith(".xlsx") or name.endswith(".xls"):
-            df = pd.read_excel(file.file, nrows=11)
-            file.file.seek(0)
-            total_rows = len(pd.read_excel(file.file))
-        else:
-            df = pd.read_csv(file.file, nrows=11)
-            file.file.seek(0)
-            try:
-                total_rows = len(pd.read_csv(file.file))
-            except Exception:
-                file.file.seek(0)
-                total_rows = len(pd.read_csv(file.file, engine="python", on_bad_lines="skip", encoding_errors="ignore"))
-        column_types = {str(col): _infer_preview_type(df[col]) for col in df.columns}
-        df = df.fillna("")
-        return {
-            "columns": [str(c) for c in df.columns.tolist()],
-            "column_types": column_types,
-            "rows": df.astype(str).to_dict(orient="records"),
-            "preview_rows": len(df),
-            "total_rows": int(total_rows),
-        }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Preview failed: {str(e)}")
 
 @app.post("/jobs/{job_id}/run")
 def run_job(job_id: int, db: Session = Depends(get_db)):
@@ -709,7 +517,7 @@ def run_job(job_id: int, db: Session = Depends(get_db)):
 
 @app.get("/jobs")
 def get_all_jobs(db: Session = Depends(get_db)):
-    jobs = db.query(models.Job).all()
+    jobs = db.query(models.Job).order_by(models.Job.job_id.desc()).all()
     result = []
     
     for job in jobs:
@@ -1016,26 +824,10 @@ def delete_table(table_id: int, db: Session = Depends(get_db)):
         db.rollback() # Abort the transaction instantly if anything fails
         raise HTTPException(status_code=500, detail=f"Failed to delete table: {str(e)}")
 
-# --- DOWNLOAD ENDPOINTS (EXCEL WITH RED ERROR ROWS) ---
-
-def generate_formatted_excel(db: Session, table_name: str, job_id: int):
+def _load_result_dataframes(db: Session, table_name: str, job_id: int):
     # 1. Inspect the 'app_data' schema specifically!
     inspector = inspect(db.bind)
     all_tables = inspector.get_table_names(schema="app_data") 
-    # Fallback: if no app_data results exist yet, export the original uploaded CSV.
-    if not all_tables:
-        csv_path = os.path.join("uploads", f"{table_name}.csv")
-        if os.path.exists(csv_path):
-            df_raw = pd.read_csv(csv_path)
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_raw.to_excel(writer, index=False, sheet_name='Data')
-            output.seek(0)
-            return output
-        raise Exception(
-            f"No app_data results or source CSV found for table '{table_name}'. "
-            "Upload data (or run job) before downloading."
-        )
     
     t_name_lower = table_name.lower()
     j_id_str = str(job_id)
@@ -1053,19 +845,7 @@ def generate_formatted_excel(db: Session, table_name: str, job_id: int):
                 actual_error = t
 
     if not actual_clean and not actual_error:
-        # Fallback again to source CSV if processed tables are unavailable.
-        csv_path = os.path.join("uploads", f"{table_name}.csv")
-        if os.path.exists(csv_path):
-            df_raw = pd.read_csv(csv_path)
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_raw.to_excel(writer, index=False, sheet_name='Data')
-            output.seek(0)
-            return output
-        raise Exception(
-            f"Result tables not found for '{t_name_lower}' in job{j_id_str}. "
-            f"Existing app_data tables: {all_tables}"
-        )
+        raise Exception(f"Tables missing in 'app_data'. Looked for '{t_name_lower}' + 'job{j_id_str}'. Exists in app_data: {all_tables}")
 
     df_clean = pd.DataFrame()
     df_error = pd.DataFrame()
@@ -1081,6 +861,13 @@ def generate_formatted_excel(db: Session, table_name: str, job_id: int):
         
     if df_clean.empty and df_error.empty:
         raise Exception(f"Found the tables ({actual_clean}, {actual_error}) in app_data, but they are completely empty.")
+    return df_clean, df_error
+
+
+# --- DOWNLOAD ENDPOINTS (EXCEL WITH RED ERROR ROWS) ---
+
+def generate_formatted_excel(db: Session, table_name: str, job_id: int):
+    df_clean, df_error = _load_result_dataframes(db, table_name, job_id)
         
     # 4. Combine and Tag rows
     df_clean['__is_error__'] = False
@@ -1107,9 +894,22 @@ def generate_formatted_excel(db: Session, table_name: str, job_id: int):
     return output
 
 
+def generate_output_dataframe(db: Session, table_name: str, job_id: int):
+    """Return combined clean+error dataframe without formatting columns."""
+    df_clean, df_error = _load_result_dataframes(db, table_name, job_id)
+    if not df_error.empty:
+        return pd.concat([df_clean, df_error], ignore_index=True)
+    return df_clean
+
+
 @app.get("/tables/{table_id}/download")
 def download_table_excel(table_id: int, db: Session = Depends(get_db)):
-    table = db.query(models.TableMetadata).filter(models.TableMetadata.table_id == table_id).first()
+    table = (
+        db.query(models.TableMetadata)
+        .filter(models.TableMetadata.table_id == table_id)
+        .order_by(models.TableMetadata.job_id.desc())
+        .first()
+    )
     if not table:
         raise HTTPException(status_code=404, detail="Table not found")
         
@@ -1123,14 +923,200 @@ def download_table_excel(table_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@app.get("/tables/{table_id}/download-csv")
+def download_table_csv(table_id: int, db: Session = Depends(get_db)):
+    table = (
+        db.query(models.TableMetadata)
+        .filter(models.TableMetadata.table_id == table_id)
+        .order_by(models.TableMetadata.job_id.desc())
+        .first()
+    )
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+    try:
+        df = generate_output_dataframe(db, table.table_name, table.job_id)
+        csv_io = io.StringIO()
+        df.to_csv(csv_io, index=False)
+        response = StreamingResponse(iter([csv_io.getvalue()]), media_type="text/csv")
+        response.headers["Content-Disposition"] = f"attachment; filename={table.table_name}_Results.csv"
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/tables/{job_id}/{table_id}/download")
+def download_table_excel_by_job(job_id: int, table_id: int, db: Session = Depends(get_db)):
+    table = (
+        db.query(models.TableMetadata)
+        .filter(
+            models.TableMetadata.job_id == job_id,
+            models.TableMetadata.table_id == table_id,
+        )
+        .first()
+    )
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found for this job")
+    try:
+        excel_io = generate_formatted_excel(db, table.table_name, table.job_id)
+        response = StreamingResponse(
+            iter([excel_io.getvalue()]),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response.headers["Content-Disposition"] = f"attachment; filename={table.table_name}_Results.xlsx"
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/tables/{job_id}/{table_id}/download-csv")
+def download_table_csv_by_job(job_id: int, table_id: int, db: Session = Depends(get_db)):
+    table = (
+        db.query(models.TableMetadata)
+        .filter(
+            models.TableMetadata.job_id == job_id,
+            models.TableMetadata.table_id == table_id,
+        )
+        .first()
+    )
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found for this job")
+    try:
+        df = generate_output_dataframe(db, table.table_name, table.job_id)
+        csv_io = io.StringIO()
+        df.to_csv(csv_io, index=False)
+        response = StreamingResponse(iter([csv_io.getvalue()]), media_type="text/csv")
+        response.headers["Content-Disposition"] = f"attachment; filename={table.table_name}_Results.csv"
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/db/export-results")
+def export_results_to_external_db(payload: dict = Body(...), db: Session = Depends(get_db)):
+    """
+    Export combined result rows (clean + error) into an external DB table.
+    Payload supports either:
+      - connection_id + dbname
+      - host/port/user/pass/dbname
+    plus: table_id, target_table, optional target_schema, optional if_exists (append|replace).
+    """
+    table_id = payload.get("table_id")
+    target_table = payload.get("target_table")
+    target_schema = payload.get("target_schema") or None
+    if_exists = payload.get("if_exists", "append")
+
+    if not table_id or not target_table:
+        raise HTTPException(status_code=400, detail="table_id and target_table are required")
+    if if_exists not in ("append", "replace"):
+        raise HTTPException(status_code=400, detail="if_exists must be 'append' or 'replace'")
+
+    src_table = db.query(models.TableMetadata).filter(models.TableMetadata.table_id == table_id).first()
+    if not src_table:
+        raise HTTPException(status_code=404, detail="Source table not found")
+
+    creds = _resolve_connection_payload(payload)
+    if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
+        raise HTTPException(
+            status_code=400,
+            detail="host, user, and dbname are required (or provide connection_id + dbname)",
+        )
+
+    try:
+        df = generate_output_dataframe(db, src_table.table_name, src_table.job_id)
+        ext_url = (
+            f"postgresql+psycopg2://{quote_plus(str(creds['user']))}:{quote_plus(str(creds.get('pass', '')))}"
+            f"@{creds['host']}:{creds['port']}/{creds['dbname']}"
+        )
+        ext_engine = create_engine(ext_url)
+        df.to_sql(
+            name=target_table,
+            con=ext_engine,
+            schema=target_schema,
+            if_exists=if_exists,
+            index=False,
+            method="multi",
+            chunksize=2000,
+        )
+        return {
+            "message": "Results exported successfully",
+            "rows_exported": int(len(df)),
+            "target_schema": target_schema,
+            "target_table": target_table,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to export results: {str(e)}")
+
+
+@app.post("/tables/{table_id}/email")
+def email_table_output(table_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
+    """
+    Send table output as email attachment (csv or excel).
+    Requires SMTP env vars:
+      SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
+    Optional:
+      SMTP_USE_TLS=true|false (default true)
+    """
+    table = db.query(models.TableMetadata).filter(models.TableMetadata.table_id == table_id).first()
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+
+    to_email = (payload.get("to_email") or "").strip()
+    fmt = (payload.get("format") or "csv").strip().lower()
+    subject = (payload.get("subject") or f"MDQM Results - {table.table_name}").strip()
+
+    if not to_email:
+        raise HTTPException(status_code=400, detail="to_email is required")
+    if fmt not in ("csv", "excel"):
+        raise HTTPException(status_code=400, detail="format must be csv or excel")
+
+    smtp_host = os.getenv("SMTP_HOST")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+    smtp_from = os.getenv("SMTP_FROM")
+    smtp_use_tls = str(os.getenv("SMTP_USE_TLS", "true")).lower() != "false"
+
+    if not smtp_host or not smtp_user or not smtp_pass or not smtp_from:
+        raise HTTPException(
+            status_code=400,
+            detail="SMTP is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM.",
+        )
+
+    try:
+        if fmt == "csv":
+            df = generate_output_dataframe(db, table.table_name, table.job_id)
+            attachment_bytes = df.to_csv(index=False).encode("utf-8")
+            filename = f"{table.table_name}_Results.csv"
+            mime_type = ("text", "csv")
+        else:
+            excel_io = generate_formatted_excel(db, table.table_name, table.job_id)
+            attachment_bytes = excel_io.getvalue()
+            filename = f"{table.table_name}_Results.xlsx"
+            mime_type = ("application", "vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = smtp_from
+        msg["To"] = to_email
+        msg.set_content(
+            f"Hello,\n\nPlease find attached the MDQM output for table '{table.table_name}'.\n\nRegards,\nMDQM"
+        )
+        msg.add_attachment(attachment_bytes, maintype=mime_type[0], subtype=mime_type[1], filename=filename)
+
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as server:
+            if smtp_use_tls:
+                server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+
+        return {"message": "Email sent successfully", "to_email": to_email, "filename": filename}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to send email: {str(e)}")
+
+
 @app.get("/jobs/{job_id}/download")
 def download_job_zip(job_id: int, db: Session = Depends(get_db)):
     tables = db.query(models.TableMetadata).filter(models.TableMetadata.job_id == job_id).all()
-    if not tables:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No tables attached to job {job_id}. Upload data first, then download."
-        )
     
     zip_buffer = io.BytesIO()
     added_files = False
