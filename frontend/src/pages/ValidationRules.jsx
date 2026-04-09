@@ -542,11 +542,12 @@ export default function ValidationRules() {
                                   </div>
                                   <div className="col-span-3 text-[#23243B] font-light">
                                     {rule.rule_type.replace(/_/g, " ")}
-                                    {rule.rule_value && (
-                                      <span className="ml-2 text-sm bg-yellow-100 px-1 text-yellow-800">
-                                        Val: {rule.rule_value}
-                                      </span>
-                                    )}
+                                    {rule.rule_type !== "fuzzy_match" &&
+                                      rule.rule_value && (
+                                        <span className="ml-2 text-sm bg-yellow-100 px-1 text-yellow-800">
+                                          Val: {rule.rule_value}
+                                        </span>
+                                      )}
                                   </div>
 
                                   {/* CUSTOM TOGGLE BUTTON */}

@@ -13,11 +13,15 @@ import {
   uploadCsvToJob,
   previewCsvFile,
   previewDbTable,
+  getDbLookupValues,
+  getDbTableColumns,
   connectToDb,
   listSchemasTables,
   listSavedConnections,
   saveDbConnection,
   testDbConnection,
+  exportResultsToDb,
+  emailTableOutput,
 } from "../api";
 import {
   ChevronRight,
@@ -32,6 +36,8 @@ import {
   Edit2,
   X,
   Loader2,
+  FileUp,
+  Table2,
 } from "lucide-react";
 import ColumnAudit from "./ColumnAudit";
 
@@ -63,7 +69,6 @@ const RULE_LABELS = {
 };
 
 const RULES_REQUIRING_VALUE = new Set([
-  "fuzzy_match",
   "contains",
   "starts_with",
   "ends_with",
@@ -88,7 +93,7 @@ const normalizeDataType = (type = "") => {
 const defaultRuleDraftForType = (type) => {
   const normalized = normalizeDataType(type);
   if (normalized === "String") {
-    return { rule_type: "fuzzy_match", rule_value: "80", is_active: false, master_data_text: "" };
+    return { rule_type: "fuzzy_match", rule_value: "", is_active: false, master_data_text: "" };
   }
   if (normalized === "Integer" || normalized === "Float") {
     return { rule_type: "greater_than", rule_value: "0", is_active: false, master_data_text: "" };
@@ -161,6 +166,37 @@ export default function JobList() {
   const [ruleColumns, setRuleColumns] = useState([]);
   const [ruleDrafts, setRuleDrafts] = useState({});
   const [outputSummary, setOutputSummary] = useState(null);
+  const [outputDbMode, setOutputDbMode] = useState("saved");
+  const [outputDbState, setOutputDbState] = useState({
+    targetSchema: "",
+    targetTable: "",
+    ifExists: "append",
+    loading: false,
+    message: "",
+  });
+  const [outputEmailState, setOutputEmailState] = useState({
+    toEmail: "",
+    format: "csv",
+    sending: false,
+    message: "",
+  });
+  /** Fuzzy lookup: modal to choose file vs table paste */
+  const [lookupModal, setLookupModal] = useState({
+    open: false,
+    columnName: null,
+    view: "choice",
+  });
+  const [tablePasteBuffer, setTablePasteBuffer] = useState("");
+  const [lookupDbState, setLookupDbState] = useState({
+    schema_name: "",
+    table_name: "",
+    column_name: "",
+    limit: "",
+    loading: false,
+  });
+  const [lookupDbConnMode, setLookupDbConnMode] = useState("saved");
+  const [lookupDbLoadMessage, setLookupDbLoadMessage] = useState("");
+  const [lookupDbColumns, setLookupDbColumns] = useState([]);
   const resetCreateFlow = () => {
     setShowAddModal(false);
     setNewJobName("");
@@ -179,8 +215,34 @@ export default function JobList() {
     setRuleColumns([]);
     setRuleDrafts({});
     setOutputSummary(null);
+    setOutputDbMode("saved");
+    setOutputDbState({
+      targetSchema: "",
+      targetTable: "",
+      ifExists: "append",
+      loading: false,
+      message: "",
+    });
+    setOutputEmailState({
+      toEmail: "",
+      format: "csv",
+      sending: false,
+      message: "",
+    });
     setConnectionName("");
     setDbCreds({ host: "", port: "", user: "", pass: "", dbname: "" });
+    setLookupModal({ open: false, columnName: null, view: "choice" });
+    setTablePasteBuffer("");
+    setLookupDbState({
+      schema_name: "",
+      table_name: "",
+      column_name: "",
+      limit: "",
+      loading: false,
+    });
+    setLookupDbConnMode("saved");
+    setLookupDbLoadMessage("");
+    setLookupDbColumns([]);
   };
 
 
@@ -216,7 +278,11 @@ export default function JobList() {
       return;
     }
     setExpandedJob(jobId);
-    if (!tables[jobId]) {
+    const jobMeta = jobs.find((j) => j.job_id === jobId);
+    const shouldRefetch =
+      !tables[jobId] ||
+      ((tables[jobId]?.length || 0) === 0 && (jobMeta?.total_tables || 0) > 0);
+    if (shouldRefetch) {
       try {
         const res = await getTablesByJob(jobId);
         setTables((prev) => ({ ...prev, [jobId]: res.data }));
@@ -392,6 +458,154 @@ export default function JobList() {
     }
   };
 
+  const openLookupModal = (columnName) => {
+    const draft = ruleDrafts[columnName] || {};
+    const existing = String(draft.master_data_text || "");
+    setTablePasteBuffer(
+      existing
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .join("\n"),
+    );
+    setLookupModal({ open: true, columnName, view: "choice" });
+    setLookupDbConnMode(selectedConnectionId ? "saved" : "manual");
+    setLookupDbLoadMessage("");
+    setLookupDbColumns([]);
+    setLookupDbState((prev) => ({
+      ...prev,
+      schema_name: selectedSchema || Object.keys(tablesBySchema || {})[0] || "",
+      table_name: "",
+      column_name: "",
+      loading: false,
+    }));
+  };
+
+  const closeLookupModal = () => {
+    setLookupModal({ open: false, columnName: null, view: "choice" });
+    setTablePasteBuffer("");
+    setLookupDbState({
+      schema_name: "",
+      table_name: "",
+      column_name: "",
+      limit: "",
+      loading: false,
+    });
+    setLookupDbConnMode("saved");
+    setLookupDbLoadMessage("");
+    setLookupDbColumns([]);
+  };
+
+  const handleLookupFileFromModal = async (file) => {
+    if (!file || !lookupModal.columnName) return;
+    await handleLookupFileUpload(lookupModal.columnName, file);
+    closeLookupModal();
+  };
+
+  const applyTablePaste = () => {
+    const col = lookupModal.columnName;
+    if (!col) return;
+    const lines = tablePasteBuffer
+      .split(/\r?\n/)
+      .flatMap((line) => line.split(/[\t,]/))
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (lines.length === 0) {
+      alert("No values found. Paste text or table data with one or more values.");
+      return;
+    }
+    setRuleDraft(col, "master_data_text", lines.join(", "));
+    closeLookupModal();
+  };
+
+  const canUseDbLookup =
+    lookupDbConnMode === "saved"
+      ? Boolean(selectedConnectionId && dbCreds.dbname)
+      : Boolean(dbCreds.host && dbCreds.user && dbCreds.dbname);
+
+  const dbLookupTables = tablesBySchema[lookupDbState.schema_name] || [];
+
+  const loadDbLookupValues = async () => {
+    const col = lookupModal.columnName;
+    if (!col) return;
+    if (!lookupDbState.schema_name || !lookupDbState.table_name || !lookupDbState.column_name) {
+      alert("Select schema, table, and column first.");
+      return;
+    }
+    if (!canUseDbLookup) {
+      alert("Please fill DB connection details and database name in Step 1 first.");
+      return;
+    }
+    setLookupDbState((s) => ({ ...s, loading: true }));
+    try {
+      const payload = lookupDbConnMode === "saved"
+        ? {
+            connection_id: Number(selectedConnectionId),
+            dbname: dbCreds.dbname,
+            schema_name: lookupDbState.schema_name,
+            table_name: lookupDbState.table_name,
+            column_name: lookupDbState.column_name,
+            limit: lookupDbState.limit === "" ? undefined : Number(lookupDbState.limit),
+          }
+        : {
+            host: dbCreds.host,
+            port: dbCreds.port || "5432",
+            user: dbCreds.user,
+            pass: dbCreds.pass || "",
+            dbname: dbCreds.dbname,
+            schema_name: lookupDbState.schema_name,
+            table_name: lookupDbState.table_name,
+            column_name: lookupDbState.column_name,
+            limit: lookupDbState.limit === "" ? undefined : Number(lookupDbState.limit),
+          };
+      const res = await getDbLookupValues(payload);
+      const values = (res?.data?.values || []).map((v) => String(v).trim()).filter(Boolean);
+      if (values.length === 0) {
+        alert("No values found in selected DB column.");
+        return;
+      }
+      setRuleDraft(col, "master_data_text", values.join(", "));
+      closeLookupModal();
+    } catch (err) {
+      alert(err?.response?.data?.detail || "Failed to fetch lookup values from DB.");
+    } finally {
+      setLookupDbState((s) => ({ ...s, loading: false }));
+    }
+  };
+
+  const loadLookupTableColumns = async (schemaName, tableName) => {
+    setLookupDbColumns([]);
+    if (!schemaName || !tableName) return;
+    try {
+      const payload = lookupDbConnMode === "saved"
+        ? {
+            connection_id: Number(selectedConnectionId),
+            dbname: dbCreds.dbname,
+            schema_name: schemaName,
+            table_name: tableName,
+          }
+        : {
+            host: dbCreds.host,
+            port: dbCreds.port || "5432",
+            user: dbCreds.user,
+            pass: dbCreds.pass || "",
+            dbname: dbCreds.dbname,
+            schema_name: schemaName,
+            table_name: tableName,
+          };
+      const res = await getDbTableColumns(payload);
+      const cols = res?.data?.columns || [];
+      setLookupDbColumns(cols);
+      if (cols.length > 0) {
+        setLookupDbState((s) => ({ ...s, column_name: cols[0] }));
+      }
+    } catch (err) {
+      setLookupDbColumns([]);
+      setLookupDbState((s) => ({ ...s, column_name: "" }));
+      alert(err?.response?.data?.detail || "Failed to load column names.");
+    }
+  };
+
   const handleFinishCreateJob = async () => {
     if (!newJobName) {
       alert("Enter a job name.");
@@ -473,7 +687,8 @@ export default function JobList() {
           column_name: col.column_name,
           rule_type: draft.rule_type,
           data_type: normalizeDataType(col.data_type),
-          rule_value: draft.rule_value || null,
+          rule_value:
+            draft.rule_type === "fuzzy_match" ? "80" : draft.rule_value || null,
           is_active: true,
           master_data: masterData,
         });
@@ -581,11 +796,11 @@ export default function JobList() {
   const handleFetchTables = async () => {
     if (!selectedConnectionId && (!dbCreds.host || !dbCreds.user)) {
       alert("Please enter host and username first.");
-      return;
+      return false;
     }
     if (!dbCreds.dbname) {
       alert("Please enter database name first.");
-      return;
+      return false;
     }
     try {
       const payload = selectedConnectionId
@@ -610,8 +825,116 @@ export default function JobList() {
       const firstTables = tableMap[firstSchema] || [];
       setTableOptions(firstTables);
       setSelectedTables(firstTables.length > 0 ? [firstTables[0]] : []);
+      return true;
     } catch (err) {
       alert(err?.response?.data?.detail || "Failed to fetch schema/table list.");
+      return false;
+    }
+  };
+
+  const handleOutputDbLoadTargets = async () => {
+    setOutputDbState((s) => ({ ...s, message: "" }));
+    const ok = await handleFetchTables();
+    if (ok) {
+      const firstSchema = (schemaOptions && schemaOptions[0]) || Object.keys(tablesBySchema || {})[0] || "";
+      setOutputDbState((s) => ({
+        ...s,
+        targetSchema: firstSchema,
+      }));
+    }
+  };
+
+  const handleExportOutputToDb = async () => {
+    if (!outputSummary?.tableId) {
+      alert("Output table not found.");
+      return;
+    }
+    if (!outputDbState.targetTable) {
+      alert("Please choose target table.");
+      return;
+    }
+    const usingSaved = outputDbMode === "saved";
+    if (usingSaved && !selectedConnectionId) {
+      alert("Please choose a saved connection.");
+      return;
+    }
+    if (!usingSaved && (!dbCreds.host || !dbCreds.user || !dbCreds.dbname)) {
+      alert("Please fill host, user and database.");
+      return;
+    }
+
+    setOutputDbState((s) => ({ ...s, loading: true, message: "" }));
+    try {
+      const payload = usingSaved
+        ? {
+            connection_id: Number(selectedConnectionId),
+            dbname: dbCreds.dbname,
+            table_id: outputSummary.tableId,
+            target_schema: outputDbState.targetSchema || undefined,
+            target_table: outputDbState.targetTable,
+            if_exists: outputDbState.ifExists,
+          }
+        : {
+            host: dbCreds.host,
+            port: dbCreds.port || "5432",
+            user: dbCreds.user,
+            pass: dbCreds.pass || "",
+            dbname: dbCreds.dbname,
+            table_id: outputSummary.tableId,
+            target_schema: outputDbState.targetSchema || undefined,
+            target_table: outputDbState.targetTable,
+            if_exists: outputDbState.ifExists,
+          };
+      const res = await exportResultsToDb(payload);
+      setOutputDbState((s) => ({
+        ...s,
+        message: `Exported ${res?.data?.rows_exported ?? 0} rows to ${res?.data?.target_table || outputDbState.targetTable}`,
+      }));
+    } catch (err) {
+      setOutputDbState((s) => ({
+        ...s,
+        message: err?.response?.data?.detail || "Failed to export to DB",
+      }));
+    } finally {
+      setOutputDbState((s) => ({ ...s, loading: false }));
+    }
+  };
+
+  const handleSendOutputEmail = async () => {
+    if (!outputSummary?.tableId) {
+      alert("Output table not found.");
+      return;
+    }
+    if (!outputEmailState.toEmail.trim()) {
+      alert("Please enter recipient email.");
+      return;
+    }
+    setOutputEmailState((s) => ({ ...s, sending: true, message: "" }));
+    try {
+      const res = await emailTableOutput(outputSummary.tableId, {
+        to_email: outputEmailState.toEmail.trim(),
+        format: outputEmailState.format,
+        subject: `MDQM Results - ${outputSummary.tableName || "Output"}`,
+      });
+      setOutputEmailState((s) => ({
+        ...s,
+        message: res?.data?.message || "Email sent successfully",
+      }));
+    } catch (err) {
+      setOutputEmailState((s) => ({
+        ...s,
+        message: err?.response?.data?.detail || "Failed to send email",
+      }));
+    } finally {
+      setOutputEmailState((s) => ({ ...s, sending: false }));
+    }
+  };
+
+  const handleLoadLookupSchemasTables = async () => {
+    setLookupDbLoadMessage("");
+    const ok = await handleFetchTables();
+    if (ok) {
+      setLookupDbLoadMessage("Successfully loaded schemas and tables.");
     }
   };
 
@@ -1183,7 +1506,7 @@ export default function JobList() {
                                         const nextRule = e.target.value;
                                         setRuleDraft(col.column_name, "rule_type", nextRule);
                                         if (nextRule === "fuzzy_match") {
-                                          setRuleDraft(col.column_name, "rule_value", "80");
+                                          setRuleDraft(col.column_name, "rule_value", "");
                                         } else if (!RULES_REQUIRING_VALUE.has(nextRule)) {
                                           setRuleDraft(col.column_name, "rule_value", "");
                                         }
@@ -1198,14 +1521,16 @@ export default function JobList() {
                                     </select>
                                   </td>
                                   <td className="p-2 border-b border-[#F1F5F9]">
-                                    {RULES_REQUIRING_VALUE.has(draft.rule_type) ? (
+                                    {draft.rule_type === "fuzzy_match" ? (
+                                      <span className="text-[11px] text-gray-500 block mb-1">
+                                        Fuzzy match — use lookup values below only (no threshold field).
+                                      </span>
+                                    ) : RULES_REQUIRING_VALUE.has(draft.rule_type) ? (
                                       <input
                                         placeholder={
                                           draft.rule_type === "date_format_check"
                                             ? "%Y-%m-%d"
-                                            : draft.rule_type === "fuzzy_match"
-                                              ? "Threshold (e.g., 80)"
-                                              : "Enter value"
+                                            : "Enter value"
                                         }
                                         value={draft.rule_value ?? ""}
                                         onChange={(e) => setRuleDraft(col.column_name, "rule_value", e.target.value)}
@@ -1215,22 +1540,27 @@ export default function JobList() {
                                       <span className="text-xs text-gray-400">No value required</span>
                                     )}
                                     {draft.rule_type === "fuzzy_match" && (
-                                      <>
-                                        <input
-                                          placeholder="Lookup values (comma separated)"
-                                          value={draft.master_data_text ?? ""}
-                                          onChange={(e) => setRuleDraft(col.column_name, "master_data_text", e.target.value)}
-                                          className="w-full min-w-[120px] border border-[#D1D5DB] rounded-md p-1.5 mt-1"
-                                        />
-                                        <div className="mt-1 flex items-center gap-2">
-                                          <input
-                                            type="file"
-                                            accept=".txt,.csv"
-                                            onChange={(e) => handleLookupFileUpload(col.column_name, e.target.files?.[0])}
-                                            className="w-full text-[11px] text-gray-500 file:mr-2 file:py-1.5 file:px-2 file:border-0 file:text-[10px] file:font-bold file:uppercase file:rounded-md file:bg-[#23243B] file:text-white hover:file:bg-black cursor-pointer"
-                                          />
-                                        </div>
-                                      </>
+                                      <div className="mt-2 space-y-1">
+                                        <button
+                                          type="button"
+                                          onClick={() => openLookupModal(col.column_name)}
+                                          className="w-full py-2 px-2 text-xs font-bold uppercase tracking-wider border border-[#23243B] text-[#23243B] hover:bg-[#23243B] hover:text-white transition-colors"
+                                        >
+                                          {draft.master_data_text?.trim()
+                                            ? `Edit lookup (${String(draft.master_data_text).split(",").filter((x) => x.trim()).length} values)`
+                                            : "Add lookup values"}
+                                        </button>
+                                        {draft.master_data_text?.trim() ? (
+                                          <p
+                                            className="text-[10px] text-gray-500 truncate max-w-[240px]"
+                                            title={draft.master_data_text}
+                                          >
+                                            {draft.master_data_text.length > 90
+                                              ? `${draft.master_data_text.slice(0, 90)}…`
+                                              : draft.master_data_text}
+                                          </p>
+                                        ) : null}
+                                      </div>
                                     )}
                                   </td>
                                   <td className="p-2 border-b border-[#F1F5F9]">
@@ -1293,6 +1623,177 @@ export default function JobList() {
                           <div className="font-semibold">{outputSummary?.columnCount ?? "-"}</div>
                         </div>
                       </div>
+                      <div className="border border-[#D6D9E0] rounded-lg bg-white p-4 text-xs">
+                        <div className="text-[11px] uppercase tracking-widest text-gray-500 mb-3">File Actions</div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              window.open(
+                                `http://127.0.0.1:8000/tables/${outputSummary?.jobId}/${outputSummary?.tableId}/download-csv?t=${Date.now()}`,
+                                "_blank",
+                              )
+                            }
+                            className="py-2 border border-[#23243B] text-[#23243B] font-bold uppercase hover:bg-gray-50"
+                          >
+                            Download CSV
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              window.open(
+                                `http://127.0.0.1:8000/tables/${outputSummary?.jobId}/${outputSummary?.tableId}/download?t=${Date.now()}`,
+                                "_blank",
+                              )
+                            }
+                            className="py-2 border border-[#23243B] text-[#23243B] font-bold uppercase hover:bg-gray-50"
+                          >
+                            Download Excel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => alert("SharePoint upload option available; backend integration needs org auth setup.")}
+                            className="py-2 border border-[#23243B] text-[#23243B] font-bold uppercase hover:bg-gray-50"
+                          >
+                            Upload to SharePoint
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleSendOutputEmail}
+                            className="py-2 border border-[#23243B] text-[#23243B] font-bold uppercase hover:bg-gray-50"
+                          >
+                            {outputEmailState.sending ? "Sending..." : "Email File"}
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2">
+                          <input
+                            type="email"
+                            placeholder="Recipient email"
+                            value={outputEmailState.toEmail}
+                            onChange={(e) => setOutputEmailState((s) => ({ ...s, toEmail: e.target.value }))}
+                            className="border border-[#A1A3AF] p-2 sm:col-span-2"
+                          />
+                          <select
+                            value={outputEmailState.format}
+                            onChange={(e) => setOutputEmailState((s) => ({ ...s, format: e.target.value }))}
+                            className="border border-[#A1A3AF] p-2"
+                          >
+                            <option value="csv">CSV</option>
+                            <option value="excel">Excel</option>
+                          </select>
+                        </div>
+                        {outputEmailState.message ? (
+                          <p className={`mt-2 text-xs ${outputEmailState.message.toLowerCase().includes("failed") ? "text-red-600" : "text-green-700"}`}>
+                            {outputEmailState.message}
+                          </p>
+                        ) : null}
+                      </div>
+
+                      <div className="border border-[#D6D9E0] rounded-lg bg-white p-4 text-xs">
+                        <div className="text-[11px] uppercase tracking-widest text-gray-500 mb-3">Insert Results to Database Table</div>
+                        <div className="grid grid-cols-2 gap-2 mb-3">
+                          <button
+                            type="button"
+                            onClick={() => setOutputDbMode("saved")}
+                            className={`py-2 font-bold uppercase border ${outputDbMode === "saved" ? "bg-[#23243B] text-white border-[#23243B]" : "text-[#23243B] border-[#A1A3AF] bg-white"}`}
+                          >
+                            Saved Connection
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOutputDbMode("manual");
+                              setSelectedConnectionId("");
+                            }}
+                            className={`py-2 font-bold uppercase border ${outputDbMode === "manual" ? "bg-[#23243B] text-white border-[#23243B]" : "text-[#23243B] border-[#A1A3AF] bg-white"}`}
+                          >
+                            Manual
+                          </button>
+                        </div>
+
+                        {outputDbMode === "saved" ? (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                            <select
+                              className="border border-[#A1A3AF] p-2"
+                              value={selectedConnectionId}
+                              onChange={(e) => handleSavedConnectionChange(e.target.value)}
+                            >
+                              <option value="">Select saved connection...</option>
+                              {savedConnections.map((c) => (
+                                <option key={c.connection_id} value={c.connection_id}>
+                                  {c.connection_name} ({c.host}:{c.port})
+                                </option>
+                              ))}
+                            </select>
+                            <input
+                              className="border border-[#A1A3AF] p-2"
+                              placeholder="Database name"
+                              value={dbCreds.dbname}
+                              onChange={(e) => setDbCreds((p) => ({ ...p, dbname: e.target.value }))}
+                            />
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                            <input className="border border-[#A1A3AF] p-2" placeholder="Host" value={dbCreds.host} onChange={(e) => setDbCreds((p) => ({ ...p, host: e.target.value }))} />
+                            <input className="border border-[#A1A3AF] p-2" placeholder="Port" value={dbCreds.port} onChange={(e) => setDbCreds((p) => ({ ...p, port: e.target.value }))} />
+                            <input className="border border-[#A1A3AF] p-2" placeholder="Username" value={dbCreds.user} onChange={(e) => setDbCreds((p) => ({ ...p, user: e.target.value }))} />
+                            <input type="password" className="border border-[#A1A3AF] p-2" placeholder="Password" value={dbCreds.pass} onChange={(e) => setDbCreds((p) => ({ ...p, pass: e.target.value }))} />
+                            <input className="border border-[#A1A3AF] p-2 sm:col-span-2" placeholder="Database name" value={dbCreds.dbname} onChange={(e) => setDbCreds((p) => ({ ...p, dbname: e.target.value }))} />
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                          <button
+                            type="button"
+                            onClick={handleOutputDbLoadTargets}
+                            className="py-2 border border-[#23243B] text-[#23243B] font-bold uppercase hover:bg-gray-50"
+                          >
+                            Load Target Tables
+                          </button>
+                          <select
+                            className="border border-[#A1A3AF] p-2"
+                            value={outputDbState.targetSchema}
+                            onChange={(e) => setOutputDbState((s) => ({ ...s, targetSchema: e.target.value, targetTable: "" }))}
+                          >
+                            <option value="">Target schema (optional)</option>
+                            {Object.keys(tablesBySchema || {}).map((s) => (
+                              <option key={s} value={s}>{s}</option>
+                            ))}
+                          </select>
+                          <select
+                            className="border border-[#A1A3AF] p-2"
+                            value={outputDbState.targetTable}
+                            onChange={(e) => setOutputDbState((s) => ({ ...s, targetTable: e.target.value }))}
+                          >
+                            <option value="">Target table...</option>
+                            {(tablesBySchema[outputDbState.targetSchema] || []).map((t) => (
+                              <option key={t} value={t}>{t}</option>
+                            ))}
+                          </select>
+                          <select
+                            className="border border-[#A1A3AF] p-2"
+                            value={outputDbState.ifExists}
+                            onChange={(e) => setOutputDbState((s) => ({ ...s, ifExists: e.target.value }))}
+                          >
+                            <option value="append">Append</option>
+                            <option value="replace">Replace</option>
+                          </select>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handleExportOutputToDb}
+                          disabled={outputDbState.loading}
+                          className="w-full py-2 bg-[#23243B] text-white font-bold uppercase hover:bg-black disabled:opacity-50"
+                        >
+                          {outputDbState.loading ? "Exporting..." : "Insert Results into Target Table"}
+                        </button>
+                        {outputDbState.message ? (
+                          <p className={`mt-2 text-xs ${outputDbState.message.toLowerCase().includes("failed") ? "text-red-600" : "text-green-700"}`}>
+                            {outputDbState.message}
+                          </p>
+                        ) : null}
+                      </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1">
                         <button
                           onClick={() => {
@@ -1342,7 +1843,7 @@ export default function JobList() {
                           onClick={() => setCreateDataMode("db")}
                           className={`py-3 text-xs font-bold uppercase tracking-widest border ${createDataMode === "db" ? "bg-[#23243B] text-white border-[#23243B]" : "bg-white text-[#23243B] border-[#A1A3AF]"}`}
                         >
-                          DB Connected
+                          Table Input
                         </button>
                       </div>
                     </>
@@ -1755,6 +2256,342 @@ export default function JobList() {
                   )}
                 </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {lookupModal.open && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/45 p-4">
+          <div className="bg-white border border-[#23243B] w-full max-w-lg shadow-2xl relative p-6">
+            <button
+              type="button"
+              onClick={closeLookupModal}
+              className="absolute top-3 right-3 p-1 text-gray-500 hover:text-black"
+              aria-label="Close"
+            >
+              <X size={20} />
+            </button>
+            <h3 className="text-sm font-bold uppercase tracking-widest text-[#23243B] mb-1 pr-8">
+              Lookup master values
+            </h3>
+            <p className="text-xs text-gray-500 mb-4">
+              Choose how to provide values for fuzzy matching.
+            </p>
+
+            {lookupModal.view === "choice" && (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setLookupModal((m) => ({ ...m, view: "file" }))
+                  }
+                  className="group flex flex-col items-center gap-2 border-2 border-[#23243B] p-6 hover:bg-[#23243B] hover:text-white transition-colors text-[#23243B]"
+                >
+                  <FileUp size={28} strokeWidth={1.5} />
+                  <span className="text-xs font-bold uppercase tracking-widest">
+                    File input
+                  </span>
+                  <span className="text-[10px] text-gray-500 group-hover:text-white/80 text-center font-normal normal-case">
+                    .txt or .csv
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setLookupModal((m) => ({ ...m, view: "table" }))
+                  }
+                  className="group flex flex-col items-center gap-2 border-2 border-[#23243B] p-6 hover:bg-[#23243B] hover:text-white transition-colors text-[#23243B]"
+                >
+                  <Table2 size={28} strokeWidth={1.5} />
+                  <span className="text-xs font-bold uppercase tracking-widest">
+                    Test input
+                  </span>
+                  <span className="text-[10px] text-gray-500 group-hover:text-white/80 text-center font-normal normal-case">
+                    Paste from Excel or type lines
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setLookupModal((m) => ({ ...m, view: "db" }))
+                  }
+                  className="group flex flex-col items-center gap-2 border-2 border-[#23243B] p-6 hover:bg-[#23243B] hover:text-white transition-colors text-[#23243B]"
+                >
+                  <Database size={28} strokeWidth={1.5} />
+                  <span className="text-xs font-bold uppercase tracking-widest">
+                    DB table
+                  </span>
+                  <span className="text-[10px] text-gray-500 group-hover:text-white/80 text-center font-normal normal-case">
+                    Schema, table, column
+                  </span>
+                </button>
+              </div>
+            )}
+
+            {lookupModal.view === "file" && (
+              <div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setLookupModal((m) => ({ ...m, view: "choice" }))
+                  }
+                  className="text-xs font-bold uppercase text-[#23243B] mb-3 hover:underline"
+                >
+                  ← Back
+                </button>
+                <label className="block text-[10px] uppercase tracking-wider text-gray-600 font-bold mb-2">
+                  Upload file
+                </label>
+                <input
+                  type="file"
+                  accept=".txt,.csv"
+                  onChange={(e) =>
+                    handleLookupFileFromModal(e.target.files?.[0])
+                  }
+                  className="w-full text-sm text-gray-600 file:mr-3 file:py-2 file:px-3 file:border-0 file:text-xs file:font-bold file:uppercase file:rounded-md file:bg-[#23243B] file:text-white hover:file:bg-black cursor-pointer"
+                />
+              </div>
+            )}
+
+            {lookupModal.view === "table" && (
+              <div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setLookupModal((m) => ({ ...m, view: "choice" }))
+                  }
+                  className="text-xs font-bold uppercase text-[#23243B] mb-3 hover:underline"
+                >
+                  ← Back
+                </button>
+                <label className="block text-[10px] uppercase tracking-wider text-gray-600 font-bold mb-2">
+                  Paste table or list
+                </label>
+                <textarea
+                  value={tablePasteBuffer}
+                  onChange={(e) => setTablePasteBuffer(e.target.value)}
+                  rows={10}
+                  placeholder="One value per line, or paste from Excel (tabs/commas split into values)."
+                  className="w-full border border-[#D1D5DB] p-3 text-sm font-mono outline-none focus:border-[#23243B]"
+                />
+                <button
+                  type="button"
+                  onClick={applyTablePaste}
+                  className="mt-3 w-full py-3 bg-[#23243B] text-white text-xs font-bold uppercase tracking-widest hover:bg-black"
+                >
+                  Apply
+                </button>
+              </div>
+            )}
+
+            {lookupModal.view === "db" && (
+              <div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setLookupModal((m) => ({ ...m, view: "choice" }))
+                  }
+                  className="text-xs font-bold uppercase text-[#23243B] mb-3 hover:underline"
+                >
+                  ← Back
+                </button>
+                <div className="mb-3 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLookupDbConnMode("saved");
+                      if (!selectedConnectionId && savedConnections[0]) {
+                        handleSavedConnectionChange(String(savedConnections[0].connection_id));
+                      }
+                    }}
+                    className={`py-2 text-xs font-bold uppercase tracking-widest border ${lookupDbConnMode === "saved" ? "bg-[#23243B] text-white border-[#23243B]" : "bg-white text-[#23243B] border-[#A1A3AF]"}`}
+                  >
+                    Saved connection
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLookupDbConnMode("manual");
+                      setSelectedConnectionId("");
+                    }}
+                    className={`py-2 text-xs font-bold uppercase tracking-widest border ${lookupDbConnMode === "manual" ? "bg-[#23243B] text-white border-[#23243B]" : "bg-white text-[#23243B] border-[#A1A3AF]"}`}
+                  >
+                    Manual
+                  </button>
+                </div>
+
+                {lookupDbConnMode === "saved" ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+                    <div className="sm:col-span-2">
+                      <label className="block text-[10px] uppercase tracking-wider text-gray-600 font-bold mb-1">
+                        Saved connection
+                      </label>
+                      <select
+                        value={selectedConnectionId}
+                        onChange={(e) => handleSavedConnectionChange(e.target.value)}
+                        className="w-full border border-[#D1D5DB] p-2 text-sm"
+                      >
+                        <option value="">Select a saved connection...</option>
+                        {savedConnections.map((c) => (
+                          <option key={c.connection_id} value={c.connection_id}>
+                            {c.connection_name} ({c.host}:{c.port})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-[10px] uppercase tracking-wider text-gray-600 font-bold mb-1">
+                        Database
+                      </label>
+                      <input
+                        value={dbCreds.dbname}
+                        onChange={(e) => setDbCreds((prev) => ({ ...prev, dbname: e.target.value }))}
+                        placeholder="e.g. mdms"
+                        className="w-full border border-[#D1D5DB] p-2 text-sm"
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+                    <div>
+                      <label className="block text-[10px] uppercase tracking-wider text-gray-600 font-bold mb-1">Host</label>
+                      <input value={dbCreds.host} onChange={(e) => setDbCreds((p) => ({ ...p, host: e.target.value }))} className="w-full border border-[#D1D5DB] p-2 text-sm" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] uppercase tracking-wider text-gray-600 font-bold mb-1">Port</label>
+                      <input value={dbCreds.port} onChange={(e) => setDbCreds((p) => ({ ...p, port: e.target.value }))} className="w-full border border-[#D1D5DB] p-2 text-sm" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] uppercase tracking-wider text-gray-600 font-bold mb-1">Username</label>
+                      <input value={dbCreds.user} onChange={(e) => setDbCreds((p) => ({ ...p, user: e.target.value }))} className="w-full border border-[#D1D5DB] p-2 text-sm" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] uppercase tracking-wider text-gray-600 font-bold mb-1">Password</label>
+                      <input type="password" value={dbCreds.pass} onChange={(e) => setDbCreds((p) => ({ ...p, pass: e.target.value }))} className="w-full border border-[#D1D5DB] p-2 text-sm" />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-[10px] uppercase tracking-wider text-gray-600 font-bold mb-1">Database</label>
+                      <input value={dbCreds.dbname} onChange={(e) => setDbCreds((p) => ({ ...p, dbname: e.target.value }))} className="w-full border border-[#D1D5DB] p-2 text-sm" />
+                    </div>
+                  </div>
+                )}
+
+                <div className="mb-3">
+                  <button
+                    type="button"
+                    onClick={handleLoadLookupSchemasTables}
+                    className="w-full py-2 border border-[#23243B] text-[#23243B] text-xs font-bold uppercase hover:bg-gray-50"
+                  >
+                    Load schemas & tables
+                  </button>
+                  {lookupDbLoadMessage ? (
+                    <p className="mt-2 text-xs text-green-700 font-semibold">
+                      {lookupDbLoadMessage}
+                    </p>
+                  ) : null}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="sm:col-span-2">
+                    <label className="block text-[10px] uppercase tracking-wider text-gray-600 font-bold mb-1">
+                      Schema
+                    </label>
+                    <select
+                      value={lookupDbState.schema_name}
+                      onChange={(e) =>
+                        setLookupDbState((s) => ({
+                          ...s,
+                          schema_name: e.target.value,
+                          table_name: "",
+                          column_name: "",
+                        }))
+                      }
+                      className="w-full border border-[#D1D5DB] p-2 text-sm"
+                    >
+                      <option value="">Select schema...</option>
+                      {Object.keys(tablesBySchema || {}).map((s) => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wider text-gray-600 font-bold mb-1">
+                      Table
+                    </label>
+                    <select
+                      value={lookupDbState.table_name}
+                      onChange={(e) =>
+                        (() => {
+                          const t = e.target.value;
+                          setLookupDbState((s) => ({
+                            ...s,
+                            table_name: t,
+                            column_name: "",
+                          }));
+                          loadLookupTableColumns(lookupDbState.schema_name, t);
+                        })()
+                      }
+                      className="w-full border border-[#D1D5DB] p-2 text-sm"
+                    >
+                      <option value="">Select table...</option>
+                      {dbLookupTables.map((t) => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wider text-gray-600 font-bold mb-1">
+                      Column name
+                    </label>
+                    <select
+                      value={lookupDbState.column_name}
+                      onChange={(e) =>
+                        setLookupDbState((s) => ({ ...s, column_name: e.target.value }))
+                      }
+                      className="w-full border border-[#D1D5DB] p-2 text-sm"
+                    >
+                      <option value="">
+                        {lookupDbState.table_name ? "Select column..." : "Choose table first..."}
+                      </option>
+                      {lookupDbColumns.map((c) => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <label className="block text-[10px] uppercase tracking-wider text-gray-600 font-bold mb-1">
+                      Limit (optional)
+                    </label>
+                    <input
+                      type="text"
+                      min={1}
+                      max={5000}
+                      value={lookupDbState.limit}
+                      onChange={(e) =>
+                        setLookupDbState((s) => ({ ...s, limit: e.target.value }))
+                      }
+                      placeholder=""
+                      className="w-full border border-[#D1D5DB] p-2 text-sm"
+                    />
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-gray-500 mt-2">
+                  Uses DB credentials from Step 1 and selected database.
+                </p>
+                <button
+                  type="button"
+                  onClick={loadDbLookupValues}
+                  disabled={lookupDbState.loading}
+                  className="mt-3 w-full py-3 bg-[#23243B] text-white text-xs font-bold uppercase tracking-widest hover:bg-black disabled:opacity-50"
+                >
+                  {lookupDbState.loading ? "Loading..." : "Load values"}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

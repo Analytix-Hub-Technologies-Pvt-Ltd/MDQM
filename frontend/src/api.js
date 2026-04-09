@@ -106,6 +106,14 @@ export const previewDbTable = async (payload) => {
     return axios.post(`${API_URL}/db/preview-table`, payload);
 };
 
+export const getDbLookupValues = async (payload) => {
+    return axios.post(`${API_URL}/db/lookup-values`, payload);
+};
+
+export const getDbTableColumns = async (payload) => {
+    return axios.post(`${API_URL}/db/table-columns`, payload);
+};
+
 export const listSavedConnections = async () => {
     return axios.get(`${API_URL}/db/connections`);
 };
@@ -116,6 +124,14 @@ export const saveDbConnection = async (payload) => {
 
 export const testDbConnection = async (payload) => {
     return axios.post(`${API_URL}/db/test-connection`, payload);
+};
+
+export const exportResultsToDb = async (payload) => {
+    return axios.post(`${API_URL}/db/export-results`, payload);
+};
+
+export const emailTableOutput = async (tableId, payload) => {
+    return axios.post(`${API_URL}/tables/${tableId}/email`, payload);
 };
 
 // Add to frontend/src/api.js
