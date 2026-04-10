@@ -2,6 +2,19 @@ import axios from 'axios';
 
 const API_URL = 'http://127.0.0.1:8000';
 
+const readFilenameFromDisposition = (disposition = "", fallback = "download") => {
+    const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8Match?.[1]) {
+        try {
+            return decodeURIComponent(utf8Match[1]);
+        } catch {
+            return utf8Match[1];
+        }
+    }
+    const plainMatch = disposition.match(/filename="?([^"]+)"?/i);
+    return plainMatch?.[1] || fallback;
+};
+
 // --- JOBS ---
 export const getAllJobs = async () => {
     return axios.get(`${API_URL}/jobs`); 
@@ -85,8 +98,16 @@ export const previewCsvFile = async (file) => {
     });
 };
 
+export const previewCsvFileFromPath = async (filePath) => {
+    return axios.post(`${API_URL}/files/preview-from-path`, { file_path: filePath });
+};
+
 export const createNewJob = async (jobName) => {
     return axios.post(`${API_URL}/jobs/create`, { job_name: jobName });
+};
+
+export const uploadCsvPathToJob = async (jobId, filePath) => {
+    return axios.post(`${API_URL}/jobs/${jobId}/upload-from-path`, { file_path: filePath });
 };
 
 // Note: DB Connection and Download endpoints will require specific backend logic
@@ -132,6 +153,32 @@ export const exportResultsToDb = async (payload) => {
 
 export const emailTableOutput = async (tableId, payload) => {
     return axios.post(`${API_URL}/tables/${tableId}/email`, payload);
+};
+
+export const downloadTableOutputCsv = async (jobId, tableId) => {
+    const res = await axios.get(`${API_URL}/tables/${jobId}/${tableId}/download-csv`, {
+        responseType: "blob",
+    });
+    const filename = readFilenameFromDisposition(
+        res?.headers?.["content-disposition"] || "",
+        `table_${tableId}_results.csv`
+    );
+    return { blob: res.data, filename };
+};
+
+export const downloadTableOutputExcel = async (jobId, tableId) => {
+    const res = await axios.get(`${API_URL}/tables/${jobId}/${tableId}/download`, {
+        responseType: "blob",
+    });
+    const filename = readFilenameFromDisposition(
+        res?.headers?.["content-disposition"] || "",
+        `table_${tableId}_results.xlsx`
+    );
+    return { blob: res.data, filename };
+};
+
+export const uploadTableOutputToSharePoint = async (tableId, payload) => {
+    return axios.post(`${API_URL}/tables/${tableId}/sharepoint-upload`, payload);
 };
 
 // Add to frontend/src/api.js

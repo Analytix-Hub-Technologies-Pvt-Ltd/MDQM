@@ -11,7 +11,9 @@ import {
   addRule,
   createNewJob,
   uploadCsvToJob,
+  uploadCsvPathToJob,
   previewCsvFile,
+  previewCsvFileFromPath,
   previewDbTable,
   getDbLookupValues,
   getDbTableColumns,
@@ -22,6 +24,9 @@ import {
   testDbConnection,
   exportResultsToDb,
   emailTableOutput,
+  downloadTableOutputCsv,
+  downloadTableOutputExcel,
+  uploadTableOutputToSharePoint,
 } from "../api";
 import {
   ChevronRight,
@@ -130,6 +135,7 @@ export default function JobList() {
   // Add Form States
   const [newJobName, setNewJobName] = useState("");
   const [uploadFile, setUploadFile] = useState(null);
+  const [uploadFilePath, setUploadFilePath] = useState("");
   const [previewColumns, setPreviewColumns] = useState([]);
   const [previewColumnTypes, setPreviewColumnTypes] = useState({});
   const [previewRows, setPreviewRows] = useState([]);
@@ -178,6 +184,11 @@ export default function JobList() {
     toEmail: "",
     format: "csv",
     sending: false,
+    message: "",
+  });
+  const [outputAction, setOutputAction] = useState("download_csv");
+  const [sharePointState, setSharePointState] = useState({
+    uploading: false,
     message: "",
   });
   /** Fuzzy lookup: modal to choose file vs table paste */
@@ -229,8 +240,14 @@ export default function JobList() {
       sending: false,
       message: "",
     });
+    setOutputAction("download_csv");
+    setSharePointState({
+      uploading: false,
+      message: "",
+    });
     setConnectionName("");
     setDbCreds({ host: "", port: "", user: "", pass: "", dbname: "" });
+    setUploadFilePath("");
     setLookupModal({ open: false, columnName: null, view: "choice" });
     setTablePasteBuffer("");
     setLookupDbState({
@@ -363,8 +380,8 @@ export default function JobList() {
       alert("Enter a job name.");
       return;
     }
-    if (createDataMode === "file" && !uploadFile) {
-      alert("Choose a CSV file.");
+    if (createDataMode === "file" && !uploadFile && !uploadFilePath.trim()) {
+      alert("Choose a CSV file or provide a file path.");
       return;
     }
     const cols = previewEditable.map((item) => ({
@@ -633,18 +650,22 @@ export default function JobList() {
       let jobId;
       let latestTable;
       if (createDataMode === "file") {
-        if (!uploadFile) {
-          alert("Choose a CSV file.");
+        if (!uploadFile && !uploadFilePath.trim()) {
+          alert("Choose a CSV file or provide a file path.");
           return;
         }
         const createRes = await createNewJob(newJobName);
         jobId = createRes?.data?.job_id;
         if (!jobId) throw new Error("Unable to create job");
-        await uploadCsvToJob(
-          jobId,
-          uploadFile,
-          showFilePreview ? previewEditable : []
-        );
+        if (uploadFilePath.trim()) {
+          await uploadCsvPathToJob(jobId, uploadFilePath.trim());
+        } else {
+          await uploadCsvToJob(
+            jobId,
+            uploadFile,
+            showFilePreview ? previewEditable : []
+          );
+        }
         const tablesRes = await getTablesByJob(jobId);
         const createdTables = tablesRes?.data || [];
         latestTable = [...createdTables].sort((a, b) => b.table_id - a.table_id)[0];
@@ -714,12 +735,14 @@ export default function JobList() {
   };
 
   const handlePreviewCsv = async () => {
-    if (!uploadFile) {
-      alert("Choose a CSV file first.");
+    if (!uploadFile && !uploadFilePath.trim()) {
+      alert("Choose a CSV file or provide a file path first.");
       return;
     }
     try {
-      const res = await previewCsvFile(uploadFile);
+      const res = uploadFilePath.trim()
+        ? await previewCsvFileFromPath(uploadFilePath.trim())
+        : await previewCsvFile(uploadFile);
       const cols = res?.data?.columns || [];
       const types = res?.data?.column_types || {};
       const rows = res?.data?.rows || [];
@@ -928,6 +951,73 @@ export default function JobList() {
     } finally {
       setOutputEmailState((s) => ({ ...s, sending: false }));
     }
+  };
+
+  const saveBlobAsFile = (blob, filename) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadOutput = async (format) => {
+    if (!outputSummary?.tableId || !outputSummary?.jobId) {
+      alert("Output table not found.");
+      return;
+    }
+    try {
+      if (format === "csv") {
+        const { blob, filename } = await downloadTableOutputCsv(outputSummary.jobId, outputSummary.tableId);
+        saveBlobAsFile(blob, filename);
+      } else {
+        const { blob, filename } = await downloadTableOutputExcel(outputSummary.jobId, outputSummary.tableId);
+        saveBlobAsFile(blob, filename);
+      }
+    } catch (err) {
+      alert(err?.response?.data?.detail || `Failed to download ${format.toUpperCase()}`);
+    }
+  };
+
+  const handleUploadOutputToSharePoint = async () => {
+    if (!outputSummary?.tableId) {
+      alert("Output table not found.");
+      return;
+    }
+    setSharePointState({ uploading: true, message: "" });
+    try {
+      const res = await uploadTableOutputToSharePoint(outputSummary.tableId, {
+        format: outputEmailState.format,
+      });
+      setSharePointState({
+        uploading: false,
+        message: res?.data?.message || "Uploaded to SharePoint successfully",
+      });
+    } catch (err) {
+      setSharePointState({
+        uploading: false,
+        message: err?.response?.data?.detail || "Failed to upload to SharePoint",
+      });
+    }
+  };
+
+  const handleOutputAction = async () => {
+    if (outputAction === "download_csv") {
+      await handleDownloadOutput("csv");
+      return;
+    }
+    if (outputAction === "download_excel") {
+      await handleDownloadOutput("excel");
+      return;
+    }
+    if (outputAction === "sharepoint") {
+      await handleUploadOutputToSharePoint();
+      return;
+    }
+    await handleSendOutputEmail();
   };
 
   const handleLoadLookupSchemasTables = async () => {
@@ -1626,65 +1716,55 @@ export default function JobList() {
                       <div className="border border-[#D6D9E0] rounded-lg bg-white p-4 text-xs">
                         <div className="text-[11px] uppercase tracking-widest text-gray-500 mb-3">File Actions</div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              window.open(
-                                `http://127.0.0.1:8000/tables/${outputSummary?.jobId}/${outputSummary?.tableId}/download-csv?t=${Date.now()}`,
-                                "_blank",
-                              )
-                            }
-                            className="py-2 border border-[#23243B] text-[#23243B] font-bold uppercase hover:bg-gray-50"
-                          >
-                            Download CSV
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              window.open(
-                                `http://127.0.0.1:8000/tables/${outputSummary?.jobId}/${outputSummary?.tableId}/download?t=${Date.now()}`,
-                                "_blank",
-                              )
-                            }
-                            className="py-2 border border-[#23243B] text-[#23243B] font-bold uppercase hover:bg-gray-50"
-                          >
-                            Download Excel
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => alert("SharePoint upload option available; backend integration needs org auth setup.")}
-                            className="py-2 border border-[#23243B] text-[#23243B] font-bold uppercase hover:bg-gray-50"
-                          >
-                            Upload to SharePoint
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleSendOutputEmail}
-                            className="py-2 border border-[#23243B] text-[#23243B] font-bold uppercase hover:bg-gray-50"
-                          >
-                            {outputEmailState.sending ? "Sending..." : "Email File"}
-                          </button>
-                        </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2">
-                          <input
-                            type="email"
-                            placeholder="Recipient email"
-                            value={outputEmailState.toEmail}
-                            onChange={(e) => setOutputEmailState((s) => ({ ...s, toEmail: e.target.value }))}
-                            className="border border-[#A1A3AF] p-2 sm:col-span-2"
-                          />
                           <select
-                            value={outputEmailState.format}
-                            onChange={(e) => setOutputEmailState((s) => ({ ...s, format: e.target.value }))}
+                            value={outputAction}
+                            onChange={(e) => setOutputAction(e.target.value)}
                             className="border border-[#A1A3AF] p-2"
                           >
-                            <option value="csv">CSV</option>
-                            <option value="excel">Excel</option>
+                            <option value="download_csv">Download CSV</option>
+                            <option value="download_excel">Download Excel</option>
+                            <option value="sharepoint">Upload to SharePoint</option>
+                            <option value="email">Email File</option>
                           </select>
+                          <button
+                            type="button"
+                            onClick={handleOutputAction}
+                            className="py-2 border border-[#23243B] text-[#23243B] font-bold uppercase hover:bg-gray-50"
+                          >
+                            {outputAction === "sharepoint" && sharePointState.uploading
+                              ? "Uploading..."
+                              : outputAction === "email" && outputEmailState.sending
+                              ? "Sending..."
+                              : "Run Action"}
+                          </button>
                         </div>
+                        {outputAction === "email" ? (
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2">
+                            <input
+                              type="email"
+                              placeholder="Recipient email"
+                              value={outputEmailState.toEmail}
+                              onChange={(e) => setOutputEmailState((s) => ({ ...s, toEmail: e.target.value }))}
+                              className="border border-[#A1A3AF] p-2 sm:col-span-2"
+                            />
+                            <select
+                              value={outputEmailState.format}
+                              onChange={(e) => setOutputEmailState((s) => ({ ...s, format: e.target.value }))}
+                              className="border border-[#A1A3AF] p-2"
+                            >
+                              <option value="csv">CSV</option>
+                              <option value="excel">Excel</option>
+                            </select>
+                          </div>
+                        ) : null}
                         {outputEmailState.message ? (
                           <p className={`mt-2 text-xs ${outputEmailState.message.toLowerCase().includes("failed") ? "text-red-600" : "text-green-700"}`}>
                             {outputEmailState.message}
+                          </p>
+                        ) : null}
+                        {sharePointState.message ? (
+                          <p className={`mt-2 text-xs ${sharePointState.message.toLowerCase().includes("failed") ? "text-red-600" : "text-green-700"}`}>
+                            {sharePointState.message}
                           </p>
                         ) : null}
                       </div>
@@ -1860,6 +1940,7 @@ export default function JobList() {
                           accept=".csv"
                           onChange={(e) => {
                             setUploadFile(e.target.files[0]);
+                            setUploadFilePath("");
                             setShowFilePreview(false);
                             setPreviewColumns([]);
                             setPreviewColumnTypes({});
@@ -1869,6 +1950,27 @@ export default function JobList() {
                             setPreviewPage(1);
                           }}
                           className="w-full text-sm text-gray-500 file:mr-4 file:py-2.5 file:px-4 file:border-0 file:text-xs file:font-bold file:uppercase file:rounded-md file:bg-[#23243B] file:text-white hover:file:bg-black cursor-pointer"
+                        />
+                        <p className="mt-2 text-xs text-gray-600 break-all">
+                          Selected file: {uploadFile?.name || "No file selected"}
+                        </p>
+                        <input
+                          className="w-full mt-2 border border-[#A1A3AF] p-2 text-sm outline-none"
+                          placeholder="Or paste local file path (e.g. C:\\Downloads\\data.csv)"
+                          value={uploadFilePath}
+                          onChange={(e) => {
+                            setUploadFilePath(e.target.value);
+                            if (e.target.value.trim()) {
+                              setUploadFile(null);
+                            }
+                            setShowFilePreview(false);
+                            setPreviewColumns([]);
+                            setPreviewColumnTypes({});
+                            setPreviewRows([]);
+                            setPreviewTotalRows(0);
+                            setPreviewEditable([]);
+                            setPreviewPage(1);
+                          }}
                         />
                       </div>
                       <button
