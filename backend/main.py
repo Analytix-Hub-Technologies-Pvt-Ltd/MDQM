@@ -2,12 +2,18 @@ from datetime import datetime
 from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import func, distinct, inspect, update
+from sqlalchemy import func, distinct, inspect, update, create_engine
 from pydantic import BaseModel
 from typing import List, Optional
 import shutil
 import os
+import json
+import psycopg2
+from psycopg2 import sql as psql
 import pandas as pd
+from urllib.parse import quote_plus
+from urllib import request as urlrequest
+from urllib import parse as urlparse
 import models
 from database import SessionLocal, engine
 from engine.orchestrator import run_data_quality_job
@@ -15,6 +21,7 @@ from fastapi.responses import StreamingResponse
 import io
 import zipfile
 from openpyxl.styles import PatternFill
+from openpyxl import load_workbook
 from thefuzz import process
 from pydantic import BaseModel
 
@@ -81,11 +88,471 @@ class FuzzyReplace(BaseModel):
     
 class JobCreate(BaseModel):
     job_name: str
+
+# Local file for saved DB connections
+CONNECTIONS_FILE = os.path.join(os.path.dirname(__file__), "saved_connections.json")
+
+
+def _read_saved_connections():
+    if not os.path.exists(CONNECTIONS_FILE):
+        return []
+    try:
+        with open(CONNECTIONS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _write_saved_connections(items):
+    with open(CONNECTIONS_FILE, "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=True, indent=2)
+
+
+def _normalize_local_path(raw_path: str):
+    """
+    Normalize user-entered Windows paths.
+    Accepts sloppy forms like 'c\\downloads\\file.csv' by converting to 'c:\\downloads\\file.csv'.
+    """
+    value = (raw_path or "").strip().strip('"').strip("'")
+    if not value:
+        return value
+
+    # Handle drive typed as "c\foo\bar.csv" (missing colon)
+    if len(value) >= 2 and value[1] == "\\" and value[0].isalpha():
+        value = f"{value[0]}:{value[1:]}"
+
+    # Normalize slashes and relative components.
+    return os.path.normpath(value)
+
+
+def _excel_preview_fast(file_path: str):
+    """
+    Fast preview for large XLSX files without loading whole sheet into pandas.
+    Returns columns, column_types, rows(first 11), total_rows.
+    """
+    wb = load_workbook(file_path, read_only=True, data_only=True)
+    ws = wb.active
+
+    row_iter = ws.iter_rows(values_only=True)
+    header = next(row_iter, None)
+    if not header:
+        wb.close()
+        return {"columns": [], "column_types": {}, "rows": [], "total_rows": 0}
+
+    columns = [str(c).strip() if c is not None else "" for c in header]
+    columns = [c if c else f"col_{idx+1}" for idx, c in enumerate(columns)]
+
+    sample_rows = []
+    type_samples = {c: [] for c in columns}
+    for idx, row in enumerate(row_iter, start=1):
+        row_vals = list(row[: len(columns)])
+        if idx <= 11:
+            sample_rows.append({col: ("" if val is None else val) for col, val in zip(columns, row_vals)})
+        if idx <= 500:
+            for col, val in zip(columns, row_vals):
+                if val is not None and val != "":
+                    type_samples[col].append(val)
+        if idx >= 2000:
+            break
+
+    def infer(vals):
+        if not vals:
+            return "string"
+        if all(isinstance(v, bool) for v in vals):
+            return "bool"
+        # bool is a subclass of int, so this check must be after bool.
+        if all(isinstance(v, int) and not isinstance(v, bool) for v in vals):
+            return "int64"
+        if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in vals):
+            return "float64"
+        if all(isinstance(v, datetime) for v in vals):
+            return "datetime64[ns]"
+        return "object"
+
+    column_types = {col: infer(type_samples[col]) for col in columns}
+    total_rows = max((ws.max_row or 1) - 1, 0)
+    wb.close()
+
+    return {
+        "columns": columns,
+        "column_types": column_types,
+        "rows": sample_rows,
+        "total_rows": int(total_rows),
+    }
 # --- 3. API ENDPOINTS ---
 
 @app.get("/")
 def read_root():
     return {"message": "MDQM Backend is Live"}
+
+
+@app.post("/files/preview")
+async def preview_file(file: UploadFile = File(...)):
+    """Return first rows + inferred column types for CSV / Excel."""
+    try:
+        if file.filename.lower().endswith((".xlsx", ".xls")):
+            df = pd.read_excel(file.file)
+        else:
+            df = pd.read_csv(file.file)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid file: {str(e)}")
+
+    rows = df.head(11).fillna("").to_dict(orient="records")
+    column_types = {col: str(dtype) for col, dtype in df.dtypes.items()}
+    return {
+        "columns": df.columns.tolist(),
+        "column_types": column_types,
+        "rows": rows,
+        "total_rows": int(len(df)),
+    }
+
+
+@app.post("/files/preview-from-path")
+def preview_file_from_path(payload: dict = Body(...)):
+    file_path = _normalize_local_path(payload.get("file_path"))
+    if not file_path:
+        raise HTTPException(status_code=400, detail="file_path is required")
+    if not os.path.isfile(file_path):
+        raise HTTPException(
+            status_code=400,
+            detail=f"File path not found. Use a full path like C:\\Downloads\\data.csv. Received: {file_path}",
+        )
+
+    try:
+        lower = file_path.lower()
+        if lower.endswith((".xlsx", ".xls")):
+            return _excel_preview_fast(file_path)
+        else:
+            df = pd.read_csv(file_path)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid file: {str(e)}")
+
+    rows = df.head(11).fillna("").to_dict(orient="records")
+    column_types = {col: str(dtype) for col, dtype in df.dtypes.items()}
+    return {
+        "columns": df.columns.tolist(),
+        "column_types": column_types,
+        "rows": rows,
+        "total_rows": int(len(df)),
+    }
+
+
+@app.get("/db/connections")
+def list_db_connections():
+    items = _read_saved_connections()
+    return [
+        {
+            "connection_id": item.get("connection_id"),
+            "connection_name": item.get("connection_name", ""),
+            "host": item.get("host", ""),
+            "port": item.get("port", "5432"),
+            "user": item.get("user", ""),
+        }
+        for item in items
+    ]
+
+
+@app.post("/db/connections")
+def save_db_connection(payload: dict = Body(...)):
+    items = _read_saved_connections()
+    next_id = max([int(i.get("connection_id", 0)) for i in items] + [0]) + 1
+    new_item = {
+        "connection_id": next_id,
+        "connection_name": payload.get("connection_name", ""),
+        "host": payload.get("host", ""),
+        "port": str(payload.get("port", "5432")),
+        "user": payload.get("user", ""),
+        "pass": payload.get("pass", ""),
+    }
+    items.append(new_item)
+    _write_saved_connections(items)
+    return {"message": "Connection saved", "connection_id": next_id}
+
+
+def _resolve_connection_payload(payload: dict):
+    """Resolve credentials from direct fields or saved connection id."""
+    connection_id = payload.get("connection_id")
+    if connection_id is not None:
+        items = _read_saved_connections()
+        selected = next(
+            (i for i in items if str(i.get("connection_id")) == str(connection_id)),
+            None,
+        )
+        if not selected:
+            raise HTTPException(status_code=404, detail="Saved connection not found")
+        return {
+            "host": selected.get("host"),
+            "port": str(selected.get("port", "5432")),
+            "user": selected.get("user"),
+            "pass": selected.get("pass", ""),
+            "dbname": payload.get("dbname"),
+        }
+
+    return {
+        "host": payload.get("host"),
+        "port": str(payload.get("port", "5432")),
+        "user": payload.get("user"),
+        "pass": payload.get("pass", ""),
+        "dbname": payload.get("dbname"),
+    }
+
+
+def _connect_postgres_with_fallback(creds: dict):
+    """
+    Connect using provided credentials first.
+    If auth fails, retry once with backend .env credentials for local DB usage.
+    """
+    try:
+        return psycopg2.connect(
+            host=creds["host"],
+            port=creds["port"],
+            user=creds["user"],
+            password=creds["pass"],
+            dbname=creds["dbname"],
+            connect_timeout=8,
+        )
+    except Exception as first_exc:
+        env_user = os.getenv("POSTGRES_USER", "postgres")
+        env_pass = os.getenv("POSTGRES_PASSWORD", "")
+        env_host = os.getenv("POSTGRES_HOST", "127.0.0.1")
+        env_port = os.getenv("POSTGRES_PORT", "5432")
+        env_db = os.getenv("POSTGRES_DB", "mdms")
+
+        # Fallback is intended for local single-DB setups where frontend creds
+        # can be accidentally entered as dbname instead of username.
+        can_retry = (
+            str(creds.get("host", "")) in ("127.0.0.1", "localhost", env_host)
+            and str(creds.get("port", "")) in ("5432", env_port)
+            and str(creds.get("dbname", "")) in (env_db, "mdms")
+            and str(creds.get("user", "")) != str(env_user)
+        )
+        if not can_retry:
+            raise first_exc
+
+        return psycopg2.connect(
+            host=env_host,
+            port=env_port,
+            user=env_user,
+            password=env_pass,
+            dbname=env_db,
+            connect_timeout=8,
+        )
+
+
+@app.post("/db/list-schemas-tables")
+def list_schemas_tables(payload: dict = Body(...)):
+    creds = _resolve_connection_payload(payload)
+    if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
+        # Frontend can hit this while user is still typing credentials.
+        return {"schemas": [], "tables_by_schema": {}}
+
+    env_user = os.getenv("POSTGRES_USER", "postgres")
+    env_pass = os.getenv("POSTGRES_PASSWORD", "")
+    env_host = os.getenv("POSTGRES_HOST", "127.0.0.1")
+    env_port = os.getenv("POSTGRES_PORT", "5432")
+    env_db = os.getenv("POSTGRES_DB", "mdms")
+    if (
+        str(creds.get("host", "")) in ("127.0.0.1", "localhost", env_host)
+        and str(creds.get("port", "")) in ("5432", env_port)
+        and str(creds.get("dbname", "")) in (env_db, "mdms")
+        and str(creds.get("user", "")) != str(env_user)
+    ):
+        # Align target credentials with local backend DB credentials.
+        creds = {
+            "host": env_host,
+            "port": env_port,
+            "user": env_user,
+            "pass": env_pass,
+            "dbname": env_db,
+        }
+
+    conn = None
+    try:
+        conn = _connect_postgres_with_fallback(creds)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT schema_name
+            FROM information_schema.schemata
+            WHERE schema_name NOT IN ('pg_catalog', 'information_schema')
+            ORDER BY schema_name
+            """
+        )
+        schemas = [row[0] for row in cur.fetchall()]
+
+        tables_by_schema = {}
+        for schema in schemas:
+            cur.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = %s
+                  AND table_type = 'BASE TABLE'
+                ORDER BY table_name
+                """,
+                (schema,),
+            )
+            tables_by_schema[schema] = [row[0] for row in cur.fetchall()]
+
+        cur.close()
+        return {"schemas": schemas, "tables_by_schema": tables_by_schema}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to list schemas/tables: {str(e)}")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+@app.post("/db/table-columns")
+def db_table_columns(payload: dict = Body(...)):
+    creds = _resolve_connection_payload(payload)
+    schema_name = payload.get("schema_name")
+    table_name = payload.get("table_name")
+
+    if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
+        raise HTTPException(
+            status_code=400,
+            detail="host, user, and dbname are required (or provide connection_id + dbname)",
+        )
+    if not schema_name or not table_name:
+        raise HTTPException(status_code=400, detail="schema_name and table_name are required")
+
+    conn = None
+    try:
+        conn = _connect_postgres_with_fallback(creds)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = %s
+              AND table_name = %s
+            ORDER BY ordinal_position
+            """,
+            (schema_name, table_name),
+        )
+        columns = [row[0] for row in cur.fetchall()]
+        cur.close()
+        return {"columns": columns}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to fetch table columns: {str(e)}")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+@app.post("/db/lookup-values")
+def db_lookup_values(payload: dict = Body(...)):
+    creds = _resolve_connection_payload(payload)
+    schema_name = payload.get("schema_name")
+    table_name = payload.get("table_name")
+    column_name = payload.get("column_name")
+
+    if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
+        raise HTTPException(
+            status_code=400,
+            detail="host, user, and dbname are required (or provide connection_id + dbname)",
+        )
+    if not schema_name or not table_name or not column_name:
+        raise HTTPException(
+            status_code=400,
+            detail="schema_name, table_name, and column_name are required",
+        )
+
+    conn = None
+    try:
+        conn = _connect_postgres_with_fallback(creds)
+        cur = conn.cursor()
+        query = psql.SQL(
+            """
+            SELECT DISTINCT CAST({col} AS TEXT) AS value
+            FROM {schema}.{table}
+            WHERE {col} IS NOT NULL
+            ORDER BY value
+            """
+        ).format(
+            col=psql.Identifier(column_name),
+            schema=psql.Identifier(schema_name),
+            table=psql.Identifier(table_name),
+        )
+        cur.execute(query)
+        values = [str(row[0]).strip() for row in cur.fetchall() if str(row[0]).strip()]
+        cur.close()
+        return {"values": values}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to fetch lookup values: {str(e)}")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+@app.post("/db/export-results")
+def export_results_to_external_db(payload: dict = Body(...), db: Session = Depends(get_db)):
+    """
+    Export combined result rows (clean + error) into an external Postgres table.
+    Supports either connection_id + dbname OR direct host/port/user/pass/dbname.
+    """
+    table_id = payload.get("table_id")
+    target_table = payload.get("target_table")
+    target_schema = payload.get("target_schema") or None
+    if_exists = payload.get("if_exists", "append")
+
+    if not table_id or not target_table:
+        raise HTTPException(status_code=400, detail="table_id and target_table are required")
+    if if_exists not in ("append", "replace"):
+        raise HTTPException(status_code=400, detail="if_exists must be 'append' or 'replace'")
+
+    src_table = (
+        db.query(models.TableMetadata)
+        .filter(models.TableMetadata.table_id == table_id)
+        .order_by(models.TableMetadata.job_id.desc())
+        .first()
+    )
+    if not src_table:
+        raise HTTPException(status_code=404, detail="Source table not found")
+
+    creds = _resolve_connection_payload(payload)
+    if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
+        raise HTTPException(
+            status_code=400,
+            detail="host, user, and dbname are required (or provide connection_id + dbname)",
+        )
+
+    # Keep the same resilience pattern used by other DB helper endpoints.
+    conn = None
+    try:
+        conn = _connect_postgres_with_fallback(creds)
+        conn.close()
+    except Exception as e:
+        if conn is not None:
+            conn.close()
+        raise HTTPException(status_code=400, detail=f"Failed to connect target DB: {str(e)}")
+
+    try:
+        df = generate_output_dataframe(db, src_table.table_name, src_table.job_id)
+        ext_url = (
+            f"postgresql+psycopg2://{quote_plus(str(creds['user']))}:{quote_plus(str(creds.get('pass', '')))}"
+            f"@{creds['host']}:{creds['port']}/{creds['dbname']}"
+        )
+        ext_engine = create_engine(ext_url)
+        df.to_sql(
+            name=target_table,
+            con=ext_engine,
+            schema=target_schema,
+            if_exists=if_exists,
+            index=False,
+            method="multi",
+            chunksize=2000,
+        )
+        return {
+            "message": "Results exported successfully",
+            "rows_exported": int(len(df)),
+            "target_schema": target_schema,
+            "target_table": target_table,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to export results: {str(e)}")
 
 @app.post("/jobs/create")
 def create_job(payload: JobCreate, db: Session = Depends(get_db)):
@@ -177,6 +644,82 @@ async def upload_file(job_id: int, file: UploadFile = File(...), db: Session = D
     
     return {"job_id": job_id, "message": "File Uploaded and Processed Successfully"}
 
+
+@app.post("/jobs/{job_id}/upload-from-path")
+def upload_file_from_path(job_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
+    file_path = _normalize_local_path(payload.get("file_path"))
+    if not file_path:
+        raise HTTPException(status_code=400, detail="file_path is required")
+    if not os.path.isfile(file_path):
+        raise HTTPException(
+            status_code=400,
+            detail=f"File path not found. Use a full path like C:\\Downloads\\data.csv. Received: {file_path}",
+        )
+
+    upload_dir = "uploads"
+    os.makedirs(upload_dir, exist_ok=True)
+
+    file_name = os.path.basename(file_path)
+    table_name = file_name.replace(".csv", "").replace(".xlsx", "").replace(".xls", "")
+    final_csv_path = os.path.join(upload_dir, f"{table_name}.csv")
+
+    max_id = db.query(func.max(models.TableMetadata.table_id)).filter(models.TableMetadata.job_id == job_id).scalar()
+    next_table_id = 1 if max_id is None else max_id + 1
+
+    try:
+        if file_name.lower().endswith((".xlsx", ".xls")):
+            df = pd.read_excel(file_path)
+        else:
+            df = pd.read_csv(file_path)
+
+        # Normalize to CSV in uploads for downstream engine.
+        df.to_csv(final_csv_path, index=False)
+
+        for col in df.columns:
+            if df[col].dtype == "object":
+                try:
+                    converted = pd.to_datetime(df[col], format="mixed", dayfirst=True, errors="coerce")
+                    if not converted.isna().all():
+                        df[col] = converted
+                except Exception:
+                    pass
+
+        row_count = len(df)
+        columns = df.dtypes.items()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid file format: {str(e)}")
+
+    new_table = models.TableMetadata(
+        job_id=job_id,
+        table_id=next_table_id,
+        table_name=table_name,
+        row_count=row_count,
+    )
+    db.add(new_table)
+    db.commit()
+
+    for col_name, dtype in columns:
+        str_type = "String"
+        if "int" in str(dtype):
+            str_type = "Integer"
+        elif "float" in str(dtype):
+            str_type = "Float"
+        elif "datetime" in str(dtype):
+            str_type = "Date"
+        elif "bool" in str(dtype):
+            str_type = "Boolean"
+
+        col_meta = models.ColumnMetadata(
+            job_id=job_id,
+            table_id=next_table_id,
+            column_name=col_name,
+            data_type=str_type,
+        )
+        db.add(col_meta)
+    db.commit()
+
+    return {"job_id": job_id, "message": "File Uploaded from path and Processed Successfully"}
+
 @app.post("/jobs/{job_id}/run")
 def run_job(job_id: int, db: Session = Depends(get_db)):
     # 1. Check if the job actually exists
@@ -197,7 +740,8 @@ def run_job(job_id: int, db: Session = Depends(get_db)):
 
 @app.get("/jobs")
 def get_all_jobs(db: Session = Depends(get_db)):
-    jobs = db.query(models.Job).all()
+    # Keep newest jobs first so recent inserts are visible at the top in UI.
+    jobs = db.query(models.Job).order_by(models.Job.job_id.desc()).all()
     result = []
     
     for job in jobs:
@@ -506,45 +1050,61 @@ def delete_table(table_id: int, db: Session = Depends(get_db)):
 
 # --- DOWNLOAD ENDPOINTS (EXCEL WITH RED ERROR ROWS) ---
 
-def generate_formatted_excel(db: Session, table_name: str, job_id: int):
-    # 1. Inspect the 'app_data' schema specifically!
+def _load_result_dataframes(db: Session, table_name: str, job_id: int):
+    """Load clean/error result tables for a job; fallback to latest table-name match."""
     inspector = inspect(db.bind)
-    all_tables = inspector.get_table_names(schema="app_data") 
-    
+    all_tables = inspector.get_table_names(schema="app_data")
+
     t_name_lower = table_name.lower()
     j_id_str = str(job_id)
-    
-    actual_clean = None
-    actual_error = None
-    
-    # 2. Fuzzy Match the tables inside app_data
+
+    exact_clean = []
+    exact_error = []
+    fallback_clean = []
+    fallback_error = []
+
     for t in all_tables:
         t_lower = t.lower()
-        if t_name_lower in t_lower and (f"job{j_id_str}" in t_lower or f"_{j_id_str}_" in t_lower):
-            if "clean" in t_lower:
-                actual_clean = t
-            elif "error" in t_lower or "quarantine" in t_lower or "bad" in t_lower:
-                actual_error = t
+        if t_name_lower not in t_lower:
+            continue
+
+        is_exact_job = (f"job{j_id_str}" in t_lower) or (f"_{j_id_str}_" in t_lower)
+        if "clean" in t_lower:
+            (exact_clean if is_exact_job else fallback_clean).append(t)
+        elif "error" in t_lower or "quarantine" in t_lower or "bad" in t_lower:
+            (exact_error if is_exact_job else fallback_error).append(t)
+
+    # Prefer exact job match; if missing, use latest lexical match for same table name.
+    actual_clean = sorted(exact_clean)[-1] if exact_clean else (sorted(fallback_clean)[-1] if fallback_clean else None)
+    actual_error = sorted(exact_error)[-1] if exact_error else (sorted(fallback_error)[-1] if fallback_error else None)
 
     if not actual_clean and not actual_error:
-        raise Exception(f"Tables missing in 'app_data'. Looked for '{t_name_lower}' + 'job{j_id_str}'. Exists in app_data: {all_tables}")
+        raise Exception(
+            f"Tables missing in 'app_data'. Looked for '{t_name_lower}' + 'job{j_id_str}'. Exists in app_data: {all_tables}"
+        )
 
     df_clean = pd.DataFrame()
     df_error = pd.DataFrame()
-    
-    # 3. Read the data from the 'app_data' schema!
     if actual_clean:
-        try: df_clean = pd.read_sql_table(actual_clean, db.bind, schema="app_data")
-        except Exception: pass
-        
+        try:
+            df_clean = pd.read_sql_table(actual_clean, db.bind, schema="app_data")
+        except Exception:
+            pass
     if actual_error:
-        try: df_error = pd.read_sql_table(actual_error, db.bind, schema="app_data")
-        except Exception: pass
-        
+        try:
+            df_error = pd.read_sql_table(actual_error, db.bind, schema="app_data")
+        except Exception:
+            pass
+
     if df_clean.empty and df_error.empty:
         raise Exception(f"Found the tables ({actual_clean}, {actual_error}) in app_data, but they are completely empty.")
-        
-    # 4. Combine and Tag rows
+    return df_clean, df_error
+
+
+def generate_formatted_excel(db: Session, table_name: str, job_id: int):
+    df_clean, df_error = _load_result_dataframes(db, table_name, job_id)
+
+    # Combine and tag rows
     df_clean['__is_error__'] = False
     if not df_error.empty:
         df_error['__is_error__'] = True
@@ -569,6 +1129,14 @@ def generate_formatted_excel(db: Session, table_name: str, job_id: int):
     return output
 
 
+def generate_output_dataframe(db: Session, table_name: str, job_id: int):
+    """Return combined clean+error rows as a dataframe."""
+    df_clean, df_error = _load_result_dataframes(db, table_name, job_id)
+    if not df_error.empty:
+        return pd.concat([df_clean, df_error], ignore_index=True)
+    return df_clean
+
+
 @app.get("/tables/{table_id}/download")
 def download_table_excel(table_id: int, db: Session = Depends(get_db)):
     table = db.query(models.TableMetadata).filter(models.TableMetadata.table_id == table_id).first()
@@ -576,13 +1144,220 @@ def download_table_excel(table_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Table not found")
         
     try:
-        excel_io = generate_formatted_excel(db, table.table_name, table.job_id)
-        
-        response = StreamingResponse(iter([excel_io.getvalue()]), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        response.headers["Content-Disposition"] = f"attachment; filename={table.table_name}_Results.xlsx"
+        file_bytes, filename, mime_type = _build_table_output_bytes(db, table, "excel")
+        response = StreamingResponse(iter([file_bytes]), media_type=mime_type)
+        response.headers["Content-Disposition"] = f"attachment; filename={filename}"
         return response
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/tables/{table_id}/download-csv")
+def download_table_csv(table_id: int, db: Session = Depends(get_db)):
+    table = db.query(models.TableMetadata).filter(models.TableMetadata.table_id == table_id).first()
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+    try:
+        file_bytes, filename, mime_type = _build_table_output_bytes(db, table, "csv")
+        response = StreamingResponse(iter([file_bytes]), media_type=mime_type)
+        response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+def _resolve_table_for_job_and_table(db: Session, job_id: int, table_id: int):
+    """Resolve table with a few safe fallbacks for mixed IDs from UI."""
+    table = (
+        db.query(models.TableMetadata)
+        .filter(
+            models.TableMetadata.job_id == job_id,
+            models.TableMetadata.table_id == table_id,
+        )
+        .first()
+    )
+    if table:
+        return table
+
+    # Fallback 1: Some UI states can accidentally swap ids.
+    swapped = (
+        db.query(models.TableMetadata)
+        .filter(
+            models.TableMetadata.job_id == table_id,
+            models.TableMetadata.table_id == job_id,
+        )
+        .first()
+    )
+    if swapped:
+        return swapped
+
+    # Fallback 2: If table_id is globally unique in current data, use latest match.
+    return (
+        db.query(models.TableMetadata)
+        .filter(models.TableMetadata.table_id == table_id)
+        .order_by(models.TableMetadata.job_id.desc())
+        .first()
+    )
+
+
+@app.get("/tables/{job_id}/{table_id}/download")
+def download_table_excel_by_job(job_id: int, table_id: int, db: Session = Depends(get_db)):
+    table = _resolve_table_for_job_and_table(db, job_id, table_id)
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found for this job")
+    try:
+        file_bytes, filename, mime_type = _build_table_output_bytes(db, table, "excel")
+        response = StreamingResponse(iter([file_bytes]), media_type=mime_type)
+        response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/tables/{job_id}/{table_id}/download-csv")
+def download_table_csv_by_job(job_id: int, table_id: int, db: Session = Depends(get_db)):
+    table = _resolve_table_for_job_and_table(db, job_id, table_id)
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found for this job")
+    try:
+        file_bytes, filename, mime_type = _build_table_output_bytes(db, table, "csv")
+        response = StreamingResponse(iter([file_bytes]), media_type=mime_type)
+        response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+def _build_table_output_bytes(db: Session, table, fmt: str):
+    fmt = (fmt or "csv").strip().lower()
+    source_csv_path = os.path.join("uploads", f"{table.table_name}.csv")
+
+    if fmt == "excel":
+        try:
+            excel_io = generate_formatted_excel(db, table.table_name, table.job_id)
+            return (
+                excel_io.getvalue(),
+                f"{table.table_name}_Results.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        except Exception:
+            # Fallback for not-yet-run jobs: export raw uploaded CSV as Excel.
+            if not os.path.exists(source_csv_path):
+                raise
+            df = pd.read_csv(source_csv_path)
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                df.to_excel(writer, index=False, sheet_name="Data")
+            output.seek(0)
+            return (
+                output.getvalue(),
+                f"{table.table_name}_Source.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+
+    if fmt != "csv":
+        raise HTTPException(status_code=400, detail="format must be csv or excel")
+
+    try:
+        df = generate_output_dataframe(db, table.table_name, table.job_id)
+        return (
+            df.to_csv(index=False).encode("utf-8"),
+            f"{table.table_name}_Results.csv",
+            "text/csv",
+        )
+    except Exception:
+        # Fallback for not-yet-run jobs: return raw uploaded CSV.
+        if not os.path.exists(source_csv_path):
+            raise
+        with open(source_csv_path, "rb") as f:
+            return (f.read(), f"{table.table_name}_Source.csv", "text/csv")
+
+
+@app.post("/tables/{table_id}/sharepoint-upload")
+def upload_table_to_sharepoint(table_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
+    """
+    Upload table output file (csv/excel) to SharePoint via Microsoft Graph.
+    Required env vars:
+      SP_TENANT_ID, SP_CLIENT_ID, SP_CLIENT_SECRET, SP_DRIVE_ID
+    Optional env vars:
+      SP_FOLDER_PATH (default: MDQM-Exports)
+    """
+    table = (
+        db.query(models.TableMetadata)
+        .filter(models.TableMetadata.table_id == table_id)
+        .order_by(models.TableMetadata.job_id.desc())
+        .first()
+    )
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+
+    tenant_id = os.getenv("SP_TENANT_ID")
+    client_id = os.getenv("SP_CLIENT_ID")
+    client_secret = os.getenv("SP_CLIENT_SECRET")
+    drive_id = os.getenv("SP_DRIVE_ID")
+    folder_path = (os.getenv("SP_FOLDER_PATH", "MDQM-Exports") or "MDQM-Exports").strip("/")
+
+    if not tenant_id or not client_id or not client_secret or not drive_id:
+        raise HTTPException(
+            status_code=400,
+            detail="SharePoint is not configured. Set SP_TENANT_ID, SP_CLIENT_ID, SP_CLIENT_SECRET, SP_DRIVE_ID.",
+        )
+
+    fmt = (payload.get("format") or "csv").strip().lower()
+    file_bytes, filename, _mime = _build_table_output_bytes(db, table, fmt)
+
+    # 1) Acquire app-only token
+    token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+    token_body = urlparse.urlencode(
+        {
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "scope": "https://graph.microsoft.com/.default",
+        }
+    ).encode("utf-8")
+    token_req = urlrequest.Request(
+        token_url,
+        data=token_body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+
+    try:
+        with urlrequest.urlopen(token_req, timeout=20) as resp:
+            token_payload = json.loads(resp.read().decode("utf-8"))
+            access_token = token_payload.get("access_token")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to get SharePoint token: {str(e)}")
+
+    if not access_token:
+        raise HTTPException(status_code=400, detail="SharePoint token is missing access_token")
+
+    # 2) Upload bytes to drive root:/folder/file:/content
+    graph_path = f"{folder_path}/{filename}" if folder_path else filename
+    upload_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{graph_path}:/content"
+    upload_req = urlrequest.Request(
+        upload_url,
+        data=file_bytes,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/octet-stream",
+        },
+        method="PUT",
+    )
+
+    try:
+        with urlrequest.urlopen(upload_req, timeout=60) as resp:
+            item_payload = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to upload to SharePoint: {str(e)}")
+
+    return {
+        "message": "Uploaded to SharePoint successfully",
+        "filename": filename,
+        "file_id": item_payload.get("id"),
+        "web_url": item_payload.get("webUrl"),
+    }
 
 
 @app.get("/jobs/{job_id}/download")
