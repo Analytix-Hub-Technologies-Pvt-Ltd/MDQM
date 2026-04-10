@@ -7,8 +7,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-# Single source of truth: backend/.env (gitignored). Code defaults here are only fallbacks.
-load_dotenv(Path(__file__).resolve().parent / ".env")
+# Read backend/.env and prefer it over shell env vars.
+load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
 
 POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "")
@@ -26,7 +26,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
 
-
+# Dependency to get DB session in endpoints
 def get_db():
     db = SessionLocal()
     try:
