@@ -204,8 +204,8 @@ export const deleteQuarantineError = async (logId) => {
 };
 
 // Add to frontend/src/api.js
-export const getFuzzyDetails = async (jobId, tableId) => {
-    return axios.get(`${API_URL}/quarantine/jobs/${jobId}/tables/${tableId}/fuzzy`);
+export const getFuzzyDetails = async (jobId, tableId, params = {}) => {
+    return axios.get(`${API_URL}/quarantine/jobs/${jobId}/tables/${tableId}/fuzzy`, { params });
 };
 
 export const addToMasterData = async (jobId, tableId, newMaster) => {

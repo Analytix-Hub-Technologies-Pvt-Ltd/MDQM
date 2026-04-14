@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   getFuzzyDetails,
   addToMasterData,
@@ -7,16 +7,22 @@ import {
 } from "../api";
 import { ArrowLeft, Trash2, Plus, Database, ReplaceAll, X } from "lucide-react";
 
+const FUZZY_PAGE_SIZE = 300;
+
 export default function FuzzyErrors({ jobId, tableId, onBack }) {
-  const [data, setData] = useState({
+  const [meta, setMeta] = useState({
     table_name: "",
+    column_name: "",
     threshold: 0,
     total_fuzzy_errors: 0,
     master_list: [],
     all_columns: [],
-    data: [],
   });
+  const [rows, setRows] = useState([]);
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const nextOffsetRef = useRef(0);
 
   // Requirement 14 Dropdown State
   const [filterTier, setFilterTier] = useState("below"); // "below", "threshold-90", "above-90"
@@ -25,20 +31,83 @@ export default function FuzzyErrors({ jobId, tableId, onBack }) {
   const [showMasterModal, setShowMasterModal] = useState(false);
   const [newMasterInput, setNewMasterInput] = useState("");
 
+  const applyFuzzyResponse = (d, offsetUsed, append) => {
+    setMeta({
+      table_name: d.table_name,
+      column_name: d.column_name,
+      threshold: d.threshold,
+      total_fuzzy_errors: d.total_fuzzy_errors,
+      master_list: d.master_list,
+      all_columns: d.all_columns,
+    });
+    if (append) {
+      setRows((prev) => [...prev, ...d.data]);
+    } else {
+      setRows(d.data);
+    }
+    nextOffsetRef.current = offsetUsed + d.data.length;
+    setHasMore(Boolean(d.has_more));
+  };
+
   useEffect(() => {
-    fetchData();
-  }, [jobId, tableId]);
+    let cancelled = false;
+    nextOffsetRef.current = 0;
+    setLoading(true);
+    (async () => {
+      try {
+        const res = await getFuzzyDetails(jobId, tableId, {
+          tier: filterTier,
+          limit: FUZZY_PAGE_SIZE,
+          offset: 0,
+        });
+        if (cancelled) return;
+        applyFuzzyResponse(res.data, 0, false);
+      } catch (err) {
+        console.error(err);
+        if (!cancelled) {
+          alert("Failed to load fuzzy data. Ensure a fuzzy rule is configured.");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [jobId, tableId, filterTier]);
 
   const fetchData = async () => {
+    nextOffsetRef.current = 0;
     setLoading(true);
     try {
-      const res = await getFuzzyDetails(jobId, tableId);
-      setData(res.data);
+      const res = await getFuzzyDetails(jobId, tableId, {
+        tier: filterTier,
+        limit: FUZZY_PAGE_SIZE,
+        offset: 0,
+      });
+      applyFuzzyResponse(res.data, 0, false);
     } catch (err) {
       console.error(err);
       alert("Failed to load fuzzy data. Ensure a fuzzy rule is configured.");
     }
     setLoading(false);
+  };
+
+  const loadMore = async () => {
+    const off = nextOffsetRef.current;
+    setLoadingMore(true);
+    try {
+      const res = await getFuzzyDetails(jobId, tableId, {
+        tier: filterTier,
+        limit: FUZZY_PAGE_SIZE,
+        offset: off,
+      });
+      applyFuzzyResponse(res.data, off, true);
+    } catch (err) {
+      console.error(err);
+      alert("Failed to load more rows.");
+    }
+    setLoadingMore(false);
   };
 
   const handleAddToMaster = async (value) => {
@@ -71,7 +140,7 @@ export default function FuzzyErrors({ jobId, tableId, onBack }) {
         jobId,
         tableId,
         rowId,
-        data.column_name,
+        meta.column_name,
         newValue,
       );
       fetchData(); // Refresh
@@ -79,15 +148,6 @@ export default function FuzzyErrors({ jobId, tableId, onBack }) {
       alert("Failed to replace in CSV");
     }
   };
-
-  // Filter Logic based on Dropdown
-  const filteredData = data.data.filter((row) => {
-    if (filterTier === "below") return row.score < data.threshold;
-    if (filterTier === "threshold-90")
-      return row.score >= data.threshold && row.score <= 90;
-    if (filterTier === "above-90") return row.score > 90;
-    return true;
-  });
 
   if (loading)
     return (
@@ -115,11 +175,11 @@ export default function FuzzyErrors({ jobId, tableId, onBack }) {
             <p className="text-sm text-gray-400 tracking-widest uppercase mt-4">
               TABLE:{" "}
               <span className="text-[#23243B] font-normal">
-                {data.table_name}
+                {meta.table_name}
               </span>{" "}
               • COLUMN:{" "}
               <span className="text-[#23243B] font-normal">
-                {data.column_name}
+                {meta.column_name}
               </span>
             </p>
           </div>
@@ -132,11 +192,11 @@ export default function FuzzyErrors({ jobId, tableId, onBack }) {
               <Database size={14} /> Master Name Config
             </button>
             <div className="bg-white border border-[#23243B] px-6 py-3">
-              <span className="block text-[12px] uppercase tracking-widest text-gray-600 font-normal mb-1">
-                Errors (&lt; {data.threshold}%)
+                           <span className="block text-[12px] uppercase tracking-widest text-gray-600 font-normal mb-1">
+                Errors (&lt; {meta.threshold}%)
               </span>
               <span className="text-2xl font-bold text-[#23243B]">
-                {data.total_fuzzy_errors}
+                {meta.total_fuzzy_errors}
               </span>
             </div>
           </div>
@@ -153,10 +213,10 @@ export default function FuzzyErrors({ jobId, tableId, onBack }) {
             className="border border-[#23243B] bg-white p-2 text-sm outline-none font-bold text-purple-700"
           >
             <option value="below">
-              Below Threshold (&lt; {data.threshold}%)
+              Below Threshold (&lt; {meta.threshold}%)
             </option>
             <option value="threshold-90">
-              Threshold to 90% ({data.threshold}% - 90%)
+              Threshold to 90% ({meta.threshold}% - 90%)
             </option>
             <option value="above-90">Above 90% (&gt; 90%)</option>
           </select>
@@ -169,7 +229,7 @@ export default function FuzzyErrors({ jobId, tableId, onBack }) {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-[#23243B] text-white text-[12px] font-normal uppercase tracking-widest">
-                {data.all_columns.map((col) => (
+                {meta.all_columns.map((col) => (
                   <th key={col} className="p-4 border-r border-gray-600">
                     {col}
                   </th>
@@ -186,14 +246,14 @@ export default function FuzzyErrors({ jobId, tableId, onBack }) {
               </tr>
             </thead>
             <tbody className="text-sm">
-              {filteredData.map((row) => (
+              {rows.map((row) => (
                 <tr
                   key={row.row_id}
                   className="border-b border-gray-100 hover:bg-gray-50"
                 >
                   {/* Dynamic Columns */}
-                  {data.all_columns.map((col) => {
-                    const isTargetCol = col === data.column_name;
+                  {meta.all_columns.map((col) => {
+                    const isTargetCol = col === meta.column_name;
                     return (
                       <td
                         key={col}
@@ -236,10 +296,10 @@ export default function FuzzyErrors({ jobId, tableId, onBack }) {
                   </td>
                 </tr>
               ))}
-              {filteredData.length === 0 && (
+              {rows.length === 0 && (
                 <tr>
                   <td
-                    colSpan={data.all_columns.length + 3}
+                    colSpan={meta.all_columns.length + 3}
                     className="p-8 text-center text-gray-400"
                   >
                     No data found in this threshold tier.
@@ -249,6 +309,18 @@ export default function FuzzyErrors({ jobId, tableId, onBack }) {
             </tbody>
           </table>
         </div>
+        {hasMore && (
+          <div className="mt-4 flex justify-center">
+            <button
+              type="button"
+              onClick={loadMore}
+              disabled={loadingMore}
+              className="bg-[#23243B] text-white px-8 py-3 text-sm font-semibold uppercase tracking-widest hover:bg-black disabled:opacity-50"
+            >
+              {loadingMore ? "Loading…" : "Load more rows"}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* MASTER DATA MODAL */}
@@ -281,8 +353,8 @@ export default function FuzzyErrors({ jobId, tableId, onBack }) {
                 </button>
               </div>
               <div className="max-h-60 overflow-y-auto border border-gray-100">
-                {data.master_list.length > 0 ? (
-                  data.master_list.map((m, i) => (
+                {meta.master_list.length > 0 ? (
+                  meta.master_list.map((m, i) => (
                     <div
                       key={i}
                       className="p-3 border-b border-gray-100 text-sm hover:bg-gray-50 flex justify-between items-center group"

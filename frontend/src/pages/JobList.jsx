@@ -1641,13 +1641,18 @@ export default function JobList() {
                                             : "Add lookup values"}
                                         </button>
                                         {draft.master_data_text?.trim() ? (
-                                          <p
-                                            className="text-[10px] text-gray-500 truncate max-w-[240px]"
-                                            title={draft.master_data_text}
-                                          >
-                                            {draft.master_data_text.length > 90
-                                              ? `${draft.master_data_text.slice(0, 90)}…`
-                                              : draft.master_data_text}
+                                          <p className="text-[10px] text-gray-500 max-w-[240px] leading-4">
+                                            {(() => {
+                                              const values = String(draft.master_data_text)
+                                                .split(",")
+                                                .map((x) => x.trim())
+                                                .filter(Boolean);
+                                              const preview = values.slice(0, 6).join(", ");
+                                              const remaining = values.length - 6;
+                                              return remaining > 0
+                                                ? `${preview} +${remaining} more`
+                                                : preview;
+                                            })()}
                                           </p>
                                         ) : null}
                                       </div>
