@@ -1573,64 +1573,129 @@ def delete_quarantine_error(log_id: int, db: Session = Depends(get_db)):
 
 # --- FUZZY ERROR DETAILS ENDPOINTS ---
 
+def _fuzzy_row_matches_tier(score: int, threshold: int, tier: str) -> bool:
+    if tier == "below":
+        return score < threshold
+    if tier == "threshold-90":
+        return threshold <= score <= 90
+    if tier == "above-90":
+        return score > 90
+    return True
+
+
 @app.get("/quarantine/jobs/{job_id}/tables/{table_id}/fuzzy")
-def get_fuzzy_details(job_id: int, table_id: int, db: Session = Depends(get_db)):
+def get_fuzzy_details(
+    job_id: int,
+    table_id: int,
+    tier: str = "below",
+    limit: int = 300,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    """
+    Paginated fuzzy analysis. Full-table JSON for 100k+ rows freezes browser and times out.
+    Use tier + limit + offset. total_fuzzy_errors comes from latest TableStats when available.
+    """
+    if tier not in ("below", "threshold-90", "above-90"):
+        raise HTTPException(status_code=400, detail="tier must be below, threshold-90, or above-90")
+    limit = max(1, min(int(limit), 2000))
+    offset = max(0, int(offset))
+
     table = db.query(models.TableMetadata).filter_by(job_id=job_id, table_id=table_id).first()
-    
-    # 1. Find the Fuzzy Rule to get the Threshold and Column
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+
     rule = db.query(models.Rule).filter_by(job_id=job_id, table_id=table_id, rule_type="fuzzy_match").first()
     if not rule:
         raise HTTPException(status_code=404, detail="No fuzzy rule configured for this table.")
-        
+
     threshold = int(rule.rule_value) if rule.rule_value else 70
     col_name = rule.column_name
-    
-    # 2. Get the Master Data
+
     masters = db.query(models.MasterTable).filter_by(job_id=job_id, table_id=table_id).all()
     master_list = [m.master_value for m in masters]
-    
-    # 3. Read the original CSV and calculate scores live
+
     file_path = os.path.join("uploads", f"{table.table_name}.csv")
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Source CSV not found.")
-        
+
+    stat = (
+        db.query(models.TableStats)
+        .filter_by(job_id=job_id, table_id=table_id)
+        .order_by(models.TableStats.stat_id.desc())
+        .first()
+    )
+    total_fuzzy_errors = int(stat.fuzzy_errors or 0) if stat else 0
+
     df = pd.read_csv(file_path)
+    all_columns = [str(c) for c in df.columns.tolist()]
+
     results = []
-    fuzzy_errors_count = 0
-    
+    skip_remaining = offset
+    stopped_early = False
+
     for idx, row in df.iterrows():
         val = str(row.get(col_name, ""))
-        if pd.isna(row.get(col_name)): val = ""
-        
+        if pd.isna(row.get(col_name)):
+            val = ""
+
         best_match = "None"
         score = 0
-        
         if master_list and val:
             match_tuple = process.extractOne(val, master_list)
             if match_tuple:
                 best_match = match_tuple[0]
-                score = match_tuple[1]
-                
+                score = int(match_tuple[1])
+
         is_error = score < threshold
-        if is_error: fuzzy_errors_count += 1
-        
-        results.append({
-            "row_id": idx,
-            "original_value": val,
-            "best_match": best_match,
-            "score": score,
-            "is_error": is_error,
-            "row_data": row.fillna("").to_dict()
-        })
-        
+        if not _fuzzy_row_matches_tier(score, threshold, tier):
+            continue
+
+        if skip_remaining > 0:
+            skip_remaining -= 1
+            continue
+
+        if len(results) >= limit:
+            stopped_early = True
+            break
+
+        def _cell_json(v):
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                return ""
+            if hasattr(v, "item"):
+                try:
+                    return v.item()
+                except (ValueError, AttributeError):
+                    return str(v)
+            return v
+
+        rd = row.fillna("")
+        row_dict = {str(k): _cell_json(v) for k, v in rd.to_dict().items()}
+        results.append(
+            {
+                "row_id": int(idx),
+                "original_value": val,
+                "best_match": best_match,
+                "score": score,
+                "is_error": is_error,
+                "row_data": row_dict,
+            }
+        )
+
+    has_more = stopped_early
+
     return {
         "table_name": table.table_name,
         "column_name": col_name,
         "threshold": threshold,
-        "total_fuzzy_errors": fuzzy_errors_count,
+        "total_fuzzy_errors": total_fuzzy_errors,
         "master_list": master_list,
-        "all_columns": df.columns.tolist(),
-        "data": results
+        "all_columns": all_columns,
+        "data": results,
+        "tier": tier,
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
     }
 
 @app.post("/quarantine/jobs/{job_id}/tables/{table_id}/master")
