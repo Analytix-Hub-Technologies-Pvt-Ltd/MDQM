@@ -14,6 +14,7 @@ import pandas as pd
 from urllib.parse import quote_plus
 from urllib import request as urlrequest
 from urllib import parse as urlparse
+import base64
 import models
 from database import SessionLocal, engine
 from engine.orchestrator import run_data_quality_job
@@ -88,6 +89,13 @@ class FuzzyReplace(BaseModel):
     
 class JobCreate(BaseModel):
     job_name: str
+
+
+class TableEmailPayload(BaseModel):
+    to_email: str
+    format: Optional[str] = "csv"
+    subject: Optional[str] = None
+    body: Optional[str] = None
 
 # Local file for saved DB connections
 CONNECTIONS_FILE = os.path.join(os.path.dirname(__file__), "saved_connections.json")
@@ -1273,6 +1281,128 @@ def _build_table_output_bytes(db: Session, table, fmt: str):
             return (f.read(), f"{table.table_name}_Source.csv", "text/csv")
 
 
+@app.post("/tables/{table_id}/email")
+def email_table_output(table_id: int, payload: TableEmailPayload, db: Session = Depends(get_db)):
+    table = (
+        db.query(models.TableMetadata)
+        .filter(models.TableMetadata.table_id == table_id)
+        .order_by(models.TableMetadata.job_id.desc())
+        .first()
+    )
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+
+    to_email = (payload.to_email or "").strip()
+    if not to_email:
+        raise HTTPException(status_code=400, detail="to_email is required")
+
+    tenant_id = os.getenv("MS_GRAPH_TENANT_ID", "").strip()
+    client_id = os.getenv("MS_GRAPH_CLIENT_ID", "").strip()
+    client_secret = os.getenv("MS_GRAPH_CLIENT_SECRET", "").strip()
+    sender_email = os.getenv("MS_GRAPH_SENDER_EMAIL", "").strip()
+
+    if not tenant_id or not client_id or not client_secret or not sender_email:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Email is not configured. Set MS_GRAPH_TENANT_ID, MS_GRAPH_CLIENT_ID, "
+                "MS_GRAPH_CLIENT_SECRET, and MS_GRAPH_SENDER_EMAIL in backend .env."
+            ),
+        )
+
+    fmt = (payload.format or "csv").strip().lower()
+    file_bytes, filename, mime_type = _build_table_output_bytes(db, table, fmt)
+
+    subject = (
+        payload.subject.strip()
+        if payload.subject and payload.subject.strip()
+        else f"MDQM Results - {table.table_name}"
+    )
+    body = (
+        payload.body
+        if payload.body is not None
+        else (
+            f"Hello,\n\n"
+            f"Please find attached the MDQM output for table '{table.table_name}'.\n\n"
+            f"Regards,\nMDQM"
+        )
+    )
+
+    token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+    token_body = urlparse.urlencode(
+        {
+            "client_id": client_id,
+            "scope": "https://graph.microsoft.com/.default",
+            "client_secret": client_secret,
+            "grant_type": "client_credentials",
+        }
+    ).encode("utf-8")
+    token_req = urlrequest.Request(
+        token_url,
+        data=token_body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+
+    try:
+        with urlrequest.urlopen(token_req, timeout=20) as resp:
+            token_payload = json.loads(resp.read().decode("utf-8"))
+            access_token = token_payload.get("access_token")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to get Graph token: {str(e)}")
+
+    if not access_token:
+        raise HTTPException(status_code=400, detail="Graph token response missing access_token")
+
+    graph_mail_url = f"https://graph.microsoft.com/v1.0/users/{sender_email}/sendMail"
+    mail_payload = {
+        "message": {
+            "subject": subject,
+            "body": {
+                "contentType": "HTML",
+                "content": body.replace("\n", "<br/>"),
+            },
+            "toRecipients": [
+                {
+                    "emailAddress": {
+                        "address": to_email,
+                    }
+                }
+            ],
+            "attachments": [
+                {
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "name": filename,
+                    "contentType": mime_type,
+                    "contentBytes": base64.b64encode(file_bytes).decode("utf-8"),
+                }
+            ],
+        },
+        "saveToSentItems": "true",
+    }
+    mail_req = urlrequest.Request(
+        graph_mail_url,
+        data=json.dumps(mail_payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urlrequest.urlopen(mail_req, timeout=30):
+            pass
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to send email via Graph API: {str(e)}")
+
+    return {
+        "message": "Email sent successfully",
+        "to_email": to_email,
+        "filename": filename,
+    }
+
+
 @app.post("/tables/{table_id}/sharepoint-upload")
 def upload_table_to_sharepoint(table_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
     """
@@ -1295,7 +1425,9 @@ def upload_table_to_sharepoint(table_id: int, payload: dict = Body(...), db: Ses
     client_id = os.getenv("SP_CLIENT_ID")
     client_secret = os.getenv("SP_CLIENT_SECRET")
     drive_id = os.getenv("SP_DRIVE_ID")
-    folder_path = (os.getenv("SP_FOLDER_PATH", "MDQM-Exports") or "MDQM-Exports").strip("/")
+    payload_folder = (payload.get("folder_path") or "").strip().strip("/")
+    env_folder = (os.getenv("SP_FOLDER_PATH", "MDQM-Exports") or "MDQM-Exports").strip("/")
+    folder_path = payload_folder or env_folder
 
     if not tenant_id or not client_id or not client_secret or not drive_id:
         raise HTTPException(

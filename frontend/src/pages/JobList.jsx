@@ -167,6 +167,8 @@ export default function JobList() {
   const [expandedTables, setExpandedTables] = useState({});
   const [showRuleStep, setShowRuleStep] = useState(false);
   const [showOutputStep, setShowOutputStep] = useState(false);
+  const [runningJobs, setRunningJobs] = useState({});
+  const [runStatusByJob, setRunStatusByJob] = useState({});
   const [createdJobId, setCreatedJobId] = useState(null);
   const [createdTableId, setCreatedTableId] = useState(null);
   const [ruleColumns, setRuleColumns] = useState([]);
@@ -180,16 +182,14 @@ export default function JobList() {
     loading: false,
     message: "",
   });
+  const [outputAction, setOutputAction] = useState("download_csv");
   const [outputEmailState, setOutputEmailState] = useState({
     toEmail: "",
     format: "csv",
-    sending: false,
-    message: "",
   });
-  const [outputAction, setOutputAction] = useState("download_csv");
-  const [sharePointState, setSharePointState] = useState({
-    uploading: false,
-    message: "",
+  const [outputSharePointState, setOutputSharePointState] = useState({
+    format: "csv",
+    folderPath: "",
   });
   /** Fuzzy lookup: modal to choose file vs table paste */
   const [lookupModal, setLookupModal] = useState({
@@ -234,17 +234,8 @@ export default function JobList() {
       loading: false,
       message: "",
     });
-    setOutputEmailState({
-      toEmail: "",
-      format: "csv",
-      sending: false,
-      message: "",
-    });
-    setOutputAction("download_csv");
-    setSharePointState({
-      uploading: false,
-      message: "",
-    });
+    // Keep selected file action + email target across modal closes,
+    // so Run Job uses the user's latest preference.
     setConnectionName("");
     setDbCreds({ host: "", port: "", user: "", pass: "", dbname: "" });
     setUploadFilePath("");
@@ -312,20 +303,40 @@ export default function JobList() {
   // --- ACTIONS ---
   const handleRunJob = async (jobId, e) => {
     e.stopPropagation();
+    if (runningJobs[jobId]) return;
+    setRunningJobs((prev) => ({ ...prev, [jobId]: true }));
+    setRunStatusByJob((prev) => ({ ...prev, [jobId]: "running" }));
     try {
       await runJobEngine(jobId);
+      const res = await getTablesByJob(jobId);
+      const refreshedTables = res?.data || [];
+      if (outputAction === "download_csv") {
+        await handleAutoDownloadForJob(jobId, refreshedTables, "csv");
+      } else if (outputAction === "download_excel") {
+        await handleAutoDownloadForJob(jobId, refreshedTables, "excel");
+      } else if (outputAction === "sharepoint") {
+        await handleAutoSharePointForJob(refreshedTables);
+      } else if (outputAction === "email") {
+        await handleAutoEmailForJob(refreshedTables);
+      }
       alert("Job completed successfully!");
+      setRunStatusByJob((prev) => ({ ...prev, [jobId]: "success" }));
 
       // 1. Refresh the main job list stats
       fetchJobs();
 
       // 2. NEW: If this job's tables are currently open, refresh them too!
       if (expandedJob === jobId) {
-        const res = await getTablesByJob(jobId);
-        setTables((prev) => ({ ...prev, [jobId]: res.data }));
+        setTables((prev) => ({ ...prev, [jobId]: refreshedTables }));
       }
     } catch (err) {
       alert("Error running job");
+      setRunStatusByJob((prev) => ({ ...prev, [jobId]: "error" }));
+    } finally {
+      setRunningJobs((prev) => ({ ...prev, [jobId]: false }));
+      setTimeout(() => {
+        setRunStatusByJob((prev) => ({ ...prev, [jobId]: "idle" }));
+      }, 4000);
     }
   };
 
@@ -923,36 +934,6 @@ export default function JobList() {
     }
   };
 
-  const handleSendOutputEmail = async () => {
-    if (!outputSummary?.tableId) {
-      alert("Output table not found.");
-      return;
-    }
-    if (!outputEmailState.toEmail.trim()) {
-      alert("Please enter recipient email.");
-      return;
-    }
-    setOutputEmailState((s) => ({ ...s, sending: true, message: "" }));
-    try {
-      const res = await emailTableOutput(outputSummary.tableId, {
-        to_email: outputEmailState.toEmail.trim(),
-        format: outputEmailState.format,
-        subject: `MDQM Results - ${outputSummary.tableName || "Output"}`,
-      });
-      setOutputEmailState((s) => ({
-        ...s,
-        message: res?.data?.message || "Email sent successfully",
-      }));
-    } catch (err) {
-      setOutputEmailState((s) => ({
-        ...s,
-        message: err?.response?.data?.detail || "Failed to send email",
-      }));
-    } finally {
-      setOutputEmailState((s) => ({ ...s, sending: false }));
-    }
-  };
-
   const saveBlobAsFile = (blob, filename) => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -962,6 +943,58 @@ export default function JobList() {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  };
+
+  const handleAutoDownloadForJob = async (jobId, tablesForJob, format) => {
+    const latestTable = [...(tablesForJob || [])].sort((a, b) => b.table_id - a.table_id)[0];
+    if (!latestTable?.table_id) return;
+    try {
+      if (format === "csv") {
+        const { blob, filename } = await downloadTableOutputCsv(jobId, latestTable.table_id);
+        saveBlobAsFile(blob, filename);
+      } else {
+        const { blob, filename } = await downloadTableOutputExcel(jobId, latestTable.table_id);
+        saveBlobAsFile(blob, filename);
+      }
+    } catch (err) {
+      alert(err?.response?.data?.detail || `Failed to auto-download ${format.toUpperCase()}`);
+    }
+  };
+
+  const handleAutoSharePointForJob = async (tablesForJob) => {
+    const latestTable = [...(tablesForJob || [])].sort((a, b) => b.table_id - a.table_id)[0];
+    if (!latestTable?.table_id) return;
+    try {
+      const payload = {
+        format: outputSharePointState.format || "csv",
+      };
+      if ((outputSharePointState.folderPath || "").trim()) {
+        payload.folder_path = outputSharePointState.folderPath.trim();
+      }
+      const res = await uploadTableOutputToSharePoint(latestTable.table_id, payload);
+      alert(res?.data?.message || "Uploaded to SharePoint successfully.");
+    } catch (err) {
+      alert(err?.response?.data?.detail || "Failed to upload to SharePoint");
+    }
+  };
+
+  const handleAutoEmailForJob = async (tablesForJob) => {
+    if (!outputEmailState.toEmail.trim()) {
+      alert("Please enter recipient email for Email File action.");
+      return;
+    }
+    const latestTable = [...(tablesForJob || [])].sort((a, b) => b.table_id - a.table_id)[0];
+    if (!latestTable?.table_id) return;
+    try {
+      const res = await emailTableOutput(latestTable.table_id, {
+        to_email: outputEmailState.toEmail.trim(),
+        format: outputEmailState.format,
+        subject: `MDQM Results - ${latestTable.table_name || "Output"}`,
+      });
+      alert(res?.data?.message || "Email sent successfully.");
+    } catch (err) {
+      alert(err?.response?.data?.detail || "Failed to send email.");
+    }
   };
 
   const handleDownloadOutput = async (format) => {
@@ -980,44 +1013,6 @@ export default function JobList() {
     } catch (err) {
       alert(err?.response?.data?.detail || `Failed to download ${format.toUpperCase()}`);
     }
-  };
-
-  const handleUploadOutputToSharePoint = async () => {
-    if (!outputSummary?.tableId) {
-      alert("Output table not found.");
-      return;
-    }
-    setSharePointState({ uploading: true, message: "" });
-    try {
-      const res = await uploadTableOutputToSharePoint(outputSummary.tableId, {
-        format: outputEmailState.format,
-      });
-      setSharePointState({
-        uploading: false,
-        message: res?.data?.message || "Uploaded to SharePoint successfully",
-      });
-    } catch (err) {
-      setSharePointState({
-        uploading: false,
-        message: err?.response?.data?.detail || "Failed to upload to SharePoint",
-      });
-    }
-  };
-
-  const handleOutputAction = async () => {
-    if (outputAction === "download_csv") {
-      await handleDownloadOutput("csv");
-      return;
-    }
-    if (outputAction === "download_excel") {
-      await handleDownloadOutput("excel");
-      return;
-    }
-    if (outputAction === "sharepoint") {
-      await handleUploadOutputToSharePoint();
-      return;
-    }
-    await handleSendOutputEmail();
   };
 
   const handleLoadLookupSchemasTables = async () => {
@@ -1108,38 +1103,6 @@ export default function JobList() {
     );
   };
 
-  const handleApplyColumnUpdate = (index) => {
-    const item = previewEditable[index];
-    const oldCol = item.originalName;
-    const newCol = item.name.trim() || oldCol;
-
-    const nextRows = previewRows.map((row, rowIdx) => {
-      const copy = { ...row };
-      if (newCol !== oldCol) {
-        copy[newCol] = copy[oldCol];
-        delete copy[oldCol];
-      }
-      if (rowIdx === 0) copy[newCol] = item.value;
-      return copy;
-    });
-
-    const nextColumns = previewColumns.map((c) => (c === oldCol ? newCol : c));
-    const nextTypes = { ...previewColumnTypes };
-    if (newCol !== oldCol) delete nextTypes[oldCol];
-    nextTypes[newCol] = item.dataType || "string";
-
-    setPreviewRows(nextRows);
-    setPreviewColumns(nextColumns);
-    setPreviewColumnTypes(nextTypes);
-    setPreviewEditable((prev) =>
-      prev.map((it, i) =>
-        i === index
-          ? { ...it, originalName: newCol, name: newCol, dataType: item.dataType, value: item.value }
-          : it
-      )
-    );
-  };
-
   const totalPreviewPages = Math.max(
     1,
     Math.ceil(previewEditable.length / previewPageSize)
@@ -1211,12 +1174,31 @@ export default function JobList() {
                     <span className={`inline-block mt-1 text-[10px] uppercase tracking-wider px-2 py-0.5 ${ (job.total_tables || 0) > 0 ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}>
                       {(job.total_tables || 0) > 0 ? "Ready" : "No Data"}
                     </span>
+                    {runStatusByJob[job.job_id] === "running" && (
+                      <span className="inline-block mt-1 ml-2 text-[10px] uppercase tracking-wider px-2 py-0.5 bg-blue-100 text-blue-700">
+                        Running
+                      </span>
+                    )}
+                    {runStatusByJob[job.job_id] === "success" && (
+                      <span className="inline-block mt-1 ml-2 text-[10px] uppercase tracking-wider px-2 py-0.5 bg-emerald-100 text-emerald-700">
+                        Completed
+                      </span>
+                    )}
+                    {runStatusByJob[job.job_id] === "error" && (
+                      <span className="inline-block mt-1 ml-2 text-[10px] uppercase tracking-wider px-2 py-0.5 bg-red-100 text-red-700">
+                        Failed
+                      </span>
+                    )}
                   </div>
                 </div>
 
                 <div className="flex items-center gap-4">
                   <button
                     onClick={(e) => {
+                      if (runningJobs[job.job_id]) {
+                        e.stopPropagation();
+                        return;
+                      }
                       if ((job.total_tables || 0) === 0) {
                         e.stopPropagation();
                         alert("No tables attached to this job. Upload/import data first.");
@@ -1224,9 +1206,24 @@ export default function JobList() {
                       }
                       handleRunJob(job.job_id, e);
                     }}
-                    className={`text-white px-6 py-3 text-md uppercase tracking-widest flex items-center gap-2 ${(job.total_tables || 0) === 0 ? "bg-gray-400 cursor-not-allowed" : "bg-green-600 cursor-pointer hover:bg-green-700"}`}
+                    disabled={(job.total_tables || 0) === 0 || !!runningJobs[job.job_id]}
+                    className={`min-w-[150px] justify-center text-white px-6 py-3 text-md uppercase tracking-widest flex items-center gap-2 transition-colors ${
+                      (job.total_tables || 0) === 0 || runningJobs[job.job_id]
+                        ? "bg-gray-400 cursor-not-allowed"
+                        : "bg-green-600 cursor-pointer hover:bg-green-700"
+                    }`}
                   >
-                    ▷ Run Job
+                    {runningJobs[job.job_id] ? (
+                      <>
+                        <Loader2 size={16} className="animate-spin" />
+                        Running...
+                      </>
+                    ) : (
+                      <>
+                        <Play size={15} />
+                        Run Job
+                      </>
+                    )}
                   </button>
                   <div className="relative">
                     <button
@@ -1720,7 +1717,7 @@ export default function JobList() {
                       </div>
                       <div className="border border-[#D6D9E0] rounded-lg bg-white p-4 text-xs">
                         <div className="text-[11px] uppercase tracking-widest text-gray-500 mb-3">File Actions</div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div className="grid grid-cols-1 gap-2">
                           <select
                             value={outputAction}
                             onChange={(e) => setOutputAction(e.target.value)}
@@ -1731,17 +1728,6 @@ export default function JobList() {
                             <option value="sharepoint">Upload to SharePoint</option>
                             <option value="email">Email File</option>
                           </select>
-                          <button
-                            type="button"
-                            onClick={handleOutputAction}
-                            className="py-2 border border-[#23243B] text-[#23243B] font-bold uppercase hover:bg-gray-50"
-                          >
-                            {outputAction === "sharepoint" && sharePointState.uploading
-                              ? "Uploading..."
-                              : outputAction === "email" && outputEmailState.sending
-                              ? "Sending..."
-                              : "Run Action"}
-                          </button>
                         </div>
                         {outputAction === "email" ? (
                           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2">
@@ -1762,16 +1748,32 @@ export default function JobList() {
                             </select>
                           </div>
                         ) : null}
-                        {outputEmailState.message ? (
-                          <p className={`mt-2 text-xs ${outputEmailState.message.toLowerCase().includes("failed") ? "text-red-600" : "text-green-700"}`}>
-                            {outputEmailState.message}
-                          </p>
+                        {outputAction === "sharepoint" ? (
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2">
+                            <select
+                              value={outputSharePointState.format}
+                              onChange={(e) =>
+                                setOutputSharePointState((s) => ({ ...s, format: e.target.value }))
+                              }
+                              className="border border-[#A1A3AF] p-2"
+                            >
+                              <option value="csv">CSV</option>
+                              <option value="excel">Excel</option>
+                            </select>
+                            <input
+                              type="text"
+                              placeholder="Folder path (optional)"
+                              value={outputSharePointState.folderPath}
+                              onChange={(e) =>
+                                setOutputSharePointState((s) => ({ ...s, folderPath: e.target.value }))
+                              }
+                              className="border border-[#A1A3AF] p-2 sm:col-span-2"
+                            />
+                          </div>
                         ) : null}
-                        {sharePointState.message ? (
-                          <p className={`mt-2 text-xs ${sharePointState.message.toLowerCase().includes("failed") ? "text-red-600" : "text-green-700"}`}>
-                            {sharePointState.message}
-                          </p>
-                        ) : null}
+                        <p className="mt-2 text-[11px] text-gray-500">
+                          Selected file action runs automatically after you click <b>Run Job</b> and processing completes.
+                        </p>
                       </div>
 
                       <div className="border border-[#D6D9E0] rounded-lg bg-white p-4 text-xs">
@@ -2259,7 +2261,6 @@ export default function JobList() {
                               <th className="text-left p-2 border-b border-[#E5E7EB] whitespace-nowrap">Column</th>
                               <th className="text-left p-2 border-b border-[#E5E7EB] whitespace-nowrap">Data Type</th>
                               <th className="text-left p-2 border-b border-[#E5E7EB] whitespace-nowrap">Value</th>
-                              <th className="text-left p-2 border-b border-[#E5E7EB] whitespace-nowrap">Action</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -2293,15 +2294,6 @@ export default function JobList() {
                                     onChange={(e) => handleEditableChange(idx, "value", e.target.value)}
                                     className="w-full min-w-[220px] border border-[#D1D5DB] rounded-md p-1.5 focus:outline-none focus:ring-2 focus:ring-[#23243B]/20"
                                   />
-                                </td>
-                                <td className="p-2 border-b border-[#F1F5F9] whitespace-nowrap">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleApplyColumnUpdate(idx)}
-                                    className="px-3 py-1.5 text-[10px] uppercase font-bold border border-[#23243B] rounded-md text-[#23243B] hover:bg-[#23243B] hover:text-white transition-colors"
-                                  >
-                                    Update
-                                  </button>
                                 </td>
                               </tr>
                             )})}
