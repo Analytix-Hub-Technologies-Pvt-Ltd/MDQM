@@ -544,6 +544,42 @@ def export_results_to_external_db(payload: dict = Body(...), db: Session = Depen
             f"@{creds['host']}:{creds['port']}/{creds['dbname']}"
         )
         ext_engine = create_engine(ext_url)
+
+        # Client-friendly guard for append mode:
+        # If target table exists but schema differs, return a clear message
+        # instead of a large raw SQL failure.
+        if if_exists == "append":
+            inspector = inspect(ext_engine)
+            if inspector.has_table(target_table, schema=target_schema):
+                existing_cols = [
+                    str(c.get("name"))
+                    for c in inspector.get_columns(target_table, schema=target_schema)
+                ]
+                incoming_cols = [str(c) for c in df.columns.tolist()]
+                existing_set = set(existing_cols)
+                incoming_set = set(incoming_cols)
+                missing_in_target = sorted(incoming_set - existing_set)
+                extra_in_target = sorted(existing_set - incoming_set)
+                if missing_in_target or extra_in_target:
+                    msg_parts = [
+                        "Schema mismatch for append mode.",
+                        f"Target table '{target_table}' has a different structure.",
+                    ]
+                    if missing_in_target:
+                        msg_parts.append(
+                            f"Missing in target: {', '.join(missing_in_target[:12])}"
+                            + (" ..." if len(missing_in_target) > 12 else "")
+                        )
+                    if extra_in_target:
+                        msg_parts.append(
+                            f"Extra in target: {', '.join(extra_in_target[:12])}"
+                            + (" ..." if len(extra_in_target) > 12 else "")
+                        )
+                    msg_parts.append(
+                        "Use 'replace' for full reload, or export to a new target table for this dataset."
+                    )
+                    raise HTTPException(status_code=400, detail=" ".join(msg_parts))
+
         df.to_sql(
             name=target_table,
             con=ext_engine,
@@ -728,6 +764,137 @@ def upload_file_from_path(job_id: int, payload: dict = Body(...), db: Session = 
 
     return {"job_id": job_id, "message": "File Uploaded from path and Processed Successfully"}
 
+@app.post("/jobs/{job_id}/tables/{table_id}/replace-from-path")
+def replace_table_file_from_path(job_id: int, table_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
+    file_path = _normalize_local_path(payload.get("file_path"))
+    if not file_path:
+        raise HTTPException(status_code=400, detail="file_path is required")
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=400, detail=f"File path not found: {file_path}")
+
+    table = db.query(models.TableMetadata).filter(
+        models.TableMetadata.job_id == job_id,
+        models.TableMetadata.table_id == table_id,
+    ).first()
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found for this job")
+
+    upload_dir = "uploads"
+    os.makedirs(upload_dir, exist_ok=True)
+    final_csv_path = os.path.join(upload_dir, f"{table.table_name}.csv")
+
+    try:
+        if file_path.lower().endswith((".xlsx", ".xls")):
+            df = pd.read_excel(file_path)
+        else:
+            df = pd.read_csv(file_path)
+        df.to_csv(final_csv_path, index=False)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid file format: {str(e)}")
+
+    # Refresh table metadata and columns to match replaced source.
+    table.row_count = int(len(df))
+    db.query(models.ColumnMetadata).filter(
+        models.ColumnMetadata.job_id == job_id,
+        models.ColumnMetadata.table_id == table_id,
+    ).delete(synchronize_session=False)
+
+    for col_name, dtype in df.dtypes.items():
+        str_type = "String"
+        if "int" in str(dtype):
+            str_type = "Integer"
+        elif "float" in str(dtype):
+            str_type = "Float"
+        elif "datetime" in str(dtype):
+            str_type = "Date"
+        elif "bool" in str(dtype):
+            str_type = "Boolean"
+        db.add(models.ColumnMetadata(
+            job_id=job_id,
+            table_id=table_id,
+            column_name=col_name,
+            data_type=str_type,
+        ))
+
+    # Clear old computed stats so UI doesn't keep old totals before next run.
+    db.query(models.TableStats).filter(
+        models.TableStats.job_id == job_id,
+        models.TableStats.table_id == table_id,
+    ).delete(synchronize_session=False)
+
+    db.commit()
+    return {
+        "message": "Table source file replaced successfully",
+        "job_id": job_id,
+        "table_id": table_id,
+        "row_count": int(len(df)),
+    }
+
+@app.post("/jobs/{job_id}/tables/{table_id}/replace-file")
+async def replace_table_file_upload(job_id: int, table_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    table = db.query(models.TableMetadata).filter(
+        models.TableMetadata.job_id == job_id,
+        models.TableMetadata.table_id == table_id,
+    ).first()
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found for this job")
+
+    upload_dir = "uploads"
+    os.makedirs(upload_dir, exist_ok=True)
+    temp_file_path = os.path.join(upload_dir, f"tmp_{file.filename}")
+    final_csv_path = os.path.join(upload_dir, f"{table.table_name}.csv")
+
+    with open(temp_file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    try:
+        if file.filename.lower().endswith((".xlsx", ".xls")):
+            df = pd.read_excel(temp_file_path)
+        else:
+            df = pd.read_csv(temp_file_path)
+        df.to_csv(final_csv_path, index=False)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid file format: {str(e)}")
+    finally:
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+
+    table.row_count = int(len(df))
+    db.query(models.ColumnMetadata).filter(
+        models.ColumnMetadata.job_id == job_id,
+        models.ColumnMetadata.table_id == table_id,
+    ).delete(synchronize_session=False)
+
+    for col_name, dtype in df.dtypes.items():
+        str_type = "String"
+        if "int" in str(dtype):
+            str_type = "Integer"
+        elif "float" in str(dtype):
+            str_type = "Float"
+        elif "datetime" in str(dtype):
+            str_type = "Date"
+        elif "bool" in str(dtype):
+            str_type = "Boolean"
+        db.add(models.ColumnMetadata(
+            job_id=job_id,
+            table_id=table_id,
+            column_name=col_name,
+            data_type=str_type,
+        ))
+
+    db.query(models.TableStats).filter(
+        models.TableStats.job_id == job_id,
+        models.TableStats.table_id == table_id,
+    ).delete(synchronize_session=False)
+
+    db.commit()
+    return {
+        "message": "Table source file replaced successfully",
+        "job_id": job_id,
+        "table_id": table_id,
+        "row_count": int(len(df)),
+    }
+
 @app.post("/jobs/{job_id}/run")
 def run_job(job_id: int, db: Session = Depends(get_db)):
     # 1. Check if the job actually exists
@@ -769,6 +936,10 @@ def get_all_jobs(db: Session = Depends(get_db)):
                 total_rows += (stat.total_rows or 0)
                 good_rows += (stat.good_rows or 0)
                 error_rows += ((stat.total_rows or 0) - (stat.good_rows or 0))
+            else:
+                # Fallback for newly created jobs/tables before first run:
+                # show uploaded row_count from metadata instead of 0.
+                total_rows += (t.row_count or 0)
 
         covered_cols = db.query(distinct(models.Rule.column_name)).filter(models.Rule.job_id == job.job_id).count()
 
