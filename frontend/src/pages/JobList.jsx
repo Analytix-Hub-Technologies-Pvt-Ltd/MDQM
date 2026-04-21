@@ -9,9 +9,13 @@ import {
   renameJob,
   renameTable,
   addRule,
+  updateRule,
+  getMasterData,
   createNewJob,
   uploadCsvToJob,
   uploadCsvPathToJob,
+  replaceTableFileFromPath,
+  replaceTableFileUpload,
   previewCsvFile,
   previewCsvFileFromPath,
   previewDbTable,
@@ -167,6 +171,14 @@ export default function JobList() {
   const [expandedTables, setExpandedTables] = useState({});
   const [showRuleStep, setShowRuleStep] = useState(false);
   const [showOutputStep, setShowOutputStep] = useState(false);
+  const [editFlow, setEditFlow] = useState({
+    isEdit: false,
+    jobId: null,
+    tableId: null,
+    tableName: "",
+    existingRules: [],
+    masterValues: [],
+  });
   const [runningJobs, setRunningJobs] = useState({});
   const [runStatusByJob, setRunStatusByJob] = useState({});
   const [createdJobId, setCreatedJobId] = useState(null);
@@ -174,7 +186,10 @@ export default function JobList() {
   const [ruleColumns, setRuleColumns] = useState([]);
   const [ruleDrafts, setRuleDrafts] = useState({});
   const [outputSummary, setOutputSummary] = useState(null);
+  const [outputTargetMode, setOutputTargetMode] = useState("file");
   const [outputDbMode, setOutputDbMode] = useState("saved");
+  const [outputSaveConnection, setOutputSaveConnection] = useState(false);
+  const [outputConnectionName, setOutputConnectionName] = useState("");
   const [outputDbState, setOutputDbState] = useState({
     targetSchema: "",
     targetTable: "",
@@ -226,7 +241,10 @@ export default function JobList() {
     setRuleColumns([]);
     setRuleDrafts({});
     setOutputSummary(null);
+    setOutputTargetMode("file");
     setOutputDbMode("saved");
+    setOutputSaveConnection(false);
+    setOutputConnectionName("");
     setOutputDbState({
       targetSchema: "",
       targetTable: "",
@@ -251,6 +269,14 @@ export default function JobList() {
     setLookupDbConnMode("saved");
     setLookupDbLoadMessage("");
     setLookupDbColumns([]);
+    setEditFlow({
+      isEdit: false,
+      jobId: null,
+      tableId: null,
+      tableName: "",
+      existingRules: [],
+      masterValues: [],
+    });
   };
 
 
@@ -386,6 +412,45 @@ export default function JobList() {
     }
   };
 
+  const handleOpenEditFlow = async (job) => {
+    try {
+      resetCreateFlow();
+      setShowAddModal(true);
+      setNewJobName(job.job_name || "");
+
+      const tablesRes = await getTablesByJob(job.job_id);
+      const jobTables = tablesRes?.data || [];
+      if (jobTables.length === 0) {
+        alert("No tables found for this job. Please attach data first.");
+        return;
+      }
+      const targetTable = jobTables[0];
+      const detailsRes = await getTableDetails(job.job_id, targetTable.table_id);
+      const cols = detailsRes?.data?.columns || [];
+      const existingRules = detailsRes?.data?.rules || [];
+      const mastersRes = await getMasterData(job.job_id, targetTable.table_id);
+      const masterValues = Array.isArray(mastersRes?.data) ? mastersRes.data : [];
+
+      setCreatedJobId(job.job_id);
+      setCreatedTableId(targetTable.table_id);
+      setShowRuleStep(false);
+      setShowOutputStep(false);
+      setCreateDataMode("file");
+      setUploadFile(null);
+      setUploadFilePath(`uploads/${targetTable.table_name}.csv`);
+      setEditFlow({
+        isEdit: true,
+        jobId: job.job_id,
+        tableId: targetTable.table_id,
+        tableName: targetTable.table_name || "",
+        existingRules,
+        masterValues,
+      });
+    } catch (err) {
+      alert(err?.response?.data?.detail || err?.message || "Failed to open edit flow.");
+    }
+  };
+
   const handleUploadCsv = async () => {
     if (!newJobName) {
       alert("Enter a job name.");
@@ -406,6 +471,26 @@ export default function JobList() {
     setRuleColumns(cols);
     setRuleDrafts(
       cols.reduce((acc, col) => {
+        if (editFlow.isEdit) {
+          const existing = (editFlow.existingRules || []).find(
+            (r) => r.column_name === col.column_name
+          );
+          const fallback = defaultRuleDraftForType(col.data_type);
+          if (existing) {
+            acc[col.column_name] = {
+              rule_type: existing.rule_type || fallback.rule_type,
+              rule_value: existing.rule_value ?? "",
+              is_active: !!existing.is_active,
+              master_data_text:
+                existing.rule_type === "fuzzy_match"
+                  ? (editFlow.masterValues || []).join(", ")
+                  : "",
+            };
+          } else {
+            acc[col.column_name] = fallback;
+          }
+          return acc;
+        }
         acc[col.column_name] = defaultRuleDraftForType(col.data_type);
         return acc;
       }, {})
@@ -645,6 +730,11 @@ export default function JobList() {
       return draft.is_active !== false;
     });
 
+    if (activeColumns.length === 0) {
+      alert("Please enable and configure at least one validation rule before finishing.");
+      return;
+    }
+
     for (const col of activeColumns) {
       const draft = ruleDrafts[col.column_name] || defaultRuleDraftForType(col.data_type);
       if (RULES_REQUIRING_VALUE.has(draft.rule_type) && !String(draft.rule_value || "").trim()) {
@@ -658,6 +748,72 @@ export default function JobList() {
     }
 
     try {
+      if (editFlow.isEdit && editFlow.jobId && editFlow.tableId) {
+        if (createDataMode === "file") {
+          const hasPath = String(uploadFilePath || "").trim().length > 0;
+          if (hasPath) {
+            await replaceTableFileFromPath(
+              editFlow.jobId,
+              editFlow.tableId,
+              String(uploadFilePath).trim()
+            );
+          } else if (uploadFile) {
+            await replaceTableFileUpload(editFlow.jobId, editFlow.tableId, uploadFile);
+          }
+        }
+
+        await renameJob(editFlow.jobId, newJobName);
+        const existingRuleByColumn = new Map(
+          (editFlow.existingRules || []).map((r) => [r.column_name, r])
+        );
+
+        for (const col of ruleColumns) {
+          const draft = ruleDrafts[col.column_name] || defaultRuleDraftForType(col.data_type);
+          const existing = existingRuleByColumn.get(col.column_name);
+          const masterData =
+            draft.rule_type === "fuzzy_match"
+              ? String(draft.master_data_text || "")
+                  .split(",")
+                  .map((v) => v.trim())
+                  .filter(Boolean)
+              : [];
+          const payload = {
+            job_id: editFlow.jobId,
+            table_id: editFlow.tableId,
+            column_name: col.column_name,
+            rule_type: draft.rule_type,
+            data_type: normalizeDataType(col.data_type),
+            rule_value: draft.rule_type === "fuzzy_match" ? "80" : draft.rule_value || null,
+            is_active: draft.is_active !== false,
+            master_data: masterData,
+          };
+          if (existing) {
+            await updateRule(existing.rule_id, {
+              rule_type: payload.rule_type,
+              rule_value: payload.rule_value,
+              is_active: payload.is_active,
+              master_data: payload.master_data,
+            });
+          } else if (payload.is_active) {
+            await addRule(payload);
+          }
+        }
+
+        const tableDetailsRes = await getTableDetails(editFlow.jobId, editFlow.tableId);
+        const outputCols = tableDetailsRes?.data?.columns || [];
+        setOutputSummary({
+          jobId: editFlow.jobId,
+          tableId: editFlow.tableId,
+          tableName: editFlow.tableName || "Table",
+          rowCount: 0,
+          columnCount: outputCols.length,
+          outputFile: `${editFlow.tableName || "table"}.csv`,
+        });
+        setShowRuleStep(false);
+        setShowOutputStep(true);
+        return;
+      }
+
       let jobId;
       let latestTable;
       if (createDataMode === "file") {
@@ -739,7 +895,6 @@ export default function JobList() {
       });
       setShowRuleStep(false);
       setShowOutputStep(true);
-      fetchJobs();
     } catch (err) {
       alert(err?.response?.data?.detail || "Failed to complete all steps and create job.");
     }
@@ -896,9 +1051,29 @@ export default function JobList() {
       alert("Please fill host, user and database.");
       return;
     }
+    if (!usingSaved && outputSaveConnection && !outputConnectionName.trim()) {
+      alert("Please enter a connection name.");
+      return;
+    }
 
     setOutputDbState((s) => ({ ...s, loading: true, message: "" }));
     try {
+      if (!usingSaved && outputSaveConnection) {
+        const saveRes = await saveDbConnection({
+          connection_name: outputConnectionName.trim(),
+          host: dbCreds.host,
+          port: dbCreds.port || "5432",
+          username: dbCreds.user,
+          password: dbCreds.pass || "",
+        });
+        await fetchSavedConnections();
+        const newId = saveRes?.data?.connection_id;
+        if (newId) {
+          setSelectedConnectionId(String(newId));
+          setOutputDbMode("saved");
+        }
+      }
+
       const payload = usingSaved
         ? {
             connection_id: Number(selectedConnectionId),
@@ -1246,6 +1421,16 @@ export default function JobList() {
                           <div
                             onClick={(e) => {
                               e.stopPropagation();
+                              setActionMenu({ type: null, id: null });
+                              handleOpenEditFlow(job);
+                            }}
+                            className="px-4 py-2 text-xs uppercase tracking-wider hover:bg-gray-100 cursor-pointer flex items-center gap-2"
+                          >
+                            <Edit2 size={12} /> Edit Job
+                          </div>
+                          <div
+                            onClick={(e) => {
+                              e.stopPropagation();
                               setRenameModal({
                                 isOpen: true,
                                 type: "job",
@@ -1542,12 +1727,12 @@ export default function JobList() {
           <div className="bg-white w-full max-w-5xl border border-[#DADDE5] rounded-xl shadow-2xl flex flex-col overflow-hidden max-h-[96vh]">
             <div className="flex justify-between items-center p-5 border-b border-gray-200 bg-gradient-to-r from-[#FBFBFB] to-[#F3F4F8]">
               <span className="font-bold uppercase tracking-widest text-[#23243B]">
-                Add New Job
+                {editFlow.isEdit ? "Edit Job Flow" : "Add New Job"}
               </span>
               <X
                 size={20}
                 className="cursor-pointer hover:text-red-500"
-                onClick={() => setShowAddModal(false)}
+                onClick={resetCreateFlow}
               />
             </div>
 
@@ -1681,7 +1866,7 @@ export default function JobList() {
                           }}
                           className="w-full py-3 bg-[#23243B] rounded-md text-white text-xs font-bold uppercase tracking-widest hover:bg-black transition-colors"
                         >
-                          Next
+                          {editFlow.isEdit ? "Save Changes" : "Next"}
                         </button>
                       </div>
                     </>
@@ -1715,6 +1900,29 @@ export default function JobList() {
                           <div className="font-semibold">{outputSummary?.columnCount ?? "-"}</div>
                         </div>
                       </div>
+                      <div className="border border-[#D6D9E0] rounded-lg bg-white p-4 text-xs">
+                        <div className="text-[11px] uppercase tracking-widest text-gray-500 mb-3">
+                          Output Mode
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 mb-3">
+                          <button
+                            type="button"
+                            onClick={() => setOutputTargetMode("file")}
+                            className={`py-2 font-bold uppercase border ${outputTargetMode === "file" ? "bg-[#23243B] text-white border-[#23243B]" : "text-[#23243B] border-[#A1A3AF] bg-white"}`}
+                          >
+                            File Input
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setOutputTargetMode("table")}
+                            className={`py-2 font-bold uppercase border ${outputTargetMode === "table" ? "bg-[#23243B] text-white border-[#23243B]" : "text-[#23243B] border-[#A1A3AF] bg-white"}`}
+                          >
+                            Table Input
+                          </button>
+                        </div>
+                      </div>
+
+                      {outputTargetMode === "file" && (
                       <div className="border border-[#D6D9E0] rounded-lg bg-white p-4 text-xs">
                         <div className="text-[11px] uppercase tracking-widest text-gray-500 mb-3">File Actions</div>
                         <div className="grid grid-cols-1 gap-2">
@@ -1775,7 +1983,9 @@ export default function JobList() {
                           Selected file action runs automatically after you click <b>Run Job</b> and processing completes.
                         </p>
                       </div>
+                      )}
 
+                      {outputTargetMode === "table" && (
                       <div className="border border-[#D6D9E0] rounded-lg bg-white p-4 text-xs">
                         <div className="text-[11px] uppercase tracking-widest text-gray-500 mb-3">Insert Results to Database Table</div>
                         <div className="grid grid-cols-2 gap-2 mb-3">
@@ -1826,6 +2036,22 @@ export default function JobList() {
                             <input className="border border-[#A1A3AF] p-2" placeholder="Username" value={dbCreds.user} onChange={(e) => setDbCreds((p) => ({ ...p, user: e.target.value }))} />
                             <input type="password" className="border border-[#A1A3AF] p-2" placeholder="Password" value={dbCreds.pass} onChange={(e) => setDbCreds((p) => ({ ...p, pass: e.target.value }))} />
                             <input className="border border-[#A1A3AF] p-2 sm:col-span-2" placeholder="Database name" value={dbCreds.dbname} onChange={(e) => setDbCreds((p) => ({ ...p, dbname: e.target.value }))} />
+                            <label className="sm:col-span-2 flex items-center gap-2 text-[11px] text-gray-600 uppercase tracking-wider">
+                              <input
+                                type="checkbox"
+                                checked={outputSaveConnection}
+                                onChange={(e) => setOutputSaveConnection(e.target.checked)}
+                              />
+                              Save this connection
+                            </label>
+                            {outputSaveConnection && (
+                              <input
+                                className="border border-[#A1A3AF] p-2 sm:col-span-2"
+                                placeholder="Connection name (e.g. PROD_MDMS)"
+                                value={outputConnectionName}
+                                onChange={(e) => setOutputConnectionName(e.target.value)}
+                              />
+                            )}
                           </div>
                         )}
 
@@ -1881,6 +2107,7 @@ export default function JobList() {
                           </p>
                         ) : null}
                       </div>
+                      )}
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1">
                         <button
                           onClick={() => {

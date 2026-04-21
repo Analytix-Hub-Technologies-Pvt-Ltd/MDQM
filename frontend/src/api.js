@@ -110,6 +110,20 @@ export const uploadCsvPathToJob = async (jobId, filePath) => {
     return axios.post(`${API_URL}/jobs/${jobId}/upload-from-path`, { file_path: filePath });
 };
 
+export const replaceTableFileFromPath = async (jobId, tableId, filePath) => {
+    return axios.post(`${API_URL}/jobs/${jobId}/tables/${tableId}/replace-from-path`, {
+        file_path: filePath,
+    });
+};
+
+export const replaceTableFileUpload = async (jobId, tableId, file) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    return axios.post(`${API_URL}/jobs/${jobId}/tables/${tableId}/replace-file`, formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+    });
+};
+
 // Note: DB Connection and Download endpoints will require specific backend logic
 export const connectToDb = async (credentials) => {
     return axios.post(`${API_URL}/db/connect`, credentials);
