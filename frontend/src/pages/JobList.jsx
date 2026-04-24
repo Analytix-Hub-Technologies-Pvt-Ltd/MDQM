@@ -120,6 +120,8 @@ const parseLookupValuesFromText = (text = "") => {
     .filter(Boolean);
 };
 
+const OUTPUT_DB_CONFIG_KEY = "mdqm_output_db_config_v1";
+
 export default function JobList() {
   const [jobs, setJobs] = useState([]);
   const [tables, setTables] = useState({});
@@ -197,6 +199,13 @@ export default function JobList() {
     loading: false,
     message: "",
   });
+  useEffect(() => {
+    if (!outputSummary?.tableName) return;
+    setOutputDbState((prev) => {
+      if (prev.targetTable) return prev;
+      return { ...prev, targetTable: outputSummary.tableName };
+    });
+  }, [outputSummary]);
   const [outputAction, setOutputAction] = useState("download_csv");
   const [outputEmailState, setOutputEmailState] = useState({
     toEmail: "",
@@ -223,6 +232,75 @@ export default function JobList() {
   const [lookupDbConnMode, setLookupDbConnMode] = useState("saved");
   const [lookupDbLoadMessage, setLookupDbLoadMessage] = useState("");
   const [lookupDbColumns, setLookupDbColumns] = useState([]);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(OUTPUT_DB_CONFIG_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      if (!saved || typeof saved !== "object") return;
+
+      if (saved.outputTargetMode === "file" || saved.outputTargetMode === "table") {
+        setOutputTargetMode(saved.outputTargetMode);
+      }
+      if (saved.outputDbMode === "saved" || saved.outputDbMode === "manual") {
+        setOutputDbMode(saved.outputDbMode);
+      }
+      if (typeof saved.outputSaveConnection === "boolean") {
+        setOutputSaveConnection(saved.outputSaveConnection);
+      }
+      if (typeof saved.outputConnectionName === "string") {
+        setOutputConnectionName(saved.outputConnectionName);
+      }
+      if (typeof saved.selectedConnectionId === "string") {
+        setSelectedConnectionId(saved.selectedConnectionId);
+      }
+      if (saved.dbCreds && typeof saved.dbCreds === "object") {
+        setDbCreds((prev) => ({ ...prev, ...saved.dbCreds }));
+      }
+      if (saved.outputDbState && typeof saved.outputDbState === "object") {
+        setOutputDbState((prev) => ({
+          ...prev,
+          targetSchema: saved.outputDbState.targetSchema || "",
+          targetTable: saved.outputDbState.targetTable || "",
+          ifExists:
+            saved.outputDbState.ifExists === "replace"
+              ? "replace"
+              : "append",
+        }));
+      }
+    } catch {
+      // Ignore malformed saved config.
+    }
+  }, []);
+
+  useEffect(() => {
+    const payload = {
+      outputTargetMode,
+      outputDbMode,
+      outputSaveConnection,
+      outputConnectionName,
+      selectedConnectionId,
+      dbCreds,
+      outputDbState: {
+        targetSchema: outputDbState.targetSchema,
+        targetTable: outputDbState.targetTable,
+        ifExists: outputDbState.ifExists,
+      },
+    };
+    window.localStorage.setItem(OUTPUT_DB_CONFIG_KEY, JSON.stringify(payload));
+  }, [
+    outputTargetMode,
+    outputDbMode,
+    outputSaveConnection,
+    outputConnectionName,
+    selectedConnectionId,
+    dbCreds,
+    outputDbState.targetSchema,
+    outputDbState.targetTable,
+    outputDbState.ifExists,
+  ]);
+
   const resetCreateFlow = () => {
     setShowAddModal(false);
     setNewJobName("");
@@ -241,21 +319,12 @@ export default function JobList() {
     setRuleColumns([]);
     setRuleDrafts({});
     setOutputSummary(null);
-    setOutputTargetMode("file");
-    setOutputDbMode("saved");
-    setOutputSaveConnection(false);
-    setOutputConnectionName("");
-    setOutputDbState({
-      targetSchema: "",
-      targetTable: "",
-      ifExists: "append",
-      loading: false,
-      message: "",
-    });
+    // Keep output DB config so Run Job can auto-export
+    // even after closing/resetting this modal.
+    setOutputDbState((prev) => ({ ...prev, loading: false, message: "" }));
     // Keep selected file action + email target across modal closes,
     // so Run Job uses the user's latest preference.
     setConnectionName("");
-    setDbCreds({ host: "", port: "", user: "", pass: "", dbname: "" });
     setUploadFilePath("");
     setLookupModal({ open: false, columnName: null, view: "choice" });
     setTablePasteBuffer("");
@@ -333,10 +402,35 @@ export default function JobList() {
     setRunningJobs((prev) => ({ ...prev, [jobId]: true }));
     setRunStatusByJob((prev) => ({ ...prev, [jobId]: "running" }));
     try {
+      let tableExportFailed = false;
       await runJobEngine(jobId);
       const res = await getTablesByJob(jobId);
       const refreshedTables = res?.data || [];
-      if (outputAction === "download_csv") {
+      const totalRowsProcessed = refreshedTables.reduce(
+        (sum, t) => sum + Number(t?.row_count || 0),
+        0
+      );
+      const totalErrorRows = refreshedTables.reduce(
+        (sum, t) => sum + Number(t?.error_rows || 0),
+        0
+      );
+      if (outputTargetMode === "table") {
+        try {
+          const latestTable = [...(refreshedTables || [])].sort((a, b) => b.table_id - a.table_id)[0];
+          if (!latestTable?.table_id) {
+            throw new Error("Output table not found.");
+          }
+          await exportOutputToDbByTableId(latestTable.table_id);
+        } catch (exportErr) {
+          const msg =
+            exportErr?.response?.data?.detail ||
+            exportErr?.message ||
+            "Run completed, but export to DB failed.";
+          tableExportFailed = true;
+          setOutputDbState((s) => ({ ...s, message: msg }));
+          alert(msg);
+        }
+      } else if (outputAction === "download_csv") {
         await handleAutoDownloadForJob(jobId, refreshedTables, "csv");
       } else if (outputAction === "download_excel") {
         await handleAutoDownloadForJob(jobId, refreshedTables, "excel");
@@ -345,7 +439,17 @@ export default function JobList() {
       } else if (outputAction === "email") {
         await handleAutoEmailForJob(refreshedTables);
       }
-      alert("Job completed successfully!");
+      if (tableExportFailed) {
+        alert(
+          `Job completed, but export to DB failed. Processed: ${totalRowsProcessed} rows, quarantine: ${totalErrorRows} rows. Check output message and target schema/table.`
+        );
+      } else {
+        alert(
+          totalErrorRows > 0
+            ? `Job completed. Processed: ${totalRowsProcessed} rows. Quarantine: ${totalErrorRows} rows.`
+            : `Job completed. Processed: ${totalRowsProcessed} rows. No quarantine rows (all checks passed).`
+        );
+      }
       setRunStatusByJob((prev) => ({ ...prev, [jobId]: "success" }));
 
       // 1. Refresh the main job list stats
@@ -1033,27 +1137,22 @@ export default function JobList() {
     }
   };
 
-  const handleExportOutputToDb = async () => {
-    if (!outputSummary?.tableId) {
-      alert("Output table not found.");
-      return;
+  const exportOutputToDbByTableId = async (tableId) => {
+    if (!tableId) {
+      throw new Error("Output table not found.");
     }
     if (!outputDbState.targetTable) {
-      alert("Please choose target table.");
-      return;
+      throw new Error("Please choose target table.");
     }
     const usingSaved = outputDbMode === "saved";
     if (usingSaved && !selectedConnectionId) {
-      alert("Please choose a saved connection.");
-      return;
+      throw new Error("Please choose a saved connection.");
     }
     if (!usingSaved && (!dbCreds.host || !dbCreds.user || !dbCreds.dbname)) {
-      alert("Please fill host, user and database.");
-      return;
+      throw new Error("Please fill host, user and database.");
     }
     if (!usingSaved && outputSaveConnection && !outputConnectionName.trim()) {
-      alert("Please enter a connection name.");
-      return;
+      throw new Error("Please enter a connection name.");
     }
 
     setOutputDbState((s) => ({ ...s, loading: true, message: "" }));
@@ -1078,7 +1177,7 @@ export default function JobList() {
         ? {
             connection_id: Number(selectedConnectionId),
             dbname: dbCreds.dbname,
-            table_id: outputSummary.tableId,
+            table_id: tableId,
             target_schema: outputDbState.targetSchema || undefined,
             target_table: outputDbState.targetTable,
             if_exists: outputDbState.ifExists,
@@ -1089,7 +1188,7 @@ export default function JobList() {
             user: dbCreds.user,
             pass: dbCreds.pass || "",
             dbname: dbCreds.dbname,
-            table_id: outputSummary.tableId,
+            table_id: tableId,
             target_schema: outputDbState.targetSchema || undefined,
             target_table: outputDbState.targetTable,
             if_exists: outputDbState.ifExists,
@@ -1100,12 +1199,31 @@ export default function JobList() {
         message: `Exported ${res?.data?.rows_exported ?? 0} rows to ${res?.data?.target_table || outputDbState.targetTable}`,
       }));
     } catch (err) {
+      const apiDetail = err?.response?.data?.detail || "";
+      const isSchemaMismatch =
+        typeof apiDetail === "string" &&
+        apiDetail.toLowerCase().includes("schema mismatch for append mode");
       setOutputDbState((s) => ({
         ...s,
-        message: err?.response?.data?.detail || "Failed to export to DB",
+        message: isSchemaMismatch
+          ? `${apiDetail} Tip: choose "Replace" if you want to overwrite that table, or enter a new target table name to create a separate table.`
+          : apiDetail || "Failed to export to DB",
       }));
+      throw err;
     } finally {
       setOutputDbState((s) => ({ ...s, loading: false }));
+    }
+  };
+
+  const handleExportOutputToDb = async () => {
+    if (!outputSummary?.tableId) {
+      alert("Output table not found.");
+      return;
+    }
+    try {
+      await exportOutputToDbByTableId(outputSummary.tableId);
+    } catch {
+      // Message already handled in export helper.
     }
   };
 
@@ -2073,16 +2191,18 @@ export default function JobList() {
                               <option key={s} value={s}>{s}</option>
                             ))}
                           </select>
-                          <select
+                          <input
                             className="border border-[#A1A3AF] p-2"
+                            placeholder="Target table (existing or new)"
+                            list="output-target-table-options"
                             value={outputDbState.targetTable}
                             onChange={(e) => setOutputDbState((s) => ({ ...s, targetTable: e.target.value }))}
-                          >
-                            <option value="">Target table...</option>
+                          />
+                          <datalist id="output-target-table-options">
                             {(tablesBySchema[outputDbState.targetSchema] || []).map((t) => (
-                              <option key={t} value={t}>{t}</option>
+                              <option key={t} value={t} />
                             ))}
-                          </select>
+                          </datalist>
                           <select
                             className="border border-[#A1A3AF] p-2"
                             value={outputDbState.ifExists}
@@ -2093,14 +2213,9 @@ export default function JobList() {
                           </select>
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={handleExportOutputToDb}
-                          disabled={outputDbState.loading}
-                          className="w-full py-2 bg-[#23243B] text-white font-bold uppercase hover:bg-black disabled:opacity-50"
-                        >
-                          {outputDbState.loading ? "Exporting..." : "Insert Results into Target Table"}
-                        </button>
+                        <p className="mt-1 text-[11px] text-gray-500">
+                          After you click <b>Run Job</b>, results are inserted automatically using this table configuration.
+                        </p>
                         {outputDbState.message ? (
                           <p className={`mt-2 text-xs ${outputDbState.message.toLowerCase().includes("failed") ? "text-red-600" : "text-green-700"}`}>
                             {outputDbState.message}
