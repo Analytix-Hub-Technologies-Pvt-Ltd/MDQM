@@ -121,6 +121,7 @@ const parseLookupValuesFromText = (text = "") => {
 };
 
 const OUTPUT_DB_CONFIG_KEY = "mdqm_output_db_config_v1";
+const INTERNAL_MDQM_DBNAME = "mdms";
 
 export default function JobList() {
   const [jobs, setJobs] = useState([]);
@@ -202,7 +203,12 @@ export default function JobList() {
   useEffect(() => {
     if (!outputSummary?.tableName) return;
     setOutputDbState((prev) => {
-      if (prev.targetTable) return prev;
+      const prevTarget = String(prev.targetTable || "").trim().toLowerCase();
+      const shouldAutofill =
+        !prevTarget ||
+        prevTarget === "jobs" ||
+        prevTarget === "metadata.jobs";
+      if (!shouldAutofill) return prev;
       return { ...prev, targetTable: outputSummary.tableName };
     });
   }, [outputSummary]);
@@ -1141,7 +1147,10 @@ export default function JobList() {
     if (!tableId) {
       throw new Error("Output table not found.");
     }
-    if (!outputDbState.targetTable) {
+    const resolvedTargetTable =
+      String(outputDbState.targetTable || "").trim() ||
+      String(outputSummary?.tableName || "").trim();
+    if (!resolvedTargetTable) {
       throw new Error("Please choose target table.");
     }
     const usingSaved = outputDbMode === "saved";
@@ -1150,6 +1159,12 @@ export default function JobList() {
     }
     if (!usingSaved && (!dbCreds.host || !dbCreds.user || !dbCreds.dbname)) {
       throw new Error("Please fill host, user and database.");
+    }
+    const normalizedDbName = String(dbCreds.dbname || "").trim().toLowerCase();
+    if (normalizedDbName === INTERNAL_MDQM_DBNAME) {
+      throw new Error(
+        "For this workflow, output export DB cannot be 'mdms'. Please use a separate DB name like 'postgres'."
+      );
     }
     if (!usingSaved && outputSaveConnection && !outputConnectionName.trim()) {
       throw new Error("Please enter a connection name.");
@@ -1162,8 +1177,8 @@ export default function JobList() {
           connection_name: outputConnectionName.trim(),
           host: dbCreds.host,
           port: dbCreds.port || "5432",
-          username: dbCreds.user,
-          password: dbCreds.pass || "",
+          user: dbCreds.user,
+          pass: dbCreds.pass || "",
         });
         await fetchSavedConnections();
         const newId = saveRes?.data?.connection_id;
@@ -1179,7 +1194,7 @@ export default function JobList() {
             dbname: dbCreds.dbname,
             table_id: tableId,
             target_schema: outputDbState.targetSchema || undefined,
-            target_table: outputDbState.targetTable,
+            target_table: resolvedTargetTable,
             if_exists: outputDbState.ifExists,
           }
         : {
@@ -1190,13 +1205,14 @@ export default function JobList() {
             dbname: dbCreds.dbname,
             table_id: tableId,
             target_schema: outputDbState.targetSchema || undefined,
-            target_table: outputDbState.targetTable,
+            target_table: resolvedTargetTable,
             if_exists: outputDbState.ifExists,
           };
       const res = await exportResultsToDb(payload);
       setOutputDbState((s) => ({
         ...s,
-        message: `Exported ${res?.data?.rows_exported ?? 0} rows to ${res?.data?.target_table || outputDbState.targetTable}`,
+        targetTable: resolvedTargetTable,
+        message: `Exported ${res?.data?.rows_exported ?? 0} rows to ${(res?.data?.target_dbname || dbCreds.dbname)}.${res?.data?.target_schema || "public"}.${res?.data?.target_table || resolvedTargetTable}`,
       }));
     } catch (err) {
       const apiDetail = err?.response?.data?.detail || "";
@@ -2215,6 +2231,9 @@ export default function JobList() {
 
                         <p className="mt-1 text-[11px] text-gray-500">
                           After you click <b>Run Job</b>, results are inserted automatically using this table configuration.
+                        </p>
+                        <p className="mt-1 text-[11px] text-amber-700">
+                          Use a separate output database (e.g. <b>postgres</b>). Do not use <b>mdms</b> for exported result tables.
                         </p>
                         {outputDbState.message ? (
                           <p className={`mt-2 text-xs ${outputDbState.message.toLowerCase().includes("failed") ? "text-red-600" : "text-green-700"}`}>
