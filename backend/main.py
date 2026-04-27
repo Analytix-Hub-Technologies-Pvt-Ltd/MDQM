@@ -265,13 +265,16 @@ def list_db_connections():
 def save_db_connection(payload: dict = Body(...)):
     items = _read_saved_connections()
     next_id = max([int(i.get("connection_id", 0)) for i in items] + [0]) + 1
+    # Accept both naming styles from frontend payloads.
+    resolved_user = payload.get("user", payload.get("username", ""))
+    resolved_pass = payload.get("pass", payload.get("password", ""))
     new_item = {
         "connection_id": next_id,
         "connection_name": payload.get("connection_name", ""),
         "host": payload.get("host", ""),
         "port": str(payload.get("port", "5432")),
-        "user": payload.get("user", ""),
-        "pass": payload.get("pass", ""),
+        "user": str(resolved_user or "").strip(),
+        "pass": str(resolved_pass or ""),
     }
     items.append(new_item)
     _write_saved_connections(items)
@@ -311,41 +314,16 @@ def _connect_postgres_with_fallback(creds: dict):
     Connect using provided credentials first.
     If auth fails, retry once with backend .env credentials for local DB usage.
     """
-    try:
-        return psycopg2.connect(
-            host=creds["host"],
-            port=creds["port"],
-            user=creds["user"],
-            password=creds["pass"],
-            dbname=creds["dbname"],
-            connect_timeout=8,
-        )
-    except Exception as first_exc:
-        env_user = os.getenv("POSTGRES_USER", "postgres")
-        env_pass = os.getenv("POSTGRES_PASSWORD", "")
-        env_host = os.getenv("POSTGRES_HOST", "127.0.0.1")
-        env_port = os.getenv("POSTGRES_PORT", "5432")
-        env_db = os.getenv("POSTGRES_DB", "mdms")
-
-        # Fallback is intended for local single-DB setups where frontend creds
-        # can be accidentally entered as dbname instead of username.
-        can_retry = (
-            str(creds.get("host", "")) in ("127.0.0.1", "localhost", env_host)
-            and str(creds.get("port", "")) in ("5432", env_port)
-            and str(creds.get("dbname", "")) in (env_db, "mdms")
-            and str(creds.get("user", "")) != str(env_user)
-        )
-        if not can_retry:
-            raise first_exc
-
-        return psycopg2.connect(
-            host=env_host,
-            port=env_port,
-            user=env_user,
-            password=env_pass,
-            dbname=env_db,
-            connect_timeout=8,
-        )
+    # Do not silently switch credentials/database. Users expect writes to happen
+    # exactly in the DB they selected in UI.
+    return psycopg2.connect(
+        host=creds["host"],
+        port=creds["port"],
+        user=creds["user"],
+        password=creds["pass"],
+        dbname=creds["dbname"],
+        connect_timeout=8,
+    )
 
 
 @app.post("/db/list-schemas-tables")
@@ -354,26 +332,6 @@ def list_schemas_tables(payload: dict = Body(...)):
     if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
         # Frontend can hit this while user is still typing credentials.
         return {"schemas": [], "tables_by_schema": {}}
-
-    env_user = os.getenv("POSTGRES_USER", "postgres")
-    env_pass = os.getenv("POSTGRES_PASSWORD", "")
-    env_host = os.getenv("POSTGRES_HOST", "127.0.0.1")
-    env_port = os.getenv("POSTGRES_PORT", "5432")
-    env_db = os.getenv("POSTGRES_DB", "mdms")
-    if (
-        str(creds.get("host", "")) in ("127.0.0.1", "localhost", env_host)
-        and str(creds.get("port", "")) in ("5432", env_port)
-        and str(creds.get("dbname", "")) in (env_db, "mdms")
-        and str(creds.get("user", "")) != str(env_user)
-    ):
-        # Align target credentials with local backend DB credentials.
-        creds = {
-            "host": env_host,
-            "port": env_port,
-            "user": env_user,
-            "pass": env_pass,
-            "dbname": env_db,
-        }
 
     conn = None
     try:
@@ -526,6 +484,19 @@ def export_results_to_external_db(payload: dict = Body(...), db: Session = Depen
             status_code=400,
             detail="host, user, and dbname are required (or provide connection_id + dbname)",
         )
+    # Enforce split workflow: internal MDQM metadata stays in POSTGRES_DB (usually mdms),
+    # while exported result tables must go to a separate target database.
+    internal_dbname = str(os.getenv("POSTGRES_DB", "mdms")).strip().lower()
+    target_dbname = str(creds.get("dbname", "")).strip().lower()
+    allow_internal_export = bool(payload.get("allow_internal_export_db", False))
+    if target_dbname == internal_dbname and not allow_internal_export:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Target database '{creds.get('dbname')}' is reserved for MDQM backend metadata. "
+                "Choose a separate output database (for example 'postgres') for exported CSV results."
+            ),
+        )
 
     # Keep the same resilience pattern used by other DB helper endpoints.
     conn = None
@@ -592,6 +563,8 @@ def export_results_to_external_db(payload: dict = Body(...), db: Session = Depen
         return {
             "message": "Results exported successfully",
             "rows_exported": int(len(df)),
+            "target_dbname": creds["dbname"],
+            "target_host": creds["host"],
             "target_schema": target_schema,
             "target_table": target_table,
         }
