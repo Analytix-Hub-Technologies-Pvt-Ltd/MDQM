@@ -121,7 +121,15 @@ const parseLookupValuesFromText = (text = "") => {
 };
 
 const OUTPUT_DB_CONFIG_KEY = "mdqm_output_db_config_v1";
+const DEFAULT_IF_EXISTS_MODE = "replace";
 const INTERNAL_MDQM_DBNAME = "mdms";
+const inferSourcePathFromFile = (file) => {
+  const raw = String(file?.path || "").trim();
+  if (!raw) return "";
+  const normalized = raw.replace(/\//g, "\\");
+  if (normalized.toLowerCase().startsWith("c:\\fakepath\\")) return "";
+  return normalized;
+};
 
 export default function JobList() {
   const [jobs, setJobs] = useState([]);
@@ -143,6 +151,7 @@ export default function JobList() {
   const [newJobName, setNewJobName] = useState("");
   const [uploadFile, setUploadFile] = useState(null);
   const [uploadFilePath, setUploadFilePath] = useState("");
+  const [uploadSourcePath, setUploadSourcePath] = useState("");
   const [previewColumns, setPreviewColumns] = useState([]);
   const [previewColumnTypes, setPreviewColumnTypes] = useState({});
   const [previewRows, setPreviewRows] = useState([]);
@@ -196,7 +205,7 @@ export default function JobList() {
   const [outputDbState, setOutputDbState] = useState({
     targetSchema: "",
     targetTable: "",
-    ifExists: "append",
+    ifExists: DEFAULT_IF_EXISTS_MODE,
     loading: false,
     message: "",
   });
@@ -272,7 +281,7 @@ export default function JobList() {
           ifExists:
             saved.outputDbState.ifExists === "replace"
               ? "replace"
-              : "append",
+              : DEFAULT_IF_EXISTS_MODE,
         }));
       }
     } catch {
@@ -332,6 +341,7 @@ export default function JobList() {
     // so Run Job uses the user's latest preference.
     setConnectionName("");
     setUploadFilePath("");
+    setUploadSourcePath("");
     setLookupModal({ open: false, columnName: null, view: "choice" });
     setTablePasteBuffer("");
     setLookupDbState({
@@ -548,6 +558,7 @@ export default function JobList() {
       setCreateDataMode("file");
       setUploadFile(null);
       setUploadFilePath(`uploads/${targetTable.table_name}.csv`);
+      setUploadSourcePath("");
       setEditFlow({
         isEdit: true,
         jobId: job.job_id,
@@ -861,6 +872,8 @@ export default function JobList() {
       if (editFlow.isEdit && editFlow.jobId && editFlow.tableId) {
         if (createDataMode === "file") {
           const hasPath = String(uploadFilePath || "").trim().length > 0;
+          const effectiveSourcePath =
+            String(uploadFilePath || "").trim() || String(uploadSourcePath || "").trim();
           if (hasPath) {
             await replaceTableFileFromPath(
               editFlow.jobId,
@@ -868,7 +881,12 @@ export default function JobList() {
               String(uploadFilePath).trim()
             );
           } else if (uploadFile) {
-            await replaceTableFileUpload(editFlow.jobId, editFlow.tableId, uploadFile);
+            await replaceTableFileUpload(
+              editFlow.jobId,
+              editFlow.tableId,
+              uploadFile,
+              effectiveSourcePath
+            );
           }
         }
 
@@ -931,6 +949,8 @@ export default function JobList() {
           alert("Choose a CSV file or provide a file path.");
           return;
         }
+        const effectiveSourcePath =
+          String(uploadFilePath || "").trim() || String(uploadSourcePath || "").trim();
         const createRes = await createNewJob(newJobName);
         jobId = createRes?.data?.job_id;
         if (!jobId) throw new Error("Unable to create job");
@@ -940,7 +960,8 @@ export default function JobList() {
           await uploadCsvToJob(
             jobId,
             uploadFile,
-            showFilePreview ? previewEditable : []
+            showFilePreview ? previewEditable : [],
+            effectiveSourcePath
           );
         }
         const tablesRes = await getTablesByJob(jobId);
@@ -2044,14 +2065,14 @@ export default function JobList() {
                             onClick={() => setOutputTargetMode("file")}
                             className={`py-2 font-bold uppercase border ${outputTargetMode === "file" ? "bg-[#23243B] text-white border-[#23243B]" : "text-[#23243B] border-[#A1A3AF] bg-white"}`}
                           >
-                            File Input
+                            File Output
                           </button>
                           <button
                             type="button"
                             onClick={() => setOutputTargetMode("table")}
                             className={`py-2 font-bold uppercase border ${outputTargetMode === "table" ? "bg-[#23243B] text-white border-[#23243B]" : "text-[#23243B] border-[#A1A3AF] bg-white"}`}
                           >
-                            Table Input
+                            Table Output
                           </button>
                         </div>
                       </div>
@@ -2232,9 +2253,6 @@ export default function JobList() {
                         <p className="mt-1 text-[11px] text-gray-500">
                           After you click <b>Run Job</b>, results are inserted automatically using this table configuration.
                         </p>
-                        <p className="mt-1 text-[11px] text-amber-700">
-                          Use a separate output database (e.g. <b>postgres</b>). Do not use <b>mdms</b> for exported result tables.
-                        </p>
                         {outputDbState.message ? (
                           <p className={`mt-2 text-xs ${outputDbState.message.toLowerCase().includes("failed") ? "text-red-600" : "text-green-700"}`}>
                             {outputDbState.message}
@@ -2307,8 +2325,10 @@ export default function JobList() {
                           type="file"
                           accept=".csv"
                           onChange={(e) => {
-                            setUploadFile(e.target.files[0]);
+                            const selectedFile = e.target.files[0];
+                            setUploadFile(selectedFile);
                             setUploadFilePath("");
+                            setUploadSourcePath(inferSourcePathFromFile(selectedFile));
                             setShowFilePreview(false);
                             setPreviewColumns([]);
                             setPreviewColumnTypes({});
@@ -2328,6 +2348,7 @@ export default function JobList() {
                           value={uploadFilePath}
                           onChange={(e) => {
                             setUploadFilePath(e.target.value);
+                            setUploadSourcePath(String(e.target.value || "").trim());
                             if (e.target.value.trim()) {
                               setUploadFile(null);
                             }

@@ -81,10 +81,13 @@ export const renameTable = async (tableId, newName) => {
     return axios.put(`${API_URL}/tables/${tableId}/rename`, { name: newName });
 };
 
-export const uploadCsvToJob = async (jobId, file, previewEdits = []) => {
+export const uploadCsvToJob = async (jobId, file, previewEdits = [], sourcePath = "") => {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("preview_edits", JSON.stringify(previewEdits));
+    if (String(sourcePath || "").trim()) {
+        formData.append("source_path", String(sourcePath).trim());
+    }
     return axios.post(`${API_URL}/jobs/${jobId}/upload`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
     });
@@ -116,9 +119,12 @@ export const replaceTableFileFromPath = async (jobId, tableId, filePath) => {
     });
 };
 
-export const replaceTableFileUpload = async (jobId, tableId, file) => {
+export const replaceTableFileUpload = async (jobId, tableId, file, sourcePath = "") => {
     const formData = new FormData();
     formData.append("file", file);
+    if (String(sourcePath || "").trim()) {
+        formData.append("source_path", String(sourcePath).trim());
+    }
     return axios.post(`${API_URL}/jobs/${jobId}/tables/${tableId}/replace-file`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
     });
