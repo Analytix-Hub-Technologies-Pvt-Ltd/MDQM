@@ -99,6 +99,7 @@ class TableEmailPayload(BaseModel):
 
 # Local file for saved DB connections
 CONNECTIONS_FILE = os.path.join(os.path.dirname(__file__), "saved_connections.json")
+SOURCE_PATHS_FILE = os.path.join(os.path.dirname(__file__), "source_paths.json")
 
 
 def _read_saved_connections():
@@ -115,6 +116,101 @@ def _read_saved_connections():
 def _write_saved_connections(items):
     with open(CONNECTIONS_FILE, "w", encoding="utf-8") as f:
         json.dump(items, f, ensure_ascii=True, indent=2)
+
+
+def _read_source_paths():
+    if not os.path.exists(SOURCE_PATHS_FILE):
+        return {}
+    try:
+        with open(SOURCE_PATHS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_source_paths(items: dict):
+    with open(SOURCE_PATHS_FILE, "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=True, indent=2)
+
+
+def _source_path_key(job_id: int, table_id: int) -> str:
+    return f"{job_id}:{table_id}"
+
+
+def _save_table_source_path(job_id: int, table_id: int, source_path: str):
+    items = _read_source_paths()
+    items[_source_path_key(job_id, table_id)] = _normalize_local_path(source_path)
+    _write_source_paths(items)
+
+
+def _get_table_source_path(job_id: int, table_id: int):
+    items = _read_source_paths()
+    return items.get(_source_path_key(job_id, table_id))
+
+
+def _refresh_table_csv_from_source_path(job_id: int, table_id: int, db: Session):
+    """
+    If a source file path was configured for this table, reload that source into uploads/<table>.csv
+    so each Run Job uses current file contents.
+    """
+    source_path = _get_table_source_path(job_id, table_id)
+    if not source_path:
+        return
+    if not os.path.isfile(source_path):
+        return
+
+    table = (
+        db.query(models.TableMetadata)
+        .filter(models.TableMetadata.job_id == job_id, models.TableMetadata.table_id == table_id)
+        .first()
+    )
+    if not table:
+        return
+
+    upload_dir = "uploads"
+    os.makedirs(upload_dir, exist_ok=True)
+    final_csv_path = os.path.join(upload_dir, f"{table.table_name}.csv")
+
+    if source_path.lower().endswith((".xlsx", ".xls")):
+        df = pd.read_excel(source_path)
+    else:
+        df = pd.read_csv(source_path)
+    df.to_csv(final_csv_path, index=False)
+
+    # Keep metadata aligned with latest source snapshot.
+    table.row_count = int(len(df))
+    db.query(models.ColumnMetadata).filter(
+        models.ColumnMetadata.job_id == job_id,
+        models.ColumnMetadata.table_id == table_id,
+    ).delete(synchronize_session=False)
+
+    for col_name, dtype in df.dtypes.items():
+        str_type = "String"
+        if "int" in str(dtype):
+            str_type = "Integer"
+        elif "float" in str(dtype):
+            str_type = "Float"
+        elif "datetime" in str(dtype):
+            str_type = "Date"
+        elif "bool" in str(dtype):
+            str_type = "Boolean"
+        db.add(
+            models.ColumnMetadata(
+                job_id=job_id,
+                table_id=table_id,
+                column_name=col_name,
+                data_type=str_type,
+            )
+        )
+
+    # Clear old stats so pre-run UI does not show stale totals.
+    db.query(models.TableStats).filter(
+        models.TableStats.job_id == job_id,
+        models.TableStats.table_id == table_id,
+    ).delete(synchronize_session=False)
+
+    db.commit()
 
 
 def _normalize_local_path(raw_path: str):
@@ -582,7 +678,12 @@ def create_job(payload: JobCreate, db: Session = Depends(get_db)):
 
 # 1. FIX: Changed the URL to match the frontend exactly
 @app.post("/jobs/{job_id}/upload")
-async def upload_file(job_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def upload_file(
+    job_id: int,
+    file: UploadFile = File(...),
+    source_path: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+):
     upload_dir = "uploads"
     os.makedirs(upload_dir, exist_ok=True)
     
@@ -658,7 +759,11 @@ async def upload_file(job_id: int, file: UploadFile = File(...), db: Session = D
         )
         db.add(col_meta)
     db.commit()
-    
+
+    normalized_source_path = _normalize_local_path(source_path or "")
+    if normalized_source_path and os.path.isfile(normalized_source_path):
+        _save_table_source_path(job_id, next_table_id, normalized_source_path)
+
     return {"job_id": job_id, "message": "File Uploaded and Processed Successfully"}
 
 
@@ -734,6 +839,7 @@ def upload_file_from_path(job_id: int, payload: dict = Body(...), db: Session = 
         )
         db.add(col_meta)
     db.commit()
+    _save_table_source_path(job_id, next_table_id, file_path)
 
     return {"job_id": job_id, "message": "File Uploaded from path and Processed Successfully"}
 
@@ -796,6 +902,7 @@ def replace_table_file_from_path(job_id: int, table_id: int, payload: dict = Bod
     ).delete(synchronize_session=False)
 
     db.commit()
+    _save_table_source_path(job_id, table_id, file_path)
     return {
         "message": "Table source file replaced successfully",
         "job_id": job_id,
@@ -804,7 +911,13 @@ def replace_table_file_from_path(job_id: int, table_id: int, payload: dict = Bod
     }
 
 @app.post("/jobs/{job_id}/tables/{table_id}/replace-file")
-async def replace_table_file_upload(job_id: int, table_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def replace_table_file_upload(
+    job_id: int,
+    table_id: int,
+    file: UploadFile = File(...),
+    source_path: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+):
     table = db.query(models.TableMetadata).filter(
         models.TableMetadata.job_id == job_id,
         models.TableMetadata.table_id == table_id,
@@ -860,6 +973,10 @@ async def replace_table_file_upload(job_id: int, table_id: int, file: UploadFile
         models.TableStats.table_id == table_id,
     ).delete(synchronize_session=False)
 
+    normalized_source_path = _normalize_local_path(source_path or "")
+    if normalized_source_path and os.path.isfile(normalized_source_path):
+        _save_table_source_path(job_id, table_id, normalized_source_path)
+
     db.commit()
     return {
         "message": "Table source file replaced successfully",
@@ -877,6 +994,9 @@ def run_job(job_id: int, db: Session = Depends(get_db)):
     
     # 2. Trigger the Python Engine!
     try:
+        tables = db.query(models.TableMetadata).filter(models.TableMetadata.job_id == job_id).all()
+        for t in tables:
+            _refresh_table_csv_from_source_path(job_id, t.table_id, db)
         run_data_quality_job(job_id, db)
         return {"message": f"Job {job_id} executed successfully!"}
     except Exception as e:
