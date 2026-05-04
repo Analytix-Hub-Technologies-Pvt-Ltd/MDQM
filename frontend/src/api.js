@@ -65,6 +65,30 @@ export const runJobEngine = async (jobId) => {
     return axios.post(`${API_URL}/jobs/${jobId}/run`);
 };
 
+export const scheduleJob = async (jobId, payload) => {
+    return axios.post(`${API_URL}/schedule-job/${jobId}`, payload);
+};
+
+export const getAllSchedules = async () => {
+    return axios.get(`${API_URL}/schedules`);
+};
+
+export const getScheduleByJobId = async (jobId) => {
+    return axios.get(`${API_URL}/schedules/${jobId}`);
+};
+
+export const pauseSchedule = async (jobId) => {
+    return axios.post(`${API_URL}/schedules/${jobId}/pause`);
+};
+
+export const resumeSchedule = async (jobId) => {
+    return axios.post(`${API_URL}/schedules/${jobId}/resume`);
+};
+
+export const deleteSchedule = async (jobId) => {
+    return axios.delete(`${API_URL}/schedules/${jobId}`);
+};
+
 export const deleteJob = async (jobId) => {
     return axios.delete(`${API_URL}/jobs/${jobId}`);
 };

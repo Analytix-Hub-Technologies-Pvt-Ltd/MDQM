@@ -31,6 +31,11 @@ import {
   downloadTableOutputCsv,
   downloadTableOutputExcel,
   uploadTableOutputToSharePoint,
+  scheduleJob,
+  getAllSchedules,
+  pauseSchedule,
+  resumeSchedule,
+  deleteSchedule,
 } from "../api";
 import {
   ChevronRight,
@@ -47,6 +52,9 @@ import {
   Loader2,
   FileUp,
   Table2,
+  CheckCircle2,
+  AlertTriangle,
+  Clock3,
 } from "lucide-react";
 import ColumnAudit from "./ColumnAudit";
 
@@ -193,6 +201,12 @@ export default function JobList() {
   });
   const [runningJobs, setRunningJobs] = useState({});
   const [runStatusByJob, setRunStatusByJob] = useState({});
+  const [schedulerToasts, setSchedulerToasts] = useState([]);
+  const previousJobStatusRef = useRef({});
+  const previousJobEndTimeRef = useRef({});
+  const lastToastTsRef = useRef({});
+  const [schedulesByJob, setSchedulesByJob] = useState({});
+  const [, setToastNowMs] = useState(Date.now());
   const [createdJobId, setCreatedJobId] = useState(null);
   const [createdTableId, setCreatedTableId] = useState(null);
   const [ruleColumns, setRuleColumns] = useState([]);
@@ -230,6 +244,65 @@ export default function JobList() {
     format: "csv",
     folderPath: "",
   });
+  const [showSchedule, setShowSchedule] = useState(false);
+  const [scheduleType, setScheduleType] = useState("once");
+  const [scheduleTime, setScheduleTime] = useState("");
+  const [scheduleDay, setScheduleDay] = useState("0");
+  const [scheduleDate, setScheduleDate] = useState("");
+  const [hourInterval, setHourInterval] = useState(1);
+  const [cronExpression, setCronExpression] = useState("* * * * *");
+
+  const formatRunningDuration = (startTime) => {
+    if (!startTime) return "0s";
+    const start = new Date(startTime);
+    const diffSec = Math.max(0, Math.floor((Date.now() - start.getTime()) / 1000));
+    const mins = Math.floor(diffSec / 60);
+    const secs = diffSec % 60;
+    return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+  };
+
+  const removeToast = (toastId) => {
+    setSchedulerToasts((prev) => prev.filter((t) => t.id !== toastId));
+  };
+
+  useEffect(() => {
+    const id = window.setInterval(() => setToastNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const pushSchedulerToast = (job) => {
+    const normalized = String(job?.status || "").toLowerCase();
+    if (!["running", "completed", "failed"].includes(normalized)) return;
+    const dedupeKey = `${job?.job_id || "unknown"}:${normalized}`;
+    const now = Date.now();
+    if (lastToastTsRef.current[dedupeKey] && now - lastToastTsRef.current[dedupeKey] < 10000) {
+      return;
+    }
+    lastToastTsRef.current[dedupeKey] = now;
+    const statusLabel =
+      normalized === "running"
+        ? "Running"
+        : normalized === "completed"
+          ? "Completed"
+          : "Failed";
+    const durationLabel =
+      normalized === "running"
+        ? formatRunningDuration(job?.start_time)
+        : String(job?.duration || "0ms");
+    const toast = {
+      id: `${job.job_id}-${normalized}-${Date.now()}`,
+      jobId: job.job_id,
+      status: normalized,
+      title: `Job ${job.job_id} ${statusLabel}`,
+      durationLabel,
+      startTime: job?.start_time || null,
+      nextRunTime: schedulesByJob[job?.job_id]?.next_run_time || null,
+    };
+    setSchedulerToasts((prev) => [...prev, toast].slice(-3));
+    window.setTimeout(() => {
+      removeToast(toast.id);
+    }, 6000);
+  };
   /** Fuzzy lookup: modal to choose file vs table paste */
   const [lookupModal, setLookupModal] = useState({
     open: false,
@@ -354,6 +427,13 @@ export default function JobList() {
     setLookupDbConnMode("saved");
     setLookupDbLoadMessage("");
     setLookupDbColumns([]);
+    setShowSchedule(false);
+    setScheduleType("once");
+    setScheduleTime("");
+    setScheduleDay("0");
+    setScheduleDate("");
+    setHourInterval(1);
+    setCronExpression("* * * * *");
     setEditFlow({
       isEdit: false,
       jobId: null,
@@ -377,6 +457,14 @@ export default function JobList() {
   }, []);
 
   useEffect(() => {
+    // Poll jobs so scheduler-triggered runs are reflected in UI automatically.
+    const id = window.setInterval(() => {
+      fetchJobs();
+    }, 10000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  useEffect(() => {
     if (showAddModal) {
       fetchSavedConnections();
     }
@@ -384,8 +472,37 @@ export default function JobList() {
 
   const fetchJobs = async () => {
     try {
-      const res = await getAllJobs();
-      setJobs(res.data);
+      const [res, schedRes] = await Promise.all([getAllJobs(), getAllSchedules()]);
+      const items = res.data || [];
+      setJobs(items);
+      const scheduleItems = schedRes?.data?.items || [];
+      const mapped = {};
+      scheduleItems.forEach((s) => {
+        if (s?.job_id != null) mapped[s.job_id] = s;
+      });
+      setSchedulesByJob(mapped);
+      items.forEach((job) => {
+        const current = String(job?.status || "").toLowerCase();
+        const previous = previousJobStatusRef.current[job.job_id];
+        const previousEndTime = previousJobEndTimeRef.current[job.job_id];
+        const currentEndTime = job?.end_time || null;
+        if (previous && previous !== current) {
+          pushSchedulerToast(job);
+        }
+        // Fast scheduler runs can complete between polling intervals, so status
+        // may still look "Completed" in consecutive polls. Detect new runs by
+        // end_time changes and emit a completion toast.
+        if (
+          previousEndTime &&
+          currentEndTime &&
+          previousEndTime !== currentEndTime &&
+          current === "completed"
+        ) {
+          pushSchedulerToast(job);
+        }
+        previousJobStatusRef.current[job.job_id] = current;
+        previousJobEndTimeRef.current[job.job_id] = currentEndTime;
+      });
     } catch (err) {
       console.error(err);
     }
@@ -1345,6 +1462,59 @@ export default function JobList() {
     }
   };
 
+  const handleSaveSchedule = async () => {
+    if (!outputSummary?.jobId) {
+      alert("Job ID not found.");
+      return;
+    }
+    const payload = {
+      type: scheduleType,
+      time: scheduleTime || "",
+      day: scheduleDay || "",
+      date: scheduleDate || "",
+      interval: Number(hourInterval || 1),
+      cron: cronExpression || "",
+    };
+    try {
+      await scheduleJob(outputSummary.jobId, payload);
+      await fetchJobs();
+      setShowSchedule(false);
+      alert("Scheduled successfully");
+    } catch (err) {
+      alert(err?.response?.data?.detail || "Failed to schedule job.");
+    }
+  };
+
+  const handlePauseSchedule = async (jobId) => {
+    try {
+      await pauseSchedule(jobId);
+      await fetchJobs();
+      alert(`Schedule paused for Job ${jobId}`);
+    } catch (err) {
+      alert(err?.response?.data?.detail || "Failed to pause schedule.");
+    }
+  };
+
+  const handleResumeSchedule = async (jobId) => {
+    try {
+      await resumeSchedule(jobId);
+      await fetchJobs();
+      alert(`Schedule resumed for Job ${jobId}`);
+    } catch (err) {
+      alert(err?.response?.data?.detail || "Failed to resume schedule.");
+    }
+  };
+
+  const handleDeleteSchedule = async (jobId) => {
+    try {
+      await deleteSchedule(jobId);
+      await fetchJobs();
+      alert(`Schedule deleted for Job ${jobId}`);
+    } catch (err) {
+      alert(err?.response?.data?.detail || "Failed to delete schedule.");
+    }
+  };
+
   const handleLoadLookupSchemasTables = async () => {
     setLookupDbLoadMessage("");
     const ok = await handleFetchTables();
@@ -1457,6 +1627,59 @@ export default function JobList() {
 
   return (
     <div className="flex-1 bg-[#FBFBFB] text-[#23243B] h-screen overflow-y-auto relative">
+      <div className="fixed top-6 right-6 z-[80] space-y-2 w-[300px]">
+        {schedulerToasts.map((toast) => (
+          <div
+            key={toast.id}
+            className={`rounded-md border px-3 py-2 shadow-md bg-white transition-all duration-300 ${
+              toast.status === "running"
+                ? "border-blue-200"
+                : toast.status === "completed"
+                  ? "border-emerald-200"
+                  : "border-rose-200"
+            }`}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-start gap-2 min-w-0">
+                <span className="mt-0.5">
+                  {toast.status === "running" ? (
+                    <Loader2 size={14} className="animate-spin text-blue-600" />
+                  ) : toast.status === "completed" ? (
+                    <CheckCircle2 size={14} className="text-emerald-600" />
+                  ) : (
+                    <AlertTriangle size={14} className="text-rose-600" />
+                  )}
+                </span>
+                <div className="min-w-0">
+                  <div className="text-[11px] uppercase tracking-wider font-bold truncate">
+                    {toast.title}
+                  </div>
+                  <div className="text-[11px] text-gray-600 mt-1">
+                    Duration:{" "}
+                    {toast.status === "running"
+                      ? formatRunningDuration(toast.startTime)
+                      : toast.durationLabel}
+                  </div>
+                  {toast.nextRunTime ? (
+                    <div className="text-[10px] text-gray-500 mt-1 flex items-center gap-1">
+                      <Clock3 size={11} />
+                      Next: {new Date(toast.nextRunTime).toLocaleString()}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => removeToast(toast.id)}
+                className="text-gray-400 hover:text-gray-700"
+                aria-label="Close toast"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
       {/* HEADER */}
       <div className="p-4 h-24 border-b border-[#A1A3AF] border-opacity-20 flex justify-between items-center pr-8">
         <h1 className="text-4xl pl-4 font-thin tracking-tighter uppercase">
@@ -1501,6 +1724,18 @@ export default function JobList() {
                           job.end_time.split("T")[1].substring(0, 8)
                         : "Never"}
                     </span>
+                    <div className="text-[11px] text-gray-500 mt-1">
+                      Schedule:{" "}
+                      {schedulesByJob[job.job_id]
+                        ? schedulesByJob[job.job_id].paused
+                          ? "Paused"
+                          : `Active | Next run: ${
+                              schedulesByJob[job.job_id].next_run_time
+                                ? new Date(schedulesByJob[job.job_id].next_run_time).toLocaleString()
+                                : "n/a"
+                            }`
+                        : "Not scheduled"}
+                    </div>
                     <span className={`inline-block mt-1 text-[10px] uppercase tracking-wider px-2 py-0.5 ${ (job.total_tables || 0) > 0 ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}>
                       {(job.total_tables || 0) > 0 ? "Ready" : "No Data"}
                     </span>
@@ -1617,6 +1852,43 @@ export default function JobList() {
                           >
                             <Download size={12} /> Download Zip
                           </div>
+                          {schedulesByJob[job.job_id] ? (
+                            schedulesByJob[job.job_id].paused ? (
+                              <div
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActionMenu({ type: null, id: null });
+                                  handleResumeSchedule(job.job_id);
+                                }}
+                                className="px-4 py-2 text-xs uppercase tracking-wider hover:bg-gray-100 cursor-pointer flex items-center gap-2"
+                              >
+                                <Play size={12} /> Resume Schedule
+                              </div>
+                            ) : (
+                              <div
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActionMenu({ type: null, id: null });
+                                  handlePauseSchedule(job.job_id);
+                                }}
+                                className="px-4 py-2 text-xs uppercase tracking-wider hover:bg-gray-100 cursor-pointer flex items-center gap-2"
+                              >
+                                <Loader2 size={12} /> Pause Schedule
+                              </div>
+                            )
+                          ) : null}
+                          {schedulesByJob[job.job_id] ? (
+                            <div
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setActionMenu({ type: null, id: null });
+                                handleDeleteSchedule(job.job_id);
+                              }}
+                              className="px-4 py-2 text-xs uppercase tracking-wider text-amber-700 hover:bg-amber-50 cursor-pointer flex items-center gap-2"
+                            >
+                              <Trash2 size={12} /> Delete Schedule
+                            </div>
+                          ) : null}
                           <div
                             onClick={(e) => {
                               e.stopPropagation();
@@ -2029,14 +2301,134 @@ export default function JobList() {
 
                   {showOutputStep && (
                     <>
-                      <div className="rounded-lg border border-[#D6D9E0] p-4 bg-gradient-to-br from-white to-[#F8FAFF]">
-                        <h3 className="text-sm font-bold uppercase tracking-widest text-[#23243B]">
-                          Step 4: Output Summary
-                        </h3>
-                        <p className="text-xs text-gray-500 mt-1">
-                          Output file and table details are generated successfully.
-                        </p>
+                      <div className="rounded-lg border border-[#D6D9E0] p-4 bg-gradient-to-br from-white to-[#F8FAFF] flex flex-col sm:flex-row justify-between items-start sm:items-center">
+                        <div className="flex-1">
+                          <h3 className="text-sm font-bold uppercase tracking-widest text-[#23243B]">
+                            Step 4: Output Summary
+                          </h3>
+                          <p className="text-xs text-gray-500 mt-1">
+                            Output file and table details are generated successfully.
+                          </p>
+                        </div>
+                        <div className="mt-2 sm:mt-0">
+                          <button
+                            type="button"
+                            onClick={() => setShowSchedule(true)}
+                            className="inline-flex items-center gap-1 px-4 py-2 border hover:bg-gray-50 border-[#23243B] rounded font-bold uppercase text-xs text-[#23243B] tracking-widest transition-colors"
+                          >
+                            Schedule <span role="img" aria-label="settings">⚙️</span>
+                          </button>
+                        </div>
                       </div>
+                      {showSchedule && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+                          <div className="w-full max-w-xl rounded-xl bg-white shadow-xl border border-[#D6D9E0]">
+                            <div className="flex items-center justify-between border-b border-[#E5E7EB] px-5 py-4">
+                              <h4 className="text-sm font-bold uppercase tracking-widest text-[#23243B]">Schedule Job</h4>
+                              <button
+                                type="button"
+                                onClick={() => setShowSchedule(false)}
+                                className="p-1 text-gray-500 hover:text-black"
+                                aria-label="Close"
+                              >
+                                <X size={18} />
+                              </button>
+                            </div>
+                            <div className="p-5 space-y-4 text-xs">
+                              <div>
+                                <label className="text-[11px] uppercase tracking-widest text-gray-500 mb-2 block">Schedule Type</label>
+                                <select
+                                  value={scheduleType}
+                                  onChange={(e) => setScheduleType(e.target.value)}
+                                  className="w-full border border-[#A1A3AF] p-2 rounded"
+                                >
+                                  <option value="once">once</option>
+                                  <option value="hourly">hourly</option>
+                                  <option value="daily">daily</option>
+                                  <option value="weekly">weekly</option>
+                                  <option value="monthly">monthly</option>
+                                  <option value="cron">cron</option>
+                                </select>
+                              </div>
+
+                              {scheduleType === "once" && (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                  <input type="date" value={scheduleDate} onChange={(e) => setScheduleDate(e.target.value)} className="border border-[#A1A3AF] p-2 rounded" />
+                                  <input type="time" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="border border-[#A1A3AF] p-2 rounded" />
+                                </div>
+                              )}
+                              {scheduleType === "hourly" && (
+                                <input
+                                  type="number"
+                                  min={1}
+                                  value={hourInterval}
+                                  onChange={(e) => setHourInterval(Number(e.target.value) || 1)}
+                                  className="w-full border border-[#A1A3AF] p-2 rounded"
+                                  placeholder="Every X hours"
+                                />
+                              )}
+                              {scheduleType === "daily" && (
+                                <input type="time" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="w-full border border-[#A1A3AF] p-2 rounded" />
+                              )}
+                              {scheduleType === "weekly" && (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                  <select value={scheduleDay} onChange={(e) => setScheduleDay(e.target.value)} className="border border-[#A1A3AF] p-2 rounded">
+                                    <option value="0">0 (Monday)</option>
+                                    <option value="1">1 (Tuesday)</option>
+                                    <option value="2">2 (Wednesday)</option>
+                                    <option value="3">3 (Thursday)</option>
+                                    <option value="4">4 (Friday)</option>
+                                    <option value="5">5 (Saturday)</option>
+                                    <option value="6">6 (Sunday)</option>
+                                  </select>
+                                  <input type="time" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="border border-[#A1A3AF] p-2 rounded" />
+                                </div>
+                              )}
+                              {scheduleType === "monthly" && (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={31}
+                                    value={scheduleDate}
+                                    onChange={(e) => setScheduleDate(e.target.value)}
+                                    className="border border-[#A1A3AF] p-2 rounded"
+                                    placeholder="1-31"
+                                  />
+                                  <input type="time" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="border border-[#A1A3AF] p-2 rounded" />
+                                </div>
+                              )}
+                              {scheduleType === "cron" && (
+                                <input
+                                  type="text"
+                                  value={cronExpression}
+                                  onChange={(e) => setCronExpression(e.target.value)}
+                                  className="w-full border border-[#A1A3AF] p-2 rounded"
+                                  placeholder="* * * * *"
+                                />
+                              )}
+
+                              <div className="flex justify-end gap-2 pt-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setShowSchedule(false)}
+                                  className="px-4 py-2 border border-[#A1A3AF] rounded font-bold uppercase text-xs text-[#23243B]"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={handleSaveSchedule}
+                                  className="px-4 py-2 bg-[#23243B] text-white rounded font-bold uppercase text-xs hover:bg-black"
+                                >
+                                  Save Schedule
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
                       <div className="border border-[#D6D9E0] rounded-lg bg-white p-4 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                         <div className="border border-[#E5E7EB] rounded p-2">
                           <div className="text-[10px] uppercase text-gray-500">Output File</div>
@@ -2055,6 +2447,8 @@ export default function JobList() {
                           <div className="font-semibold">{outputSummary?.columnCount ?? "-"}</div>
                         </div>
                       </div>
+
+                      {/* --- Output Mode --- */}
                       <div className="border border-[#D6D9E0] rounded-lg bg-white p-4 text-xs">
                         <div className="text-[11px] uppercase tracking-widest text-gray-500 mb-3">
                           Output Mode
@@ -2077,189 +2471,192 @@ export default function JobList() {
                         </div>
                       </div>
 
+                      {/* --- File Output block --- */}
                       {outputTargetMode === "file" && (
-                      <div className="border border-[#D6D9E0] rounded-lg bg-white p-4 text-xs">
-                        <div className="text-[11px] uppercase tracking-widest text-gray-500 mb-3">File Actions</div>
-                        <div className="grid grid-cols-1 gap-2">
-                          <select
-                            value={outputAction}
-                            onChange={(e) => setOutputAction(e.target.value)}
-                            className="border border-[#A1A3AF] p-2"
-                          >
-                            <option value="download_csv">Download CSV</option>
-                            <option value="download_excel">Download Excel</option>
-                            <option value="sharepoint">Upload to SharePoint</option>
-                            <option value="email">Email File</option>
-                          </select>
+                        <div className="border border-[#D6D9E0] rounded-lg bg-white p-4 text-xs">
+                          <div className="text-[11px] uppercase tracking-widest text-gray-500 mb-3">File Actions</div>
+                          <div className="grid grid-cols-1 gap-2">
+                            <select
+                              value={outputAction}
+                              onChange={(e) => setOutputAction(e.target.value)}
+                              className="border border-[#A1A3AF] p-2"
+                            >
+                              <option value="download_csv">Download CSV</option>
+                              <option value="download_excel">Download Excel</option>
+                              <option value="sharepoint">Upload to SharePoint</option>
+                              <option value="email">Email File</option>
+                            </select>
+                          </div>
+                          {outputAction === "email" ? (
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2">
+                              <input
+                                type="email"
+                                placeholder="Recipient email"
+                                value={outputEmailState.toEmail}
+                                onChange={(e) => setOutputEmailState((s) => ({ ...s, toEmail: e.target.value }))}
+                                className="border border-[#A1A3AF] p-2 sm:col-span-2"
+                              />
+                              <select
+                                value={outputEmailState.format}
+                                onChange={(e) => setOutputEmailState((s) => ({ ...s, format: e.target.value }))}
+                                className="border border-[#A1A3AF] p-2"
+                              >
+                                <option value="csv">CSV</option>
+                                <option value="excel">Excel</option>
+                              </select>
+                            </div>
+                          ) : null}
+                          {outputAction === "sharepoint" ? (
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2">
+                              <select
+                                value={outputSharePointState.format}
+                                onChange={(e) =>
+                                  setOutputSharePointState((s) => ({ ...s, format: e.target.value }))
+                                }
+                                className="border border-[#A1A3AF] p-2"
+                              >
+                                <option value="csv">CSV</option>
+                                <option value="excel">Excel</option>
+                              </select>
+                              <input
+                                type="text"
+                                placeholder="Folder path (optional)"
+                                value={outputSharePointState.folderPath}
+                                onChange={(e) =>
+                                  setOutputSharePointState((s) => ({ ...s, folderPath: e.target.value }))
+                                }
+                                className="border border-[#A1A3AF] p-2 sm:col-span-2"
+                              />
+                            </div>
+                          ) : null}
+                          <p className="mt-2 text-[11px] text-gray-500">
+                            Selected file action runs automatically after you click <b>Run Job</b> and processing completes.
+                          </p>
                         </div>
-                        {outputAction === "email" ? (
-                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2">
-                            <input
-                              type="email"
-                              placeholder="Recipient email"
-                              value={outputEmailState.toEmail}
-                              onChange={(e) => setOutputEmailState((s) => ({ ...s, toEmail: e.target.value }))}
-                              className="border border-[#A1A3AF] p-2 sm:col-span-2"
-                            />
-                            <select
-                              value={outputEmailState.format}
-                              onChange={(e) => setOutputEmailState((s) => ({ ...s, format: e.target.value }))}
-                              className="border border-[#A1A3AF] p-2"
-                            >
-                              <option value="csv">CSV</option>
-                              <option value="excel">Excel</option>
-                            </select>
-                          </div>
-                        ) : null}
-                        {outputAction === "sharepoint" ? (
-                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2">
-                            <select
-                              value={outputSharePointState.format}
-                              onChange={(e) =>
-                                setOutputSharePointState((s) => ({ ...s, format: e.target.value }))
-                              }
-                              className="border border-[#A1A3AF] p-2"
-                            >
-                              <option value="csv">CSV</option>
-                              <option value="excel">Excel</option>
-                            </select>
-                            <input
-                              type="text"
-                              placeholder="Folder path (optional)"
-                              value={outputSharePointState.folderPath}
-                              onChange={(e) =>
-                                setOutputSharePointState((s) => ({ ...s, folderPath: e.target.value }))
-                              }
-                              className="border border-[#A1A3AF] p-2 sm:col-span-2"
-                            />
-                          </div>
-                        ) : null}
-                        <p className="mt-2 text-[11px] text-gray-500">
-                          Selected file action runs automatically after you click <b>Run Job</b> and processing completes.
-                        </p>
-                      </div>
                       )}
 
+                      {/* --- Table Output block --- */}
                       {outputTargetMode === "table" && (
-                      <div className="border border-[#D6D9E0] rounded-lg bg-white p-4 text-xs">
-                        <div className="text-[11px] uppercase tracking-widest text-gray-500 mb-3">Insert Results to Database Table</div>
-                        <div className="grid grid-cols-2 gap-2 mb-3">
-                          <button
-                            type="button"
-                            onClick={() => setOutputDbMode("saved")}
-                            className={`py-2 font-bold uppercase border ${outputDbMode === "saved" ? "bg-[#23243B] text-white border-[#23243B]" : "text-[#23243B] border-[#A1A3AF] bg-white"}`}
-                          >
-                            Saved Connection
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setOutputDbMode("manual");
-                              setSelectedConnectionId("");
-                            }}
-                            className={`py-2 font-bold uppercase border ${outputDbMode === "manual" ? "bg-[#23243B] text-white border-[#23243B]" : "text-[#23243B] border-[#A1A3AF] bg-white"}`}
-                          >
-                            Manual
-                          </button>
-                        </div>
+                        <div className="border border-[#D6D9E0] rounded-lg bg-white p-4 text-xs">
+                          <div className="text-[11px] uppercase tracking-widest text-gray-500 mb-3">Insert Results to Database Table</div>
+                          <div className="grid grid-cols-2 gap-2 mb-3">
+                            <button
+                              type="button"
+                              onClick={() => setOutputDbMode("saved")}
+                              className={`py-2 font-bold uppercase border ${outputDbMode === "saved" ? "bg-[#23243B] text-white border-[#23243B]" : "text-[#23243B] border-[#A1A3AF] bg-white"}`}
+                            >
+                              Saved Connection
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOutputDbMode("manual");
+                                setSelectedConnectionId("");
+                              }}
+                              className={`py-2 font-bold uppercase border ${outputDbMode === "manual" ? "bg-[#23243B] text-white border-[#23243B]" : "text-[#23243B] border-[#A1A3AF] bg-white"}`}
+                            >
+                              Manual
+                            </button>
+                          </div>
 
-                        {outputDbMode === "saved" ? (
+                          {outputDbMode === "saved" ? (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                              <select
+                                className="border border-[#A1A3AF] p-2"
+                                value={selectedConnectionId}
+                                onChange={(e) => handleSavedConnectionChange(e.target.value)}
+                              >
+                                <option value="">Select saved connection...</option>
+                                {savedConnections.map((c) => (
+                                  <option key={c.connection_id} value={c.connection_id}>
+                                    {c.connection_name} ({c.host}:{c.port})
+                                  </option>
+                                ))}
+                              </select>
+                              <input
+                                className="border border-[#A1A3AF] p-2"
+                                placeholder="Database name"
+                                value={dbCreds.dbname}
+                                onChange={(e) => setDbCreds((p) => ({ ...p, dbname: e.target.value }))}
+                              />
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                              <input className="border border-[#A1A3AF] p-2" placeholder="Host" value={dbCreds.host} onChange={(e) => setDbCreds((p) => ({ ...p, host: e.target.value }))} />
+                              <input className="border border-[#A1A3AF] p-2" placeholder="Port" value={dbCreds.port} onChange={(e) => setDbCreds((p) => ({ ...p, port: e.target.value }))} />
+                              <input className="border border-[#A1A3AF] p-2" placeholder="Username" value={dbCreds.user} onChange={(e) => setDbCreds((p) => ({ ...p, user: e.target.value }))} />
+                              <input type="password" className="border border-[#A1A3AF] p-2" placeholder="Password" value={dbCreds.pass} onChange={(e) => setDbCreds((p) => ({ ...p, pass: e.target.value }))} />
+                              <input className="border border-[#A1A3AF] p-2 sm:col-span-2" placeholder="Database name" value={dbCreds.dbname} onChange={(e) => setDbCreds((p) => ({ ...p, dbname: e.target.value }))} />
+                              <label className="sm:col-span-2 flex items-center gap-2 text-[11px] text-gray-600 uppercase tracking-wider">
+                                <input
+                                  type="checkbox"
+                                  checked={outputSaveConnection}
+                                  onChange={(e) => setOutputSaveConnection(e.target.checked)}
+                                />
+                                Save this connection
+                              </label>
+                              {outputSaveConnection && (
+                                <input
+                                  className="border border-[#A1A3AF] p-2 sm:col-span-2"
+                                  placeholder="Connection name (e.g. PROD_MDMS)"
+                                  value={outputConnectionName}
+                                  onChange={(e) => setOutputConnectionName(e.target.value)}
+                                />
+                              )}
+                            </div>
+                          )}
+
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                            <button
+                              type="button"
+                              onClick={handleOutputDbLoadTargets}
+                              className="py-2 border border-[#23243B] text-[#23243B] font-bold uppercase hover:bg-gray-50"
+                            >
+                              Load Target Tables
+                            </button>
                             <select
                               className="border border-[#A1A3AF] p-2"
-                              value={selectedConnectionId}
-                              onChange={(e) => handleSavedConnectionChange(e.target.value)}
+                              value={outputDbState.targetSchema}
+                              onChange={(e) => setOutputDbState((s) => ({ ...s, targetSchema: e.target.value, targetTable: "" }))}
                             >
-                              <option value="">Select saved connection...</option>
-                              {savedConnections.map((c) => (
-                                <option key={c.connection_id} value={c.connection_id}>
-                                  {c.connection_name} ({c.host}:{c.port})
-                                </option>
+                              <option value="">Target schema (optional)</option>
+                              {Object.keys(tablesBySchema || {}).map((s) => (
+                                <option key={s} value={s}>{s}</option>
                               ))}
                             </select>
                             <input
                               className="border border-[#A1A3AF] p-2"
-                              placeholder="Database name"
-                              value={dbCreds.dbname}
-                              onChange={(e) => setDbCreds((p) => ({ ...p, dbname: e.target.value }))}
+                              placeholder="Target table (existing or new)"
+                              list="output-target-table-options"
+                              value={outputDbState.targetTable}
+                              onChange={(e) => setOutputDbState((s) => ({ ...s, targetTable: e.target.value }))}
                             />
+                            <datalist id="output-target-table-options">
+                              {(tablesBySchema[outputDbState.targetSchema] || []).map((t) => (
+                                <option key={t} value={t} />
+                              ))}
+                            </datalist>
+                            <select
+                              className="border border-[#A1A3AF] p-2"
+                              value={outputDbState.ifExists}
+                              onChange={(e) => setOutputDbState((s) => ({ ...s, ifExists: e.target.value }))}
+                            >
+                              <option value="append">Append</option>
+                              <option value="replace">Replace</option>
+                            </select>
                           </div>
-                        ) : (
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
-                            <input className="border border-[#A1A3AF] p-2" placeholder="Host" value={dbCreds.host} onChange={(e) => setDbCreds((p) => ({ ...p, host: e.target.value }))} />
-                            <input className="border border-[#A1A3AF] p-2" placeholder="Port" value={dbCreds.port} onChange={(e) => setDbCreds((p) => ({ ...p, port: e.target.value }))} />
-                            <input className="border border-[#A1A3AF] p-2" placeholder="Username" value={dbCreds.user} onChange={(e) => setDbCreds((p) => ({ ...p, user: e.target.value }))} />
-                            <input type="password" className="border border-[#A1A3AF] p-2" placeholder="Password" value={dbCreds.pass} onChange={(e) => setDbCreds((p) => ({ ...p, pass: e.target.value }))} />
-                            <input className="border border-[#A1A3AF] p-2 sm:col-span-2" placeholder="Database name" value={dbCreds.dbname} onChange={(e) => setDbCreds((p) => ({ ...p, dbname: e.target.value }))} />
-                            <label className="sm:col-span-2 flex items-center gap-2 text-[11px] text-gray-600 uppercase tracking-wider">
-                              <input
-                                type="checkbox"
-                                checked={outputSaveConnection}
-                                onChange={(e) => setOutputSaveConnection(e.target.checked)}
-                              />
-                              Save this connection
-                            </label>
-                            {outputSaveConnection && (
-                              <input
-                                className="border border-[#A1A3AF] p-2 sm:col-span-2"
-                                placeholder="Connection name (e.g. PROD_MDMS)"
-                                value={outputConnectionName}
-                                onChange={(e) => setOutputConnectionName(e.target.value)}
-                              />
-                            )}
-                          </div>
-                        )}
 
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
-                          <button
-                            type="button"
-                            onClick={handleOutputDbLoadTargets}
-                            className="py-2 border border-[#23243B] text-[#23243B] font-bold uppercase hover:bg-gray-50"
-                          >
-                            Load Target Tables
-                          </button>
-                          <select
-                            className="border border-[#A1A3AF] p-2"
-                            value={outputDbState.targetSchema}
-                            onChange={(e) => setOutputDbState((s) => ({ ...s, targetSchema: e.target.value, targetTable: "" }))}
-                          >
-                            <option value="">Target schema (optional)</option>
-                            {Object.keys(tablesBySchema || {}).map((s) => (
-                              <option key={s} value={s}>{s}</option>
-                            ))}
-                          </select>
-                          <input
-                            className="border border-[#A1A3AF] p-2"
-                            placeholder="Target table (existing or new)"
-                            list="output-target-table-options"
-                            value={outputDbState.targetTable}
-                            onChange={(e) => setOutputDbState((s) => ({ ...s, targetTable: e.target.value }))}
-                          />
-                          <datalist id="output-target-table-options">
-                            {(tablesBySchema[outputDbState.targetSchema] || []).map((t) => (
-                              <option key={t} value={t} />
-                            ))}
-                          </datalist>
-                          <select
-                            className="border border-[#A1A3AF] p-2"
-                            value={outputDbState.ifExists}
-                            onChange={(e) => setOutputDbState((s) => ({ ...s, ifExists: e.target.value }))}
-                          >
-                            <option value="append">Append</option>
-                            <option value="replace">Replace</option>
-                          </select>
-                        </div>
-
-                        <p className="mt-1 text-[11px] text-gray-500">
-                          After you click <b>Run Job</b>, results are inserted automatically using this table configuration.
-                        </p>
-                        {outputDbState.message ? (
-                          <p className={`mt-2 text-xs ${outputDbState.message.toLowerCase().includes("failed") ? "text-red-600" : "text-green-700"}`}>
-                            {outputDbState.message}
+                          <p className="mt-1 text-[11px] text-gray-500">
+                            After you click <b>Run Job</b>, results are inserted automatically using this table configuration.
                           </p>
-                        ) : null}
-                      </div>
+                          {outputDbState.message ? (
+                            <p className={`mt-2 text-xs ${outputDbState.message.toLowerCase().includes("failed") ? "text-red-600" : "text-green-700"}`}>
+                              {outputDbState.message}
+                            </p>
+                          ) : null}
+                        </div>
                       )}
+
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1">
                         <button
                           onClick={() => {
