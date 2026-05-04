@@ -15,6 +15,7 @@ from urllib.parse import quote_plus
 from urllib import request as urlrequest
 from urllib import parse as urlparse
 import base64
+import atexit
 import models
 from database import SessionLocal, engine
 from engine.orchestrator import run_data_quality_job
@@ -27,6 +28,8 @@ from thefuzz import process
 from pydantic import BaseModel
 
 from prometheus_fastapi_instrumentator import Instrumentator
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 app = FastAPI()
 
@@ -45,6 +48,38 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+scheduler = BackgroundScheduler()
+scheduler.start()
+atexit.register(lambda: scheduler.shutdown(wait=False))
+
+
+def _run_scheduled_job(job_id: int):
+    db = SessionLocal()
+    try:
+        run_data_quality_job(job_id, db)
+    finally:
+        db.close()
+
+
+def _scheduler_job_key(job_id: int) -> str:
+    return f"scheduled_job_{job_id}"
+
+
+def _serialize_schedule_job(job):
+    job_id = None
+    if str(getattr(job, "id", "")).startswith("scheduled_job_"):
+        try:
+            job_id = int(str(job.id).replace("scheduled_job_", "", 1))
+        except ValueError:
+            job_id = None
+    return {
+        "scheduler_id": getattr(job, "id", ""),
+        "job_id": job_id,
+        "next_run_time": job.next_run_time.isoformat() if getattr(job, "next_run_time", None) else None,
+        "trigger": str(getattr(job, "trigger", "")),
+        "paused": bool(getattr(job, "next_run_time", None) is None),
+    }
 
 def get_db():
     db = SessionLocal()
@@ -1001,6 +1036,157 @@ def run_job(job_id: int, db: Session = Depends(get_db)):
         return {"message": f"Job {job_id} executed successfully!"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Engine failed: {str(e)}")
+
+
+@app.post("/schedule-job/{job_id}")
+def schedule_job(job_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
+    job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    schedule_type = str(data.get("type", "")).strip().lower()
+    if not schedule_type:
+        raise HTTPException(status_code=400, detail="type is required")
+
+    job_key = _scheduler_job_key(job_id)
+    try:
+        scheduler.remove_job(job_key)
+    except Exception:
+        pass
+
+    try:
+        if schedule_type == "daily":
+            hour, minute = map(int, str(data.get("time", "")).split(":"))
+            scheduler.add_job(
+                _run_scheduled_job,
+                "cron",
+                id=job_key,
+                replace_existing=True,
+                hour=hour,
+                minute=minute,
+                args=[job_id],
+            )
+
+        elif schedule_type == "weekly":
+            hour, minute = map(int, str(data.get("time", "")).split(":"))
+            scheduler.add_job(
+                _run_scheduled_job,
+                "cron",
+                id=job_key,
+                replace_existing=True,
+                day_of_week=str(data.get("day", "0")),
+                hour=hour,
+                minute=minute,
+                args=[job_id],
+            )
+
+        elif schedule_type == "hourly":
+            interval = max(int(data.get("interval", 1)), 1)
+            scheduler.add_job(
+                _run_scheduled_job,
+                "interval",
+                id=job_key,
+                replace_existing=True,
+                hours=interval,
+                args=[job_id],
+            )
+
+        elif schedule_type == "once":
+            date_value = str(data.get("date", "")).strip()
+            time_value = str(data.get("time", "")).strip()
+            run_date = date_value
+            if date_value and time_value and "T" not in date_value:
+                run_date = f"{date_value}T{time_value}:00"
+            if not run_date:
+                raise HTTPException(status_code=400, detail="date is required for once schedule")
+            scheduler.add_job(
+                _run_scheduled_job,
+                "date",
+                id=job_key,
+                replace_existing=True,
+                run_date=run_date,
+                args=[job_id],
+            )
+
+        elif schedule_type == "monthly":
+            day_of_month = int(data.get("date", 1))
+            hour, minute = map(int, str(data.get("time", "")).split(":"))
+            scheduler.add_job(
+                _run_scheduled_job,
+                "cron",
+                id=job_key,
+                replace_existing=True,
+                day=day_of_month,
+                hour=hour,
+                minute=minute,
+                args=[job_id],
+            )
+
+        elif schedule_type == "cron":
+            expr = str(data.get("cron", "")).strip()
+            if not expr:
+                raise HTTPException(status_code=400, detail="cron is required for cron schedule")
+            scheduler.add_job(
+                _run_scheduled_job,
+                trigger=CronTrigger.from_crontab(expr),
+                id=job_key,
+                replace_existing=True,
+                args=[job_id],
+            )
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported schedule type")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to schedule job: {str(e)}")
+
+    return {"message": "Scheduled successfully"}
+
+
+@app.get("/schedules")
+def list_schedules():
+    jobs = []
+    for j in scheduler.get_jobs():
+        if str(getattr(j, "id", "")).startswith("scheduled_job_"):
+            jobs.append(_serialize_schedule_job(j))
+    return {"items": jobs}
+
+
+@app.get("/schedules/{job_id}")
+def get_schedule(job_id: int):
+    j = scheduler.get_job(_scheduler_job_key(job_id))
+    if not j:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return _serialize_schedule_job(j)
+
+
+@app.post("/schedules/{job_id}/pause")
+def pause_schedule(job_id: int):
+    j = scheduler.get_job(_scheduler_job_key(job_id))
+    if not j:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    scheduler.pause_job(_scheduler_job_key(job_id))
+    j = scheduler.get_job(_scheduler_job_key(job_id))
+    return {"message": "Schedule paused", "schedule": _serialize_schedule_job(j)}
+
+
+@app.post("/schedules/{job_id}/resume")
+def resume_schedule(job_id: int):
+    j = scheduler.get_job(_scheduler_job_key(job_id))
+    if not j:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    scheduler.resume_job(_scheduler_job_key(job_id))
+    j = scheduler.get_job(_scheduler_job_key(job_id))
+    return {"message": "Schedule resumed", "schedule": _serialize_schedule_job(j)}
+
+
+@app.delete("/schedules/{job_id}")
+def delete_schedule(job_id: int):
+    j = scheduler.get_job(_scheduler_job_key(job_id))
+    if not j:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    scheduler.remove_job(_scheduler_job_key(job_id))
+    return {"message": "Schedule deleted", "job_id": job_id}
 
 # --- SMART GETTERS (WITH STATS) ---
 
