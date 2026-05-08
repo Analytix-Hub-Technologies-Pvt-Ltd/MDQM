@@ -132,3 +132,36 @@ class DbConnection(Base):
     username = Column(String, nullable=False)
     password = Column(String, nullable=True)
     created_at = Column(DateTime, default=func.now())
+
+
+class User(Base):
+    __tablename__ = "users"
+    __table_args__ = {"schema": "auth"}
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    full_name = Column(String(255), nullable=False)
+    username = Column(String(64), unique=True, nullable=True, index=True)
+    email = Column(String(320), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    role = Column(String(32), nullable=False, default="user")
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=func.now())
+    created_by = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
+
+    # Invitation/password-setup architecture (email delivery not implemented yet)
+    invite_token_hash = Column(String(128), nullable=True)
+    invite_expires_at = Column(DateTime, nullable=True)
+    password_configured = Column(Boolean, nullable=False, default=True)
+
+
+class AccessRequest(Base):
+    __tablename__ = "access_requests"
+    __table_args__ = {"schema": "auth"}
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    full_name = Column(String(255), nullable=False)
+    email = Column(String(320), nullable=False, index=True)
+    department = Column(String(255), nullable=True)
+    reason = Column(Text, nullable=True)
+    status = Column(String(32), nullable=False, default="pending")
+    requested_at = Column(DateTime, default=func.now())
