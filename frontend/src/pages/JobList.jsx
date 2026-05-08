@@ -30,6 +30,7 @@ import {
   emailTableOutput,
   downloadTableOutputCsv,
   downloadTableOutputExcel,
+  downloadJobZip,
   uploadTableOutputToSharePoint,
   scheduleJob,
   getAllSchedules,
@@ -536,6 +537,7 @@ export default function JobList() {
     setRunStatusByJob((prev) => ({ ...prev, [jobId]: "running" }));
     try {
       let tableExportFailed = false;
+      let tableExportErrorMsg = "";
       await runJobEngine(jobId);
       const res = await getTablesByJob(jobId);
       const refreshedTables = res?.data || [];
@@ -560,8 +562,8 @@ export default function JobList() {
             exportErr?.message ||
             "Run completed, but export to DB failed.";
           tableExportFailed = true;
+          tableExportErrorMsg = msg;
           setOutputDbState((s) => ({ ...s, message: msg }));
-          alert(msg);
         }
       } else if (outputAction === "download_csv") {
         await handleAutoDownloadForJob(jobId, refreshedTables, "csv");
@@ -574,7 +576,7 @@ export default function JobList() {
       }
       if (tableExportFailed) {
         alert(
-          `Job completed, but export to DB failed. Processed: ${totalRowsProcessed} rows, quarantine: ${totalErrorRows} rows. Check output message and target schema/table.`
+          `Job completed, but export to DB failed.\n\nReason: ${tableExportErrorMsg || "Unknown export error"}\n\nProcessed: ${totalRowsProcessed} rows, quarantine: ${totalErrorRows} rows.`
         );
       } else {
         alert(
@@ -1330,6 +1332,7 @@ export default function JobList() {
         ? {
             connection_id: Number(selectedConnectionId),
             dbname: dbCreds.dbname,
+            job_id: outputSummary?.jobId,
             table_id: tableId,
             target_schema: outputDbState.targetSchema || undefined,
             target_table: resolvedTargetTable,
@@ -1341,6 +1344,7 @@ export default function JobList() {
             user: dbCreds.user,
             pass: dbCreds.pass || "",
             dbname: dbCreds.dbname,
+            job_id: outputSummary?.jobId,
             table_id: tableId,
             target_schema: outputDbState.targetSchema || undefined,
             target_table: resolvedTargetTable,
@@ -1835,17 +1839,24 @@ export default function JobList() {
                             <Edit2 size={12} /> Rename Job
                           </div>
                           <div
-                            onClick={(e) => {
+                            onClick={async (e) => {
                               e.stopPropagation();
                               if ((job.total_tables || 0) === 0) {
                                 alert("No tables attached to this job. Upload/import data first.");
                                 setActionMenu({ type: null, id: null });
                                 return;
                               }
-                              window.open(
-                                `http://localhost:8000/jobs/${job.job_id}/download?t=${Date.now()}`,
-                                "_blank",
-                              );
+                              try {
+                                const { blob, filename } = await downloadJobZip(job.job_id);
+                                saveBlobAsFile(blob, filename);
+                              } catch (err) {
+                                const detail = err?.response?.data?.detail;
+                                const msg =
+                                  typeof detail === "string"
+                                    ? detail
+                                    : "Failed to download job ZIP (check login or run the job first).";
+                                alert(msg);
+                              }
                               setActionMenu({ type: null, id: null });
                             }}
                             className={`px-4 py-2 text-xs uppercase tracking-wider flex items-center gap-2 ${(job.total_tables || 0) === 0 ? "text-gray-400 cursor-not-allowed bg-gray-50" : "hover:bg-gray-100 cursor-pointer"}`}
@@ -2070,12 +2081,20 @@ export default function JobList() {
                                   <Edit2 size={12} /> Rename Table
                                 </div>
                                 <div
-                                  onClick={(e) => {
+                                  onClick={async (e) => {
                                     e.stopPropagation();
-                                    window.open(
-                                      `http://localhost:8000/tables/${table.table_id}/download?t=${Date.now()}`,
-                                      "_blank",
-                                    );
+                                    try {
+                                      const { blob, filename } = await downloadTableOutputExcel(
+                                        job.job_id,
+                                        table.table_id
+                                      );
+                                      saveBlobAsFile(blob, filename);
+                                    } catch (err) {
+                                      alert(
+                                        err?.response?.data?.detail ||
+                                          "Failed to download Excel (check login or run the job first)."
+                                      );
+                                    }
                                     setActionMenu({ type: null, id: null });
                                   }}
                                   className="px-4 py-2 text-xs uppercase tracking-wider hover:bg-gray-100 cursor-pointer flex items-center gap-2"

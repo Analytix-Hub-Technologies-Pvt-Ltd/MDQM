@@ -10,7 +10,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 
-const Sidebar = ({ activeTab, setActiveTab }) => {
+const Sidebar = ({ activeTab, setActiveTab, isAdmin }) => {
   const [isCollapsed, setIsCollapsed] = useState(false);
 
   const mainItems = [
@@ -37,6 +37,15 @@ const Sidebar = ({ activeTab, setActiveTab }) => {
   ];
 
   const systemItems = [
+    ...(isAdmin
+      ? [
+          {
+            name: "Admin",
+            id: "admin",
+            icon: <ShieldCheck size={18} strokeWidth={1} />,
+          },
+        ]
+      : []),
     {
       name: "Account",
       id: "account",

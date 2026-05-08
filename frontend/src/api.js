@@ -1,6 +1,31 @@
 import axios from 'axios';
 
 const API_URL = 'http://127.0.0.1:8000';
+const apiClient = axios.create({ baseURL: API_URL });
+
+export const setAuthToken = (token) => {
+    if (token) {
+        apiClient.defaults.headers.common.Authorization = `Bearer ${token}`;
+        axios.defaults.headers.common.Authorization = `Bearer ${token}`;
+    } else {
+        delete apiClient.defaults.headers.common.Authorization;
+        delete axios.defaults.headers.common.Authorization;
+    }
+};
+
+apiClient.interceptors.response.use(
+    (response) => response,
+    (error) => {
+        if (error?.response?.status === 401) {
+            localStorage.removeItem("mdqm_token");
+            localStorage.removeItem("mdqm_user");
+            if (!window.location.pathname.includes("/login")) {
+                window.location.href = "/login";
+            }
+        }
+        return Promise.reject(error);
+    }
+);
 
 const readFilenameFromDisposition = (disposition = "", fallback = "download") => {
     const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
@@ -17,18 +42,18 @@ const readFilenameFromDisposition = (disposition = "", fallback = "download") =>
 
 // --- JOBS ---
 export const getAllJobs = async () => {
-    return axios.get(`${API_URL}/jobs`); 
+    return apiClient.get(`/jobs`); 
 };
 
 export const createJob = async (jobName) => {
     const formData = new FormData();
     formData.append('job_name', jobName);
-    return axios.post(`${API_URL}/jobs/create`, formData);
+    return apiClient.post(`/jobs/create`, formData);
 };
 
 // --- TABLES ---
 export const getTablesByJob = async (jobId) => {
-    return axios.get(`${API_URL}/jobs/${jobId}/tables`);
+    return apiClient.get(`/jobs/${jobId}/tables`);
 };
 
 // In frontend/src/api.js
@@ -199,6 +224,17 @@ export const emailTableOutput = async (tableId, payload) => {
     return axios.post(`${API_URL}/tables/${tableId}/email`, payload);
 };
 
+export const downloadJobZip = async (jobId) => {
+    const res = await axios.get(`${API_URL}/jobs/${jobId}/download`, {
+        responseType: "blob",
+    });
+    const filename = readFilenameFromDisposition(
+        res?.headers?.["content-disposition"] || "",
+        `Job_${jobId}_Results.zip`
+    );
+    return { blob: res.data, filename };
+};
+
 export const downloadTableOutputCsv = async (jobId, tableId) => {
     const res = await axios.get(`${API_URL}/tables/${jobId}/${tableId}/download-csv`, {
         responseType: "blob",
@@ -269,6 +305,10 @@ export const getDashboardSummary = async () => {
     return axios.get(`${API_URL}/dashboard/summary`);
 };
 
+export const getDataQualityMetrics = async () => {
+    return axios.get(`${API_URL}/dashboard/data-quality-metrics`);
+};
+
 export const removeMasterValue = async (jobId, tableId, value) => {
     return axios.delete(`${API_URL}/master-data/remove`, {
         data: { 
@@ -294,4 +334,57 @@ export const standardizeDates = (tableId, columnName) => {
   return axios.post(`${API_URL}/tables/${tableId}/standardize-dates`, {
     column_name: columnName
   });
+};
+
+// --- AUTH / RBAC ---
+export const authLogin = async (login, password) => {
+    return apiClient.post(`/auth/login`, { login, password });
+};
+
+export const authMe = async () => {
+    return apiClient.get(`/auth/me`);
+};
+
+export const bootstrapAdmin = async (payload) => {
+    return apiClient.post(`/auth/bootstrap`, payload);
+};
+
+export const completeInvite = async (payload) => {
+    return apiClient.post(`/auth/complete-invite`, payload);
+};
+
+export const submitAccessRequest = async (payload) => {
+    return apiClient.post(`/access-request`, payload);
+};
+
+export const adminListUsers = async () => {
+    return apiClient.get(`/admin/users`);
+};
+
+export const adminCreateUser = async (payload) => {
+    return apiClient.post(`/admin/create-user`, payload);
+};
+
+export const adminListAccessRequests = async () => {
+    return apiClient.get(`/admin/access-requests`);
+};
+
+export const adminApproveRequest = async (id, role) => {
+    return apiClient.post(`/admin/approve-request/${id}`, { role });
+};
+
+export const adminRejectRequest = async (id) => {
+    return apiClient.post(`/admin/reject-request/${id}`);
+};
+
+export const adminDisableUser = async (id) => {
+    return apiClient.post(`/admin/disable-user/${id}`);
+};
+
+export const adminUpdateUserRole = async (id, role) => {
+    return apiClient.post(`/admin/update-user-role/${id}`, { role });
+};
+
+export const adminRoles = async () => {
+    return apiClient.get(`/admin/roles`);
 };
