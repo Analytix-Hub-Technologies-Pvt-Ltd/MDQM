@@ -8,6 +8,7 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
 import models
+from auth.username_utils import sanitize_username
 from database import get_db
 
 router = APIRouter(tags=["access"])
@@ -15,6 +16,7 @@ router = APIRouter(tags=["access"])
 
 class AccessRequestBody(BaseModel):
     full_name: str
+    username: str
     email: EmailStr
     department: str = ""
     reason: str = ""
@@ -65,6 +67,7 @@ def _send_access_request_email(row: models.AccessRequest) -> tuple[bool, str | N
         "<p>A new access request was submitted in MDQM.</p>"
         "<ul>"
         f"<li><b>Name:</b> {row.full_name}</li>"
+        f"<li><b>Username:</b> {row.username or '-'}</li>"
         f"<li><b>Email:</b> {row.email}</li>"
         f"<li><b>Department:</b> {department}</li>"
         f"<li><b>Reason:</b> {reason}</li>"
@@ -100,11 +103,34 @@ def _send_access_request_email(row: models.AccessRequest) -> tuple[bool, str | N
 
 @router.post("/access-request")
 def request_access(body: AccessRequestBody, db: Session = Depends(get_db)):
+    raw_username = body.username.strip()
+    if not raw_username:
+        raise HTTPException(status_code=400, detail="Username is required")
+    if not any(ch.isalnum() for ch in raw_username):
+        raise HTTPException(
+            status_code=400,
+            detail="Username must include at least one letter or number",
+        )
+    username = sanitize_username(raw_username)
+    if db.query(models.User).filter(models.User.username == username).first():
+        raise HTTPException(status_code=400, detail="Username is already taken")
+    pending_user = (
+        db.query(models.AccessRequest)
+        .filter(
+            models.AccessRequest.status == "pending",
+            models.AccessRequest.username == username,
+        )
+        .first()
+    )
+    if pending_user:
+        raise HTTPException(status_code=400, detail="Username is already requested")
+
     email = body.email.strip().lower()
     if db.query(models.User).filter(models.User.email == email).first():
         raise HTTPException(status_code=400, detail="User already exists")
     row = models.AccessRequest(
         full_name=body.full_name.strip(),
+        username=username,
         email=email,
         department=body.department.strip() or None,
         reason=body.reason.strip() or None,

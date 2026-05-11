@@ -44,6 +44,19 @@ with engine.begin() as conn:
     conn.execute(text("CREATE SCHEMA IF NOT EXISTS auth"))
 models.Base.metadata.create_all(bind=engine)
 
+try:
+    _insp = inspect(engine)
+    _access_cols = {c["name"] for c in _insp.get_columns("access_requests", schema="auth")}
+    if "username" not in _access_cols:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "ALTER TABLE auth.access_requests ADD COLUMN IF NOT EXISTS username VARCHAR(64)"
+                )
+            )
+except Exception:
+    pass
+
 # --- 1. ENABLE CORS (FIXED PORT) ---
 app.add_middleware(
     CORSMiddleware,
@@ -1793,7 +1806,6 @@ def email_table_output(table_id: int, payload: TableEmailPayload, db: Session = 
     to_email = (payload.to_email or "").strip()
     if not to_email:
         raise HTTPException(status_code=400, detail="to_email is required")
-
     tenant_id = os.getenv("MS_GRAPH_TENANT_ID", "").strip()
     client_id = os.getenv("MS_GRAPH_CLIENT_ID", "").strip()
     client_secret = os.getenv("MS_GRAPH_CLIENT_SECRET", "").strip()

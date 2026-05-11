@@ -4,8 +4,9 @@ import os
 from urllib import parse as urlparse
 from urllib import request as urlrequest
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, EmailStr
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 import models
@@ -13,6 +14,7 @@ from auth.config import FRONTEND_BASE_URL, INVITE_EXPIRE_HOURS
 from auth.deps import require_admin
 from auth.email_invite import build_invite_payload
 from auth.security import generate_invite_token, hash_invite_token, hash_password
+from auth.username_utils import build_unique_username
 from database import get_db
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -93,39 +95,46 @@ def _send_graph_email(to_emails: list[str], subject: str, body_html: str) -> tup
     return (True, None)
 
 
-def _sanitize_username(value: str) -> str:
-    allowed = "".join(ch for ch in value.lower() if ch.isalnum() or ch in "._")
-    return allowed.strip("._")[:64] or "user"
-
-
-def _build_unique_username(db: Session, seed: str) -> str:
-    base = _sanitize_username(seed)
-    candidate = base
-    i = 1
-    while db.query(models.User).filter(models.User.username == candidate).first():
-        suffix = f".{i}"
-        candidate = f"{base[: max(1, 64 - len(suffix))]}{suffix}"
-        i += 1
-    return candidate
-
-
 @router.get("/users")
-def list_users(_: models.User = Depends(require_admin), db: Session = Depends(get_db)):
-    rows = db.query(models.User).order_by(models.User.id.asc()).all()
-    return [
-        {
-            "id": u.id,
-            "full_name": u.full_name,
-            "username": u.username,
-            "email": u.email,
-            "role": u.role,
-            "is_active": u.is_active,
-            "created_at": u.created_at.isoformat() if u.created_at else None,
-            "created_by": u.created_by,
-            "password_configured": u.password_configured,
-        }
-        for u in rows
-    ]
+def list_users(
+    response: Response,
+    _: models.User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    List users via raw SQL so the result always matches `SELECT ... FROM auth.users`
+    (avoids any ORM/session edge case that could omit rows visible in psql).
+    """
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    result = db.execute(
+        text(
+            """
+            SELECT id, full_name, username, email, role, is_active, created_at, created_by, password_configured
+            FROM auth.users
+            ORDER BY id ASC
+            """
+        )
+    )
+    rows = result.fetchall()
+    out = []
+    for r in rows:
+        created_at = r[6]
+        pwd_cfg = r[8]
+        out.append(
+            {
+                "id": r[0],
+                "full_name": r[1],
+                "username": r[2],
+                "email": r[3],
+                "role": r[4],
+                "is_active": bool(r[5]) if r[5] is not None else True,
+                "created_at": created_at.isoformat() if created_at else None,
+                "created_by": r[7],
+                "password_configured": bool(pwd_cfg) if pwd_cfg is not None else True,
+            }
+        )
+    return out
 
 
 @router.get("/access-requests")
@@ -135,6 +144,7 @@ def list_access_requests(_: models.User = Depends(require_admin), db: Session = 
         {
             "id": r.id,
             "full_name": r.full_name,
+            "username": r.username,
             "email": r.email,
             "department": r.department,
             "reason": r.reason,
@@ -159,7 +169,7 @@ def create_user(body: CreateUserBody, admin: models.User = Depends(require_admin
     if db.query(models.User).filter(models.User.email == email).first():
         raise HTTPException(status_code=400, detail="Email already exists")
     username_seed = (body.username or "").strip() or email.split("@")[0]
-    username = _build_unique_username(db, username_seed)
+    username = build_unique_username(db, username_seed)
 
     invitation = None
     if body.password:
@@ -209,11 +219,18 @@ def approve_request(
     if db.query(models.User).filter(models.User.email == req.email.lower()).first():
         raise HTTPException(status_code=400, detail="User already exists")
 
+    if req.username:
+        final_username = req.username
+        if db.query(models.User).filter(models.User.username == final_username).first():
+            raise HTTPException(status_code=400, detail="Username is no longer available")
+    else:
+        final_username = build_unique_username(db, req.email.split("@")[0])
+
     token = generate_invite_token()
     expires_at = datetime.utcnow() + timedelta(hours=INVITE_EXPIRE_HOURS)
     user = models.User(
         full_name=req.full_name,
-        username=_build_unique_username(db, req.email.split("@")[0]),
+        username=final_username,
         email=req.email.lower(),
         password_hash=hash_password(generate_invite_token()),
         role=role,
@@ -231,6 +248,7 @@ def approve_request(
     body_html = (
         f"<p>Hello {req.full_name},</p>"
         "<p>Your MDQM access request has been approved.</p>"
+        f"<p>You can sign in with username <b>{final_username}</b> or your company email.</p>"
         f"<p>Please set your password using this link: <a href=\"{invitation['setup_url']}\">{invitation['setup_url']}</a></p>"
         f"<p><small>This link expires in {INVITE_EXPIRE_HOURS} hours.</small></p>"
     )
@@ -299,3 +317,32 @@ def update_user_role(
     user.role = role
     db.commit()
     return {"message": "User role updated", "user_id": user.id, "role": user.role}
+
+
+@router.post("/delete-user/{user_id}")
+def delete_user(
+    user_id: int,
+    admin: models.User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    if user_id == admin.id:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.role == "admin" and user.is_active:
+        active_admin_count = (
+            db.query(models.User)
+            .filter(models.User.role == "admin", models.User.is_active == True)  # noqa: E712
+            .count()
+        )
+        if active_admin_count <= 1:
+            raise HTTPException(status_code=400, detail="At least one active admin is required")
+
+    db.query(models.User).filter(models.User.created_by == user_id).update(
+        {"created_by": None},
+        synchronize_session=False,
+    )
+    db.delete(user)
+    db.commit()
+    return {"message": "User deleted"}

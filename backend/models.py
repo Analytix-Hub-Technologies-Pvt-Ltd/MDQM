@@ -160,6 +160,7 @@ class AccessRequest(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     full_name = Column(String(255), nullable=False)
+    username = Column(String(64), nullable=True, index=True)
     email = Column(String(320), nullable=False, index=True)
     department = Column(String(255), nullable=True)
     reason = Column(Text, nullable=True)
