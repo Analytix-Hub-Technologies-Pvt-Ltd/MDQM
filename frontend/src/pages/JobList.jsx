@@ -246,6 +246,8 @@ export default function JobList() {
     folderPath: "",
   });
   const [showSchedule, setShowSchedule] = useState(false);
+  /** When set, schedule modal saves for this job (job list). When null, uses outputSummary.jobId (wizard step 4). */
+  const [scheduleContextJobId, setScheduleContextJobId] = useState(null);
   const [scheduleType, setScheduleType] = useState("once");
   const [scheduleTime, setScheduleTime] = useState("");
   const [scheduleDay, setScheduleDay] = useState("0");
@@ -429,6 +431,7 @@ export default function JobList() {
     setLookupDbLoadMessage("");
     setLookupDbColumns([]);
     setShowSchedule(false);
+    setScheduleContextJobId(null);
     setScheduleType("once");
     setScheduleTime("");
     setScheduleDay("0");
@@ -1466,8 +1469,14 @@ export default function JobList() {
     }
   };
 
+  const closeScheduleModal = () => {
+    setShowSchedule(false);
+    setScheduleContextJobId(null);
+  };
+
   const handleSaveSchedule = async () => {
-    if (!outputSummary?.jobId) {
+    const jobId = scheduleContextJobId ?? outputSummary?.jobId;
+    if (!jobId) {
       alert("Job ID not found.");
       return;
     }
@@ -1480,9 +1489,9 @@ export default function JobList() {
       cron: cronExpression || "",
     };
     try {
-      await scheduleJob(outputSummary.jobId, payload);
+      await scheduleJob(jobId, payload);
       await fetchJobs();
-      setShowSchedule(false);
+      closeScheduleModal();
       alert("Scheduled successfully");
     } catch (err) {
       alert(err?.response?.data?.detail || "Failed to schedule job.");
@@ -1631,6 +1640,118 @@ export default function JobList() {
 
   return (
     <div className="flex-1 bg-[#FBFBFB] text-[#23243B] h-screen overflow-y-auto relative">
+      {showSchedule && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/50 px-4">
+          <div className="w-full max-w-xl rounded-xl bg-white shadow-xl border border-[#D6D9E0]">
+            <div className="flex items-center justify-between border-b border-[#E5E7EB] px-5 py-4">
+              <h4 className="text-sm font-bold uppercase tracking-widest text-[#23243B]">
+                Schedule Job
+                {scheduleContextJobId != null ? ` #${scheduleContextJobId}` : ""}
+              </h4>
+              <button
+                type="button"
+                onClick={closeScheduleModal}
+                className="p-1 text-gray-500 hover:text-black"
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="p-5 space-y-4 text-xs">
+              <div>
+                <label className="text-[11px] uppercase tracking-widest text-gray-500 mb-2 block">Schedule Type</label>
+                <select
+                  value={scheduleType}
+                  onChange={(e) => setScheduleType(e.target.value)}
+                  className="w-full border border-[#A1A3AF] p-2 rounded"
+                >
+                  <option value="once">once</option>
+                  <option value="hourly">hourly</option>
+                  <option value="daily">daily</option>
+                  <option value="weekly">weekly</option>
+                  <option value="monthly">monthly</option>
+                  <option value="cron">cron</option>
+                </select>
+              </div>
+
+              {scheduleType === "once" && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <input type="date" value={scheduleDate} onChange={(e) => setScheduleDate(e.target.value)} className="border border-[#A1A3AF] p-2 rounded" />
+                  <input type="time" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="border border-[#A1A3AF] p-2 rounded" />
+                </div>
+              )}
+              {scheduleType === "hourly" && (
+                <input
+                  type="number"
+                  min={1}
+                  value={hourInterval}
+                  onChange={(e) => setHourInterval(Number(e.target.value) || 1)}
+                  className="w-full border border-[#A1A3AF] p-2 rounded"
+                  placeholder="Every X hours"
+                />
+              )}
+              {scheduleType === "daily" && (
+                <input type="time" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="w-full border border-[#A1A3AF] p-2 rounded" />
+              )}
+              {scheduleType === "weekly" && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <select value={scheduleDay} onChange={(e) => setScheduleDay(e.target.value)} className="border border-[#A1A3AF] p-2 rounded">
+                    <option value="0">0 (Monday)</option>
+                    <option value="1">1 (Tuesday)</option>
+                    <option value="2">2 (Wednesday)</option>
+                    <option value="3">3 (Thursday)</option>
+                    <option value="4">4 (Friday)</option>
+                    <option value="5">5 (Saturday)</option>
+                    <option value="6">6 (Sunday)</option>
+                  </select>
+                  <input type="time" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="border border-[#A1A3AF] p-2 rounded" />
+                </div>
+              )}
+              {scheduleType === "monthly" && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <input
+                    type="number"
+                    min={1}
+                    max={31}
+                    value={scheduleDate}
+                    onChange={(e) => setScheduleDate(e.target.value)}
+                    className="border border-[#A1A3AF] p-2 rounded"
+                    placeholder="1-31"
+                  />
+                  <input type="time" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="border border-[#A1A3AF] p-2 rounded" />
+                </div>
+              )}
+              {scheduleType === "cron" && (
+                <input
+                  type="text"
+                  value={cronExpression}
+                  onChange={(e) => setCronExpression(e.target.value)}
+                  className="w-full border border-[#A1A3AF] p-2 rounded"
+                  placeholder="* * * * *"
+                />
+              )}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={closeScheduleModal}
+                  className="px-4 py-2 border border-[#A1A3AF] rounded font-bold uppercase text-xs text-[#23243B]"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveSchedule}
+                  className="px-4 py-2 bg-[#23243B] text-white rounded font-bold uppercase text-xs hover:bg-black"
+                >
+                  Save Schedule
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="fixed top-6 right-6 z-[80] space-y-2 w-[300px]">
         {schedulerToasts.map((toast) => (
           <div
@@ -1837,6 +1958,26 @@ export default function JobList() {
                             className="px-4 py-2 text-xs uppercase tracking-wider hover:bg-gray-100 cursor-pointer flex items-center gap-2"
                           >
                             <Edit2 size={12} /> Rename Job
+                          </div>
+                          <div
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if ((job.total_tables || 0) === 0) {
+                                alert("No tables attached to this job. Upload/import data first.");
+                                setActionMenu({ type: null, id: null });
+                                return;
+                              }
+                              setActionMenu({ type: null, id: null });
+                              setScheduleContextJobId(job.job_id);
+                              setShowSchedule(true);
+                            }}
+                            className={`px-4 py-2 text-xs uppercase tracking-wider flex items-center gap-2 ${
+                              (job.total_tables || 0) === 0
+                                ? "text-gray-400 cursor-not-allowed bg-gray-50"
+                                : "hover:bg-gray-100 cursor-pointer"
+                            }`}
+                          >
+                            <Clock3 size={12} /> Schedule
                           </div>
                           <div
                             onClick={async (e) => {
@@ -2332,121 +2473,16 @@ export default function JobList() {
                         <div className="mt-2 sm:mt-0">
                           <button
                             type="button"
-                            onClick={() => setShowSchedule(true)}
+                            onClick={() => {
+                              setScheduleContextJobId(null);
+                              setShowSchedule(true);
+                            }}
                             className="inline-flex items-center gap-1 px-4 py-2 border hover:bg-gray-50 border-[#23243B] rounded font-bold uppercase text-xs text-[#23243B] tracking-widest transition-colors"
                           >
                             Schedule <span role="img" aria-label="settings">⚙️</span>
                           </button>
                         </div>
                       </div>
-                      {showSchedule && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
-                          <div className="w-full max-w-xl rounded-xl bg-white shadow-xl border border-[#D6D9E0]">
-                            <div className="flex items-center justify-between border-b border-[#E5E7EB] px-5 py-4">
-                              <h4 className="text-sm font-bold uppercase tracking-widest text-[#23243B]">Schedule Job</h4>
-                              <button
-                                type="button"
-                                onClick={() => setShowSchedule(false)}
-                                className="p-1 text-gray-500 hover:text-black"
-                                aria-label="Close"
-                              >
-                                <X size={18} />
-                              </button>
-                            </div>
-                            <div className="p-5 space-y-4 text-xs">
-                              <div>
-                                <label className="text-[11px] uppercase tracking-widest text-gray-500 mb-2 block">Schedule Type</label>
-                                <select
-                                  value={scheduleType}
-                                  onChange={(e) => setScheduleType(e.target.value)}
-                                  className="w-full border border-[#A1A3AF] p-2 rounded"
-                                >
-                                  <option value="once">once</option>
-                                  <option value="hourly">hourly</option>
-                                  <option value="daily">daily</option>
-                                  <option value="weekly">weekly</option>
-                                  <option value="monthly">monthly</option>
-                                  <option value="cron">cron</option>
-                                </select>
-                              </div>
-
-                              {scheduleType === "once" && (
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                  <input type="date" value={scheduleDate} onChange={(e) => setScheduleDate(e.target.value)} className="border border-[#A1A3AF] p-2 rounded" />
-                                  <input type="time" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="border border-[#A1A3AF] p-2 rounded" />
-                                </div>
-                              )}
-                              {scheduleType === "hourly" && (
-                                <input
-                                  type="number"
-                                  min={1}
-                                  value={hourInterval}
-                                  onChange={(e) => setHourInterval(Number(e.target.value) || 1)}
-                                  className="w-full border border-[#A1A3AF] p-2 rounded"
-                                  placeholder="Every X hours"
-                                />
-                              )}
-                              {scheduleType === "daily" && (
-                                <input type="time" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="w-full border border-[#A1A3AF] p-2 rounded" />
-                              )}
-                              {scheduleType === "weekly" && (
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                  <select value={scheduleDay} onChange={(e) => setScheduleDay(e.target.value)} className="border border-[#A1A3AF] p-2 rounded">
-                                    <option value="0">0 (Monday)</option>
-                                    <option value="1">1 (Tuesday)</option>
-                                    <option value="2">2 (Wednesday)</option>
-                                    <option value="3">3 (Thursday)</option>
-                                    <option value="4">4 (Friday)</option>
-                                    <option value="5">5 (Saturday)</option>
-                                    <option value="6">6 (Sunday)</option>
-                                  </select>
-                                  <input type="time" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="border border-[#A1A3AF] p-2 rounded" />
-                                </div>
-                              )}
-                              {scheduleType === "monthly" && (
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                  <input
-                                    type="number"
-                                    min={1}
-                                    max={31}
-                                    value={scheduleDate}
-                                    onChange={(e) => setScheduleDate(e.target.value)}
-                                    className="border border-[#A1A3AF] p-2 rounded"
-                                    placeholder="1-31"
-                                  />
-                                  <input type="time" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="border border-[#A1A3AF] p-2 rounded" />
-                                </div>
-                              )}
-                              {scheduleType === "cron" && (
-                                <input
-                                  type="text"
-                                  value={cronExpression}
-                                  onChange={(e) => setCronExpression(e.target.value)}
-                                  className="w-full border border-[#A1A3AF] p-2 rounded"
-                                  placeholder="* * * * *"
-                                />
-                              )}
-
-                              <div className="flex justify-end gap-2 pt-2">
-                                <button
-                                  type="button"
-                                  onClick={() => setShowSchedule(false)}
-                                  className="px-4 py-2 border border-[#A1A3AF] rounded font-bold uppercase text-xs text-[#23243B]"
-                                >
-                                  Cancel
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={handleSaveSchedule}
-                                  className="px-4 py-2 bg-[#23243B] text-white rounded font-bold uppercase text-xs hover:bg-black"
-                                >
-                                  Save Schedule
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      )}
 
                       <div className="border border-[#D6D9E0] rounded-lg bg-white p-4 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                         <div className="border border-[#E5E7EB] rounded p-2">

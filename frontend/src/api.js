@@ -358,7 +358,9 @@ export const submitAccessRequest = async (payload) => {
 };
 
 export const adminListUsers = async () => {
-    return apiClient.get(`/admin/users`);
+    return apiClient.get(`/admin/users`, {
+        params: { _t: Date.now() },
+    });
 };
 
 export const adminCreateUser = async (payload) => {
@@ -379,6 +381,10 @@ export const adminRejectRequest = async (id) => {
 
 export const adminDisableUser = async (id) => {
     return apiClient.post(`/admin/disable-user/${id}`);
+};
+
+export const adminDeleteUser = async (id) => {
+    return apiClient.post(`/admin/delete-user/${id}`);
 };
 
 export const adminUpdateUserRole = async (id, role) => {

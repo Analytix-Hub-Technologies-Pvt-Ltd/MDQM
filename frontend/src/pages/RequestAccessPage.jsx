@@ -17,7 +17,13 @@ const getApiErrorMessage = (err, fallback) => {
 
 export default function RequestAccessPage() {
   const navigate = useNavigate();
-  const [form, setForm] = useState({ full_name: "", email: "", department: "", reason: "" });
+  const [form, setForm] = useState({
+    full_name: "",
+    username: "",
+    email: "",
+    department: "",
+    reason: "",
+  });
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
 
@@ -30,10 +36,11 @@ export default function RequestAccessPage() {
     try {
       await submitAccessRequest({
         ...form,
+        username: form.username.trim(),
         email: form.email.trim(),
       });
       setStatus("Request submitted. Admin will review your request.");
-      setForm({ full_name: "", email: "", department: "", reason: "" });
+      setForm({ full_name: "", username: "", email: "", department: "", reason: "" });
     } catch (err) {
       setError(getApiErrorMessage(err, "Unable to submit request"));
     }
@@ -45,6 +52,7 @@ export default function RequestAccessPage() {
         <h1 className="text-xl uppercase tracking-widest text-[#23243B] mb-5">Request Access</h1>
         <form className="space-y-3" onSubmit={onSubmit}>
           <input className="w-full border border-gray-300 px-3 py-2" placeholder="Full name" value={form.full_name} onChange={(e) => onChange("full_name", e.target.value)} required />
+          <input className="w-full border border-gray-300 px-3 py-2" placeholder="Username" value={form.username} onChange={(e) => onChange("username", e.target.value)} required autoComplete="username" />
           <input className="w-full border border-gray-300 px-3 py-2" placeholder="Company email" type="email" value={form.email} onChange={(e) => onChange("email", e.target.value)} required />
           <input className="w-full border border-gray-300 px-3 py-2" placeholder="Department" value={form.department} onChange={(e) => onChange("department", e.target.value)} />
           <textarea className="w-full border border-gray-300 px-3 py-2 min-h-[110px]" placeholder="Reason for access" value={form.reason} onChange={(e) => onChange("reason", e.target.value)} />
