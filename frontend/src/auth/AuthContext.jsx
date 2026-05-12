@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { authLogin, authMe, setAuthToken } from "../api";
+import { normalizeRole, ROLES } from "./rolePermissions";
 
 const AuthContext = createContext(null);
 
@@ -64,8 +65,9 @@ export function AuthProvider({ children }) {
       token,
       user,
       ready,
-      isAdmin: user?.role === "admin",
-      isViewer: user?.role === "viewer",
+      role: normalizeRole(user?.role),
+      isAdmin: normalizeRole(user?.role) === ROLES.ADMIN,
+      isViewer: normalizeRole(user?.role) === ROLES.VIEWER,
       login,
       logout,
     }),

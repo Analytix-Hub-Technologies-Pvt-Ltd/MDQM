@@ -305,6 +305,10 @@ export const getDashboardSummary = async () => {
     return axios.get(`${API_URL}/dashboard/summary`);
 };
 
+export const getRoleDashboard = async (roleSlug) => {
+    return apiClient.get(`/api/dashboard/${roleSlug}`);
+};
+
 export const getDataQualityMetrics = async () => {
     return axios.get(`${API_URL}/dashboard/data-quality-metrics`);
 };
@@ -393,4 +397,8 @@ export const adminUpdateUserRole = async (id, role) => {
 
 export const adminRoles = async () => {
     return apiClient.get(`/admin/roles`);
+};
+
+export const getAuditLogs = async (params = {}) => {
+    return apiClient.get(`/api/audit/logs`, { params });
 };

@@ -1,0 +1,17 @@
+export const PERMISSIONS = {
+  DASHBOARD_VIEW: "dashboard.view",
+  JOBS_VIEW: "jobs.view",
+  JOBS_MANAGE: "jobs.manage",
+  RULES_VIEW: "rules.view",
+  RULES_MANAGE: "rules.manage",
+  QUARANTINE_VIEW: "quarantine.view",
+  QUARANTINE_MANAGE: "quarantine.manage",
+  GOVERNANCE_VIEW: "governance.view",
+  COMPLIANCE_VIEW: "compliance.view",
+  REPORTS_VIEW: "reports.view",
+  ADMIN_VIEW: "admin.view",
+  LINEAGE_VIEW: "lineage.view",
+  STEWARDSHIP_VIEW: "stewardship.view",
+  AUDIT_VIEW: "audit.view",
+  API_MONITOR_VIEW: "api.monitor.view",
+};

@@ -14,12 +14,13 @@ import { useAuth } from "../auth/AuthContext";
 
 export default function AdminPanel() {
   const { user: currentUser } = useAuth();
+  const defaultRole = "ANALYST";
   const [users, setUsers] = useState([]);
   const [requests, setRequests] = useState([]);
   const [roles, setRoles] = useState([]);
-  const [form, setForm] = useState({ full_name: "", email: "", role: "user", password: "" });
+  const [form, setForm] = useState({ full_name: "", email: "", role: defaultRole, password: "" });
   const [editUser, setEditUser] = useState(null);
-  const [draftRole, setDraftRole] = useState("user");
+  const [draftRole, setDraftRole] = useState(defaultRole);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
 
@@ -42,7 +43,7 @@ export default function AdminPanel() {
     try {
       await adminCreateUser({ ...form, password: form.password || undefined });
       setMsg("User created");
-      setForm({ full_name: "", email: "", role: "user", password: "" });
+      setForm({ full_name: "", email: "", role: defaultRole, password: "" });
       await load();
     } catch (e2) {
       setErr(e2?.response?.data?.detail || "Failed to create user");
@@ -125,34 +126,37 @@ export default function AdminPanel() {
   };
 
   const isSelf = editUser && currentUser && editUser.id === currentUser.id;
+  const isAdminRole = (role) => String(role || "").trim().toUpperCase() === "ADMIN";
 
   return (
-    <div className="flex-1 overflow-y-auto p-8 bg-[#FBFBFB]">
+    <div className="flex-1 overflow-y-auto p-8 bg-[#FBFBFB] text-[#23243B]">
       <h1 className="text-2xl uppercase tracking-widest text-[#23243B] mb-6">Admin Panel</h1>
       {msg && <div className="mb-4 text-sm text-green-700">{msg}</div>}
       {err && <div className="mb-4 text-sm text-red-600">{err}</div>}
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        <div className="bg-white border border-gray-200 p-4">
+        <div className="bg-white border border-gray-200 p-4 text-[#23243B]">
           <h2 className="text-sm uppercase tracking-widest text-gray-600 mb-3">Create User</h2>
           <form className="space-y-2" onSubmit={createUser}>
-            <input className="w-full border border-gray-300 px-3 py-2 text-sm" placeholder="Full name" value={form.full_name} onChange={(e) => setForm((p) => ({ ...p, full_name: e.target.value }))} required />
-            <input className="w-full border border-gray-300 px-3 py-2 text-sm" placeholder="Email" value={form.email} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} required />
-            <select className="w-full border border-gray-300 px-3 py-2 text-sm" value={form.role} onChange={(e) => setForm((p) => ({ ...p, role: e.target.value }))}>
-              <option value="user">User</option>
-              <option value="viewer">Viewer</option>
-              <option value="admin">Admin</option>
+            <input className="w-full border border-gray-300 px-3 py-2 text-sm text-gray-900" placeholder="Full name" value={form.full_name} onChange={(e) => setForm((p) => ({ ...p, full_name: e.target.value }))} required />
+            <input className="w-full border border-gray-300 px-3 py-2 text-sm text-gray-900" placeholder="Email" value={form.email} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} required />
+            <select className="w-full border border-gray-300 px-3 py-2 text-sm text-gray-900" value={form.role} onChange={(e) => setForm((p) => ({ ...p, role: e.target.value }))}>
+              {(roles.length ? roles : ["ADMIN", "CDO", "DATA_STEWARD", "DATA_OWNER", "DEVELOPER", "AUDITOR", "ANALYST", "VIEWER"]).map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
             </select>
-            <input className="w-full border border-gray-300 px-3 py-2 text-sm" placeholder="Password (optional)" value={form.password} onChange={(e) => setForm((p) => ({ ...p, password: e.target.value }))} />
+            <input className="w-full border border-gray-300 px-3 py-2 text-sm text-gray-900" placeholder="Password (optional)" value={form.password} onChange={(e) => setForm((p) => ({ ...p, password: e.target.value }))} />
             <button className="w-full bg-[#23243B] text-white py-2 text-xs uppercase tracking-widest">Create User</button>
           </form>
         </div>
 
-        <div className="bg-white border border-gray-200 p-4 xl:col-span-2">
+        <div className="bg-white border border-gray-200 p-4 xl:col-span-2 text-[#23243B]">
           <h2 className="text-sm uppercase tracking-widest text-gray-600 mb-3">Pending Requests</h2>
           <div className="overflow-auto">
-            <table className="w-full text-sm">
-              <thead><tr className="text-left text-gray-500"><th>Name</th><th>Username</th><th>Email</th><th>Department</th><th>Actions</th></tr></thead>
+            <table className="w-full text-sm text-gray-800">
+              <thead><tr className="text-left text-gray-600"><th>Name</th><th>Username</th><th>Email</th><th>Department</th><th>Actions</th></tr></thead>
               <tbody>
                 {requests.map((r) => (
                   <tr key={r.id} className="border-t border-gray-100">
@@ -172,10 +176,10 @@ export default function AdminPanel() {
         </div>
       </div>
 
-      <div className="bg-white border border-gray-200 p-4 mt-6">
+      <div className="bg-white border border-gray-200 p-4 mt-6 text-[#23243B]">
         <h2 className="text-sm uppercase tracking-widest text-gray-600 mb-3">Users</h2>
         <div className="overflow-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm text-gray-800">
             <thead>
               <tr className="text-left text-gray-500">
                 <th>Name</th>
@@ -251,7 +255,7 @@ export default function AdminPanel() {
                 </option>
               ))}
             </select>
-            {isSelf && editUser.role === "admin" && (
+            {isSelf && isAdminRole(editUser.role) && (
               <p className="mb-3 text-xs text-gray-500">
                 You cannot remove your own admin role. Another admin can change your role if needed.
               </p>
@@ -262,7 +266,7 @@ export default function AdminPanel() {
                 className="bg-[#23243B] px-4 py-2 text-xs uppercase tracking-widest text-white"
                 onClick={saveUserRole}
                 disabled={
-                  isSelf && editUser.role === "admin" && draftRole !== "admin"
+                  isSelf && isAdminRole(editUser.role) && !isAdminRole(draftRole)
                 }
               >
                 Save role
@@ -297,9 +301,9 @@ export default function AdminPanel() {
         </div>
       )}
 
-      <div className="bg-white border border-gray-200 p-4 mt-6">
+      <div className="bg-white border border-gray-200 p-4 mt-6 text-[#23243B]">
         <h2 className="text-sm uppercase tracking-widest text-gray-600 mb-3">Roles</h2>
-        <div className="text-sm text-gray-700">{roles.join(", ") || "admin, user, viewer"}</div>
+        <div className="text-sm text-gray-700">{roles.join(", ") || "ADMIN, CDO, DATA_STEWARD, DATA_OWNER, DEVELOPER, AUDITOR, ANALYST, VIEWER"}</div>
       </div>
     </div>
   );

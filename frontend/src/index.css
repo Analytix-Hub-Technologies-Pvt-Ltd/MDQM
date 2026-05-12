@@ -1,1 +1,63 @@
 @import "tailwindcss";
+
+:root {
+  --mdqm-bg: #060b16;
+  --mdqm-panel: #0e1728;
+  --mdqm-panel-soft: #111e34;
+  --mdqm-border: #22324f;
+  --mdqm-text: #d7e3f7;
+  --mdqm-muted: #7f95b6;
+  --mdqm-accent: #4f8cff;
+  --mdqm-accent-2: #8b5cf6;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(1100px 520px at 8% -10%, #1a2f55 0%, transparent 60%),
+    radial-gradient(900px 500px at 98% 0%, #2b1f4f 0%, transparent 58%),
+    var(--mdqm-bg);
+  color: var(--mdqm-text);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.enterprise-card {
+  background: linear-gradient(180deg, rgba(15, 26, 46, 0.95), rgba(10, 18, 33, 0.95));
+  border: 1px solid var(--mdqm-border);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(3, 8, 18, 0.35);
+}
+
+.enterprise-title {
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--mdqm-muted);
+  font-size: 11px;
+}
+
+/* Horizontal scroll regions (audit tables, wide panels) — thin, theme-aligned bar */
+.mdqm-scroll-x {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(79, 140, 255, 0.4) rgba(12, 20, 36, 0.95);
+}
+
+.mdqm-scroll-x::-webkit-scrollbar {
+  height: 7px;
+  width: 7px;
+}
+
+.mdqm-scroll-x::-webkit-scrollbar-track {
+  background: rgba(12, 20, 36, 0.9);
+  border-radius: 999px;
+}
+
+.mdqm-scroll-x::-webkit-scrollbar-thumb {
+  background: rgba(79, 140, 255, 0.35);
+  border-radius: 999px;
+}
+
+.mdqm-scroll-x::-webkit-scrollbar-thumb:hover {
+  background: rgba(79, 140, 255, 0.55);
+}
