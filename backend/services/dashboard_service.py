@@ -12,6 +12,32 @@ def _base_kpis(db: Session):
     return total_users, total_jobs, failed_jobs, active_rules
 
 
+def _dynamic_trends(db: Session) -> list[dict]:
+    """
+    Build trend points from recent run stats.
+    Uses latest 4 TableStats rows and computes quality percentage per run.
+    """
+    recent_stats = (
+        db.query(models.TableStats)
+        .filter(models.TableStats.total_rows.isnot(None))
+        .order_by(models.TableStats.stat_id.desc())
+        .limit(4)
+        .all()
+    )
+
+    if not recent_stats:
+        return [{"label": "N/A", "value": 0}]
+
+    points = []
+    # Reverse so chart shows oldest -> newest left to right.
+    for idx, row in enumerate(reversed(recent_stats), start=1):
+        total_rows = int(row.total_rows or 0)
+        good_rows = int(row.good_rows or 0)
+        quality_pct = round((good_rows / total_rows) * 100, 2) if total_rows > 0 else 0
+        points.append({"label": f"W{idx}", "value": quality_pct})
+    return points
+
+
 def dashboard_payload(role_slug: str, db: Session) -> dict:
     total_users, total_jobs, failed_jobs, active_rules = _base_kpis(db)
     role_title = role_slug.upper()
@@ -23,12 +49,7 @@ def dashboard_payload(role_slug: str, db: Session) -> dict:
             {"title": "Failed Jobs", "value": failed_jobs, "subtitle": "Requires intervention", "tone": "danger"},
             {"title": "Active Rules", "value": active_rules, "subtitle": "Validation controls", "tone": "warning"},
         ],
-        "trends": [
-            {"label": "W1", "value": 78},
-            {"label": "W2", "value": 81},
-            {"label": "W3", "value": 84},
-            {"label": "W4", "value": 88},
-        ],
+        "trends": _dynamic_trends(db),
         "pipelines": [
             {"name": "Validation Engine", "status": "running"},
             {"name": "Stewardship Queue", "status": "running"},
