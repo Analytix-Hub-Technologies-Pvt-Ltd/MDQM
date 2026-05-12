@@ -1,6 +1,7 @@
 from starlette.responses import JSONResponse
 
 from auth.security import decode_access_token
+from permissions.role_map import normalize_role
 
 PUBLIC_PATHS = {
     "/",
@@ -31,11 +32,11 @@ async def auth_middleware(request, call_next):
     try:
         payload = decode_access_token(token)
         request.state.user_id = int(payload["sub"])
-        request.state.user_role = payload.get("role", "user")
+        request.state.user_role = normalize_role(payload.get("role", "viewer"))
     except Exception:
         return JSONResponse({"detail": "Invalid or expired token"}, status_code=401)
 
-    if request.state.user_role == "viewer" and request.method not in ("GET", "HEAD"):
+    if request.state.user_role == "VIEWER" and request.method not in ("GET", "HEAD"):
         return JSONResponse({"detail": "Viewer role is read-only"}, status_code=403)
 
     return await call_next(request)

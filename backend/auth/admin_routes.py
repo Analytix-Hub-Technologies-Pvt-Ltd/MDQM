@@ -4,9 +4,9 @@ import os
 from urllib import parse as urlparse
 from urllib import request as urlrequest
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 import models
@@ -16,25 +16,60 @@ from auth.email_invite import build_invite_payload
 from auth.security import generate_invite_token, hash_invite_token, hash_password
 from auth.username_utils import build_unique_username
 from database import get_db
+from utils.audit import write_audit_log
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-VALID_ROLES = {"admin", "user", "viewer"}
+
+ENTERPRISE_ROLES = [
+    "ADMIN",
+    "CDO",
+    "DATA_STEWARD",
+    "DATA_OWNER",
+    "DEVELOPER",
+    "AUDITOR",
+    "ANALYST",
+    "VIEWER",
+]
+VALID_ROLES = set(ENTERPRISE_ROLES)
+ROLE_ALIASES = {
+    "admin": "ADMIN",
+    "cdo": "CDO",
+    "data_steward": "DATA_STEWARD",
+    "steward": "DATA_STEWARD",
+    "data_owner": "DATA_OWNER",
+    "owner": "DATA_OWNER",
+    "developer": "DEVELOPER",
+    "auditor": "AUDITOR",
+    "analyst": "ANALYST",
+    "viewer": "VIEWER",
+    "user": "ANALYST",
+}
 
 
 class CreateUserBody(BaseModel):
     full_name: str
     email: EmailStr
     username: str | None = None
-    role: str = "user"
+    role: str = "ANALYST"
     password: str | None = None
 
 
 class ApproveBody(BaseModel):
-    role: str = "user"
+    role: str = "ANALYST"
 
 
 class RoleUpdateBody(BaseModel):
     role: str
+
+
+def _normalize_role_input(role: str) -> str:
+    raw = (role or "").strip()
+    if not raw:
+        return "ANALYST"
+    key = raw.upper()
+    if key in VALID_ROLES:
+        return key
+    return ROLE_ALIASES.get(raw.strip().lower(), key)
 
 
 def _send_graph_email(to_emails: list[str], subject: str, body_html: str) -> tuple[bool, str | None]:
@@ -157,12 +192,12 @@ def list_access_requests(_: models.User = Depends(require_admin), db: Session = 
 
 @router.get("/roles")
 def list_roles(_: models.User = Depends(require_admin)):
-    return {"roles": ["admin", "user", "viewer"]}
+    return {"roles": ENTERPRISE_ROLES}
 
 
 @router.post("/create-user")
-def create_user(body: CreateUserBody, admin: models.User = Depends(require_admin), db: Session = Depends(get_db)):
-    role = body.role.strip().lower()
+def create_user(body: CreateUserBody, request: Request, admin: models.User = Depends(require_admin), db: Session = Depends(get_db)):
+    role = _normalize_role_input(body.role)
     if role not in VALID_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
     email = body.email.strip().lower()
@@ -200,6 +235,15 @@ def create_user(body: CreateUserBody, admin: models.User = Depends(require_admin
     db.add(user)
     db.commit()
     db.refresh(user)
+    write_audit_log(
+        db=db,
+        user_id=admin.id,
+        action="admin.create_user",
+        entity_type="user",
+        entity_id=str(user.id),
+        ip_address=request.client.host if request.client else None,
+        new_values={"email": user.email, "role": user.role, "username": user.username},
+    )
     return {"message": "User created", "user_id": user.id, "invitation": invitation}
 
 
@@ -207,10 +251,11 @@ def create_user(body: CreateUserBody, admin: models.User = Depends(require_admin
 def approve_request(
     request_id: int,
     body: ApproveBody,
+    request: Request,
     admin: models.User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    role = body.role.strip().lower()
+    role = _normalize_role_input(body.role)
     if role not in VALID_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
     req = db.query(models.AccessRequest).filter(models.AccessRequest.id == request_id).first()
@@ -244,6 +289,16 @@ def approve_request(
     db.add(user)
     db.add(req)
     db.commit()
+    write_audit_log(
+        db=db,
+        user_id=admin.id,
+        action="admin.approve_access_request",
+        entity_type="access_request",
+        entity_id=str(request_id),
+        ip_address=request.client.host if request.client else None,
+        old_values={"status": "pending"},
+        new_values={"status": "approved", "role": role, "created_user_email": req.email.lower()},
+    )
     invitation = build_invite_payload(req.email, req.full_name, token, FRONTEND_BASE_URL, INVITE_EXPIRE_HOURS)
     body_html = (
         f"<p>Hello {req.full_name},</p>"
@@ -262,18 +317,29 @@ def approve_request(
 
 
 @router.post("/reject-request/{request_id}")
-def reject_request(request_id: int, _: models.User = Depends(require_admin), db: Session = Depends(get_db)):
+def reject_request(request_id: int, request: Request, admin: models.User = Depends(require_admin), db: Session = Depends(get_db)):
     req = db.query(models.AccessRequest).filter(models.AccessRequest.id == request_id).first()
     if not req or req.status != "pending":
         raise HTTPException(status_code=404, detail="Pending request not found")
     req.status = "rejected"
     db.commit()
+    write_audit_log(
+        db=db,
+        user_id=admin.id,
+        action="admin.reject_access_request",
+        entity_type="access_request",
+        entity_id=str(request_id),
+        ip_address=request.client.host if request.client else None,
+        old_values={"status": "pending"},
+        new_values={"status": "rejected"},
+    )
     return {"message": "Request rejected"}
 
 
 @router.post("/disable-user/{user_id}")
 def disable_user(
     user_id: int,
+    request: Request,
     admin: models.User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -282,8 +348,19 @@ def disable_user(
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    prev_active = bool(user.is_active)
     user.is_active = False
     db.commit()
+    write_audit_log(
+        db=db,
+        user_id=admin.id,
+        action="admin.disable_user",
+        entity_type="user",
+        entity_id=str(user.id),
+        ip_address=request.client.host if request.client else None,
+        old_values={"is_active": prev_active},
+        new_values={"is_active": False},
+    )
     return {"message": "User disabled"}
 
 
@@ -291,10 +368,11 @@ def disable_user(
 def update_user_role(
     user_id: int,
     body: RoleUpdateBody,
+    request: Request,
     admin: models.User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    role = body.role.strip().lower()
+    role = _normalize_role_input(body.role)
     if role not in VALID_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
 
@@ -302,26 +380,38 @@ def update_user_role(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if user_id == admin.id and role != "admin":
+    if user_id == admin.id and role != "ADMIN":
         raise HTTPException(status_code=400, detail="You cannot remove your own admin role")
 
-    if user.role == "admin" and role != "admin":
+    if str(user.role or "").upper() == "ADMIN" and role != "ADMIN":
         active_admin_count = (
             db.query(models.User)
-            .filter(models.User.role == "admin", models.User.is_active == True)  # noqa: E712
+            .filter(func.upper(models.User.role) == "ADMIN", models.User.is_active == True)  # noqa: E712
             .count()
         )
         if active_admin_count <= 1:
             raise HTTPException(status_code=400, detail="At least one active admin is required")
 
+    previous_role = user.role
     user.role = role
     db.commit()
+    write_audit_log(
+        db=db,
+        user_id=admin.id,
+        action="admin.update_user_role",
+        entity_type="user",
+        entity_id=str(user.id),
+        ip_address=request.client.host if request.client else None,
+        old_values={"role": previous_role},
+        new_values={"role": user.role},
+    )
     return {"message": "User role updated", "user_id": user.id, "role": user.role}
 
 
 @router.post("/delete-user/{user_id}")
 def delete_user(
     user_id: int,
+    request: Request,
     admin: models.User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -330,19 +420,30 @@ def delete_user(
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    if user.role == "admin" and user.is_active:
+    if str(user.role or "").upper() == "ADMIN" and user.is_active:
         active_admin_count = (
             db.query(models.User)
-            .filter(models.User.role == "admin", models.User.is_active == True)  # noqa: E712
+            .filter(func.upper(models.User.role) == "ADMIN", models.User.is_active == True)  # noqa: E712
             .count()
         )
         if active_admin_count <= 1:
             raise HTTPException(status_code=400, detail="At least one active admin is required")
 
+    snapshot = {"email": user.email, "role": user.role, "username": user.username, "is_active": bool(user.is_active)}
     db.query(models.User).filter(models.User.created_by == user_id).update(
         {"created_by": None},
         synchronize_session=False,
     )
     db.delete(user)
     db.commit()
+    write_audit_log(
+        db=db,
+        user_id=admin.id,
+        action="admin.delete_user",
+        entity_type="user",
+        entity_id=str(user_id),
+        ip_address=request.client.host if request.client else None,
+        old_values=snapshot,
+        new_values={"deleted": True},
+    )
     return {"message": "User deleted"}

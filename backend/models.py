@@ -166,3 +166,115 @@ class AccessRequest(Base):
     reason = Column(Text, nullable=True)
     status = Column(String(32), nullable=False, default="pending")
     requested_at = Column(DateTime, default=func.now())
+
+
+class Role(Base):
+    __tablename__ = "roles"
+    __table_args__ = {"schema": "auth"}
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    name = Column(String(64), unique=True, nullable=False)
+    description = Column(Text, nullable=True)
+
+
+class Permission(Base):
+    __tablename__ = "permissions"
+    __table_args__ = {"schema": "auth"}
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    code = Column(String(128), unique=True, nullable=False)
+    description = Column(Text, nullable=True)
+
+
+class RolePermission(Base):
+    __tablename__ = "role_permissions"
+    __table_args__ = {"schema": "auth"}
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    role_id = Column(Integer, ForeignKey("auth.roles.id"), nullable=False)
+    permission_id = Column(Integer, ForeignKey("auth.permissions.id"), nullable=False)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    __table_args__ = {"schema": "governance"}
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
+    action = Column(String(255), nullable=False)
+    entity_type = Column(String(128), nullable=True)
+    entity_id = Column(String(128), nullable=True)
+    ip_address = Column(String(64), nullable=True)
+    old_values = Column(Text, nullable=True)
+    new_values = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class GovernancePolicy(Base):
+    __tablename__ = "governance_policies"
+    __table_args__ = {"schema": "governance"}
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    policy_name = Column(String(255), nullable=False)
+    domain = Column(String(128), nullable=True, index=True)
+    status = Column(String(64), nullable=False, default="draft")
+    owner_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class StewardshipTask(Base):
+    __tablename__ = "stewardship_tasks"
+    __table_args__ = {"schema": "governance"}
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    dataset_name = Column(String(255), nullable=False)
+    assigned_to_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
+    status = Column(String(64), nullable=False, default="open")
+    severity = Column(String(32), nullable=False, default="medium")
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class LineageNode(Base):
+    __tablename__ = "lineage_nodes"
+    __table_args__ = {"schema": "governance"}
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    node_key = Column(String(255), nullable=False, unique=True)
+    node_type = Column(String(64), nullable=False)
+    domain = Column(String(128), nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class LineageEdge(Base):
+    __tablename__ = "lineage_edges"
+    __table_args__ = {"schema": "governance"}
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    from_node_id = Column(Integer, ForeignKey("governance.lineage_nodes.id"), nullable=False)
+    to_node_id = Column(Integer, ForeignKey("governance.lineage_nodes.id"), nullable=False)
+    relation_type = Column(String(64), nullable=False, default="depends_on")
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class DatasetAccess(Base):
+    __tablename__ = "dataset_access"
+    __table_args__ = {"schema": "governance"}
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    dataset_name = Column(String(255), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=False, index=True)
+    access_level = Column(String(32), nullable=False, default="read")
+    pii_allowed = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class WorkflowApproval(Base):
+    __tablename__ = "workflow_approvals"
+    __table_args__ = {"schema": "governance"}
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    request_type = Column(String(128), nullable=False)
+    request_ref = Column(String(128), nullable=False)
+    owner_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
+    status = Column(String(32), nullable=False, default="pending")
+    created_at = Column(DateTime, default=func.now(), nullable=False)

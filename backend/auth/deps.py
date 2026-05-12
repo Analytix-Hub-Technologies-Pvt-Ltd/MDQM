@@ -16,6 +16,6 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> models.
 
 
 def require_admin(user: models.User = Depends(get_current_user)) -> models.User:
-    if user.role != "admin":
+    if str(user.role).strip().upper() != "ADMIN":
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
