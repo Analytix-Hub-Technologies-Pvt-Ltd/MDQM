@@ -6,7 +6,7 @@ class Permissions:
     DASHBOARD_DEVELOPER = "dashboard.developer"
     DASHBOARD_AUDITOR = "dashboard.auditor"
     DASHBOARD_ANALYST = "dashboard.analyst"
-    DASHBOARD_VIEWER = "dashboard.viewer"
+    DASHBOARD_BUSINESS_USER = "dashboard.business_user"
 
     JOBS_VIEW = "jobs.view"
     RULES_VIEW = "rules.view"

@@ -28,7 +28,7 @@ ENTERPRISE_ROLES = [
     "DEVELOPER",
     "AUDITOR",
     "ANALYST",
-    "VIEWER",
+    "BUSINESS_USER",
 ]
 VALID_ROLES = set(ENTERPRISE_ROLES)
 ROLE_ALIASES = {
@@ -41,9 +41,16 @@ ROLE_ALIASES = {
     "developer": "DEVELOPER",
     "auditor": "AUDITOR",
     "analyst": "ANALYST",
-    "viewer": "VIEWER",
+    "viewer": "BUSINESS_USER",
+    "business_user": "BUSINESS_USER",
+    "business": "BUSINESS_USER",
+    "bu": "BUSINESS_USER",
     "user": "ANALYST",
 }
+
+
+def _stamp_access_request_approver(req: models.AccessRequest, admin: models.User) -> None:
+    req.approver_name = (admin.full_name or admin.username or admin.email or "Admin").strip()[:255]
 
 
 class CreateUserBody(BaseModel):
@@ -175,19 +182,30 @@ def list_users(
 @router.get("/access-requests")
 def list_access_requests(_: models.User = Depends(require_admin), db: Session = Depends(get_db)):
     rows = db.query(models.AccessRequest).order_by(models.AccessRequest.requested_at.desc()).all()
-    return [
-        {
-            "id": r.id,
-            "full_name": r.full_name,
-            "username": r.username,
-            "email": r.email,
-            "department": r.department,
-            "reason": r.reason,
-            "status": r.status,
-            "requested_at": r.requested_at.isoformat() if r.requested_at else None,
-        }
-        for r in rows
-    ]
+    out = []
+    for r in rows:
+        em = (r.email or "").strip().lower()
+        has_user = (
+            db.query(models.User.id).filter(func.lower(models.User.email) == em).first() is not None
+        )
+        out.append(
+            {
+                "id": r.id,
+                "full_name": r.full_name,
+                "username": r.username,
+                "email": r.email,
+                "department": r.department,
+                "reason": r.reason,
+                "status": r.status,
+                "requested_at": r.requested_at.isoformat() if r.requested_at else None,
+                "has_user": has_user,
+                "dataset_name": getattr(r, "dataset_name", None),
+                "access_type": getattr(r, "access_type", None),
+                "duration": getattr(r, "duration", None),
+                "approver_name": getattr(r, "approver_name", None),
+            }
+        )
+    return out
 
 
 @router.get("/roles")
@@ -286,6 +304,7 @@ def approve_request(
         invite_expires_at=expires_at,
     )
     req.status = "approved"
+    _stamp_access_request_approver(req, admin)
     db.add(user)
     db.add(req)
     db.commit()
@@ -316,12 +335,61 @@ def approve_request(
     }
 
 
+@router.post("/complete-data-access-request/{request_id}")
+def complete_data_access_request(
+    request_id: int,
+    request: Request,
+    admin: models.User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """For pending auth.access_requests where the email already has a login (e.g. business user data request)."""
+    req = db.query(models.AccessRequest).filter(models.AccessRequest.id == request_id).first()
+    if not req or req.status != "pending":
+        raise HTTPException(status_code=404, detail="Pending request not found")
+    em = (req.email or "").strip().lower()
+    user = db.query(models.User).filter(func.lower(models.User.email) == em).first()
+    if not user:
+        raise HTTPException(
+            status_code=400,
+            detail="No account for this email yet — use Approve to create a user and send an invite.",
+        )
+    req.status = "approved"
+    _stamp_access_request_approver(req, admin)
+    db.add(req)
+    db.commit()
+    write_audit_log(
+        db=db,
+        user_id=admin.id,
+        action="admin.complete_data_access_request",
+        entity_type="access_request",
+        entity_id=str(request_id),
+        ip_address=request.client.host if request.client else None,
+        old_values={"status": "pending"},
+        new_values={"status": "approved", "email": em},
+    )
+    try:
+        from services import enterprise_service as esvc
+
+        esvc.create_notification(
+            db,
+            user_id=user.id,
+            subject="Data access request approved",
+            body=f"Your data access request #{req.id} was approved.",
+            severity="info",
+        )
+    except Exception:
+        pass
+    return {"message": "Request marked approved", "id": request_id}
+
+
 @router.post("/reject-request/{request_id}")
 def reject_request(request_id: int, request: Request, admin: models.User = Depends(require_admin), db: Session = Depends(get_db)):
     req = db.query(models.AccessRequest).filter(models.AccessRequest.id == request_id).first()
     if not req or req.status != "pending":
         raise HTTPException(status_code=404, detail="Pending request not found")
     req.status = "rejected"
+    _stamp_access_request_approver(req, admin)
+    db.add(req)
     db.commit()
     write_audit_log(
         db=db,

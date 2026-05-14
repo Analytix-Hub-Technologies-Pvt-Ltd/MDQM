@@ -9,6 +9,7 @@ if True:
     import shutil
     import os
     import json
+    import time
     import psycopg2
     from psycopg2 import sql as psql
     import pandas as pd
@@ -45,6 +46,7 @@ if True:
     from routers.lineage.router import router as lineage_router
     from routers.reports.router import router as reports_router
     from routers.stewardship.router import router as stewardship_router
+    from routers.enterprise.router import router as enterprise_router
     app = FastAPI(title="Data Quality Engine")
 
 
@@ -54,18 +56,20 @@ if True:
         conn.execute(text("CREATE SCHEMA IF NOT EXISTS governance"))
         conn.execute(text("CREATE SCHEMA IF NOT EXISTS metadata"))
         conn.execute(text("CREATE SCHEMA IF NOT EXISTS quarantine"))
+        conn.execute(text("CREATE SCHEMA IF NOT EXISTS enterprise"))
     models.Base.metadata.create_all(bind=engine)
 
     try:
-        _insp = inspect(engine)
-        _access_cols = {c["name"] for c in _insp.get_columns("access_requests", schema="auth")}
-        if "username" not in _access_cols:
+        _access_ddl = [
+            "ALTER TABLE auth.access_requests ADD COLUMN IF NOT EXISTS username VARCHAR(64)",
+            "ALTER TABLE auth.access_requests ADD COLUMN IF NOT EXISTS dataset_name VARCHAR(255)",
+            "ALTER TABLE auth.access_requests ADD COLUMN IF NOT EXISTS access_type VARCHAR(32)",
+            "ALTER TABLE auth.access_requests ADD COLUMN IF NOT EXISTS duration VARCHAR(64)",
+            "ALTER TABLE auth.access_requests ADD COLUMN IF NOT EXISTS approver_name VARCHAR(255)",
+        ]
+        for ddl in _access_ddl:
             with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        "ALTER TABLE auth.access_requests ADD COLUMN IF NOT EXISTS username VARCHAR(64)"
-                    )
-                )
+                conn.execute(text(ddl))
     except Exception:
         pass
 
@@ -90,7 +94,44 @@ if True:
     app.include_router(stewardship_router)
     app.include_router(reports_router)
     app.include_router(platform_admin_router)
+    app.include_router(enterprise_router)
 
+
+    @app.middleware("http")
+    async def enterprise_api_logging(request: Request, call_next):
+        if not str(request.url.path).startswith("/api/enterprise"):
+            return await call_next(request)
+        start = time.perf_counter()
+        response = await call_next(request)
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        db = None
+        try:
+            db = SessionLocal()
+            db.add(
+                models.EnterpriseApiLog(
+                    method=request.method,
+                    path=str(request.url.path)[:512],
+                    status_code=getattr(response, "status_code", None),
+                    duration_ms=duration_ms,
+                    user_id=getattr(request.state, "user_id", None),
+                    correlation_id=getattr(request.state, "correlation_id", None),
+                    ip_address=request.client.host if request.client else None,
+                )
+            )
+            db.commit()
+        except Exception:
+            if db:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+        finally:
+            if db:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+        return response
 
     @app.middleware("http")
     async def rbac_middleware(request: Request, call_next):

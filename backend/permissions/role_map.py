@@ -9,7 +9,7 @@ class Roles:
     DEVELOPER = "DEVELOPER"
     AUDITOR = "AUDITOR"
     ANALYST = "ANALYST"
-    VIEWER = "VIEWER"
+    BUSINESS_USER = "BUSINESS_USER"
 
 
 ROLE_PERMISSION_MAP = {
@@ -34,6 +34,7 @@ ROLE_PERMISSION_MAP = {
         Permissions.GOVERNANCE_VIEW,
         Permissions.COMPLIANCE_VIEW,
         Permissions.REPORTS_VIEW,
+        Permissions.LINEAGE_VIEW,
     ],
     Roles.DEVELOPER: [
         Permissions.DASHBOARD_DEVELOPER,
@@ -52,14 +53,27 @@ ROLE_PERMISSION_MAP = {
         Permissions.REPORTS_VIEW,
         Permissions.JOBS_VIEW,
     ],
-    Roles.VIEWER: [Permissions.DASHBOARD_VIEWER, Permissions.REPORTS_VIEW],
+    Roles.BUSINESS_USER: [
+        Permissions.DASHBOARD_BUSINESS_USER,
+        Permissions.REPORTS_VIEW,
+        Permissions.GOVERNANCE_VIEW,
+        Permissions.JOBS_VIEW,
+        Permissions.STEWARDSHIP_VIEW,
+        Permissions.COMPLIANCE_VIEW,
+        Permissions.LINEAGE_VIEW,
+    ],
 }
 
 
 def normalize_role(role: str) -> str:
-    value = str(role or Roles.VIEWER).strip().upper()
-    aliases = {"STEWARD": Roles.DATA_STEWARD, "OWNER": Roles.DATA_OWNER}
+    value = str(role or Roles.BUSINESS_USER).strip().upper()
+    aliases = {
+        "STEWARD": Roles.DATA_STEWARD,
+        "OWNER": Roles.DATA_OWNER,
+        "BUSINESS": Roles.BUSINESS_USER,
+        "BU": Roles.BUSINESS_USER,
+    }
     value = aliases.get(value, value)
     if value in ROLE_PERMISSION_MAP:
         return value
-    return Roles.VIEWER
+    return Roles.BUSINESS_USER

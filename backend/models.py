@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Text, ForeignKeyConstraint
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Text, ForeignKeyConstraint, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -166,6 +166,11 @@ class AccessRequest(Base):
     reason = Column(Text, nullable=True)
     status = Column(String(32), nullable=False, default="pending")
     requested_at = Column(DateTime, default=func.now())
+    # Extended data-access workflow (governance-style requests from logged-in users)
+    dataset_name = Column(String(255), nullable=True)
+    access_type = Column(String(32), nullable=True)
+    duration = Column(String(64), nullable=True)
+    approver_name = Column(String(255), nullable=True)
 
 
 class Role(Base):
@@ -277,4 +282,179 @@ class WorkflowApproval(Base):
     request_ref = Column(String(128), nullable=False)
     owner_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
     status = Column(String(32), nullable=False, default="pending")
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+# --- Enterprise dashboard persistence (schema: enterprise) ---
+
+
+class EnterpriseSchedule(Base):
+    __tablename__ = "schedules"
+    __table_args__ = {"schema": "enterprise"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_id = Column(Integer, ForeignKey("metadata.jobs.job_id"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    schedule_type = Column(String(32), nullable=False, default="interval")
+    cron_expression = Column(String(128), nullable=True)
+    interval_minutes = Column(Integer, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_by_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class EnterpriseScheduleRun(Base):
+    __tablename__ = "schedule_runs"
+    __table_args__ = {"schema": "enterprise"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    schedule_id = Column(Integer, ForeignKey("enterprise.schedules.id"), nullable=True, index=True)
+    job_id = Column(Integer, ForeignKey("metadata.jobs.job_id"), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="queued", index=True)
+    message = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class EnterpriseApiLog(Base):
+    __tablename__ = "api_logs"
+    __table_args__ = {"schema": "enterprise"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    method = Column(String(16), nullable=False)
+    path = Column(String(512), nullable=False, index=True)
+    status_code = Column(Integer, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
+    correlation_id = Column(String(64), nullable=True, index=True)
+    ip_address = Column(String(64), nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+
+
+class EnterpriseValidationResult(Base):
+    __tablename__ = "validation_results"
+    __table_args__ = {"schema": "enterprise"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_id = Column(Integer, ForeignKey("metadata.jobs.job_id"), nullable=False, index=True)
+    table_id = Column(Integer, nullable=True, index=True)
+    passed = Column(Boolean, nullable=False, default=True)
+    summary = Column(Text, nullable=True)
+    details = Column(JSON, nullable=True)
+    created_by_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+
+
+class EnterpriseQuarantineRecord(Base):
+    __tablename__ = "quarantine_records"
+    __table_args__ = {"schema": "enterprise"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_id = Column(Integer, ForeignKey("metadata.jobs.job_id"), nullable=False, index=True)
+    table_name = Column(String(255), nullable=False)
+    open_issues = Column(Integer, nullable=False, default=0)
+    last_error_type = Column(String(128), nullable=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class EnterpriseAccessLog(Base):
+    __tablename__ = "access_logs"
+    __table_args__ = {"schema": "enterprise"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
+    resource = Column(String(255), nullable=False, index=True)
+    action = Column(String(128), nullable=False)
+    ip_address = Column(String(64), nullable=True)
+    meta = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+
+
+class EnterpriseComplianceReport(Base):
+    __tablename__ = "compliance_reports"
+    __table_args__ = {"schema": "enterprise"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String(255), nullable=False)
+    framework = Column(String(64), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="draft", index=True)
+    body = Column(Text, nullable=True)
+    created_by_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class EnterpriseDataset(Base):
+    __tablename__ = "datasets"
+    __table_args__ = {"schema": "enterprise"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), nullable=False, unique=True)
+    domain = Column(String(128), nullable=True, index=True)
+    owner_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
+    classification = Column(String(64), nullable=True)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class EnterpriseGlossaryTerm(Base):
+    __tablename__ = "glossary"
+    __table_args__ = {"schema": "enterprise"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    term = Column(String(255), nullable=False, index=True)
+    definition = Column(Text, nullable=False)
+    domain = Column(String(128), nullable=True, index=True)
+    status = Column(String(32), nullable=False, default="draft", index=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class EnterprisePolicy(Base):
+    __tablename__ = "policies"
+    __table_args__ = {"schema": "enterprise"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    policy_name = Column(String(255), nullable=False)
+    domain = Column(String(128), nullable=True, index=True)
+    status = Column(String(32), nullable=False, default="draft", index=True)
+    content = Column(Text, nullable=True)
+    owner_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class EnterpriseAnalyticsMetric(Base):
+    __tablename__ = "analytics_metrics"
+    __table_args__ = {"schema": "enterprise"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    metric_key = Column(String(128), nullable=False, index=True)
+    metric_value = Column(JSON, nullable=False)
+    domain = Column(String(128), nullable=True, index=True)
+    captured_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+
+
+class EnterpriseNotification(Base):
+    __tablename__ = "notifications"
+    __table_args__ = {"schema": "enterprise"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
+    channel = Column(String(32), nullable=False, default="in_app")
+    subject = Column(String(255), nullable=False)
+    body = Column(Text, nullable=True)
+    severity = Column(String(32), nullable=False, default="info")
+    read_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+
+
+class EnterpriseReportExport(Base):
+    __tablename__ = "report_exports"
+    __table_args__ = {"schema": "enterprise"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    report_type = Column(String(64), nullable=False)
+    format = Column(String(16), nullable=False)
+    payload = Column(JSON, nullable=True)
+    created_by_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)

@@ -11,7 +11,7 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
 
 def _get_dashboard(request: Request, db: Session, permission: str, slug: str):
-    role = getattr(request.state, "user_role", "VIEWER")
+    role = getattr(request.state, "user_role", "BUSINESS_USER")
     require_permission(role, permission)
     return dashboard_payload(slug, db)
 
@@ -53,4 +53,9 @@ def analyst_dashboard(request: Request, db: Session = Depends(get_db), _=Depends
 
 @router.get("/viewer")
 def viewer_dashboard(request: Request, db: Session = Depends(get_db), _=Depends(get_current_user)):
-    return _get_dashboard(request, db, Permissions.DASHBOARD_VIEWER, "viewer")
+    return _get_dashboard(request, db, Permissions.DASHBOARD_BUSINESS_USER, "business-user")
+
+
+@router.get("/business-user")
+def business_user_dashboard(request: Request, db: Session = Depends(get_db), _=Depends(get_current_user)):
+    return _get_dashboard(request, db, Permissions.DASHBOARD_BUSINESS_USER, "business-user")
