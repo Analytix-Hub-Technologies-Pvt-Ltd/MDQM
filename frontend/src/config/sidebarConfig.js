@@ -10,6 +10,13 @@ import {
   Network,
   UserCheck,
   History,
+  LibraryBig,
+  Sparkles,
+  BookMarked,
+  Share2,
+  TriangleAlert,
+  Inbox,
+  Bell,
 } from "lucide-react";
 import { PERMISSIONS } from "../auth/permissions";
 import { ROLES } from "../auth/rolePermissions";
@@ -79,10 +86,18 @@ export const SIDEBAR_CONFIG = {
       { label: "Jobs", path: "/jobs", icon: Workflow, permission: PERMISSIONS.JOBS_VIEW },
     ] },
   ],
-  [ROLES.VIEWER]: [
-    { group: "Read Only", items: [
-      { label: "Dashboard", path: "/dashboard", icon: LayoutDashboard, permission: PERMISSIONS.DASHBOARD_VIEW },
-      { label: "Reports", path: "/reports", icon: FileBarChart, permission: PERMISSIONS.REPORTS_VIEW },
+  [ROLES.BUSINESS_USER]: [
+    { group: "Workspace", items: [
+      { label: "Overview", path: "/dashboard", icon: LayoutDashboard, permission: PERMISSIONS.DASHBOARD_VIEW },
+      { label: "Data catalog", path: "/dashboard?tab=catalog", icon: LibraryBig, permission: PERMISSIONS.GOVERNANCE_VIEW },
+      { label: "Quality", path: "/dashboard?tab=quality", icon: Sparkles, permission: PERMISSIONS.JOBS_VIEW },
+      { label: "Glossary", path: "/dashboard?tab=glossary", icon: BookMarked, permission: PERMISSIONS.GOVERNANCE_VIEW },
+      { label: "Data flow", path: "/dashboard?tab=lineage", icon: Share2, permission: PERMISSIONS.LINEAGE_VIEW },
+      { label: "My reports", path: "/dashboard?tab=reports", icon: FileBarChart, permission: PERMISSIONS.REPORTS_VIEW },
+      { label: "Compliance", path: "/dashboard?tab=compliance", icon: ClipboardCheck, permission: PERMISSIONS.COMPLIANCE_VIEW },
+      { label: "Issues", path: "/dashboard?tab=issues", icon: TriangleAlert, permission: PERMISSIONS.STEWARDSHIP_VIEW },
+      { label: "Data requests", path: "/dashboard?tab=requests", icon: Inbox, permission: PERMISSIONS.DASHBOARD_VIEW },
+      { label: "Alerts", path: "/dashboard?tab=alerts", icon: Bell, permission: PERMISSIONS.DASHBOARD_VIEW },
     ] },
   ],
 };

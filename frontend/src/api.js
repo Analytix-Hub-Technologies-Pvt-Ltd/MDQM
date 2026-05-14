@@ -3,6 +3,8 @@ import axios from 'axios';
 const API_URL = 'http://127.0.0.1:8000';
 const apiClient = axios.create({ baseURL: API_URL });
 
+export { apiClient };
+
 export const setAuthToken = (token) => {
     if (token) {
         apiClient.defaults.headers.common.Authorization = `Bearer ${token}`;
@@ -377,6 +379,11 @@ export const adminListAccessRequests = async () => {
 
 export const adminApproveRequest = async (id, role) => {
     return apiClient.post(`/admin/approve-request/${id}`, { role });
+};
+
+/** Pending auth.access_request for an email that already has a user (e.g. business user data request). */
+export const adminCompleteDataAccessRequest = async (id) => {
+    return apiClient.post(`/admin/complete-data-access-request/${id}`);
 };
 
 export const adminRejectRequest = async (id) => {

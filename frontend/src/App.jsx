@@ -8,6 +8,8 @@ import LoginPage from "./pages/LoginPage";
 import RequestAccessPage from "./pages/RequestAccessPage";
 import CompleteInvitePage from "./pages/CompleteInvitePage";
 import AdminPanel from "./pages/AdminPanel";
+import AdminDashboardLayout from "./pages/admin/AdminDashboardLayout";
+import AdminAccessRequestsPage from "./pages/admin/AdminAccessRequestsPage";
 import AuditLogsPage from "./pages/AuditLogsPage";
 import ProtectedRoute from "./auth/ProtectedRoute";
 import { useAuth } from "./auth/AuthContext";
@@ -83,10 +85,13 @@ function AppShell() {
               path="/admin"
               element={
                 <PermissionGuard require={PERMISSIONS.ADMIN_VIEW}>
-                  <AdminPanel />
+                  <AdminDashboardLayout />
                 </PermissionGuard>
               }
-            />
+            >
+              <Route index element={<AdminPanel />} />
+              <Route path="access-requests" element={<AdminAccessRequestsPage />} />
+            </Route>
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
         </div>

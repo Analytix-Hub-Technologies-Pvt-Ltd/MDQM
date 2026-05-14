@@ -67,7 +67,7 @@ export function AuthProvider({ children }) {
       ready,
       role: normalizeRole(user?.role),
       isAdmin: normalizeRole(user?.role) === ROLES.ADMIN,
-      isViewer: normalizeRole(user?.role) === ROLES.VIEWER,
+      isViewer: normalizeRole(user?.role) === ROLES.BUSINESS_USER,
       login,
       logout,
     }),

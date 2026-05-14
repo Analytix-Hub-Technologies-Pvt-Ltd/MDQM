@@ -8,7 +8,7 @@ import OwnerDashboard from "./dashboards/OwnerDashboard";
 import DeveloperDashboard from "./dashboards/DeveloperDashboard";
 import AuditorDashboard from "./dashboards/AuditorDashboard";
 import AnalystDashboard from "./dashboards/AnalystDashboard";
-import ViewerDashboard from "./dashboards/ViewerDashboard";
+import BusinessUserDashboard from "./dashboards/BusinessUserDashboard";
 
 export default function DashboardRouter() {
   const { user } = useAuth();
@@ -22,8 +22,8 @@ export default function DashboardRouter() {
     [ROLES.DEVELOPER]: <DeveloperDashboard />,
     [ROLES.AUDITOR]: <AuditorDashboard />,
     [ROLES.ANALYST]: <AnalystDashboard />,
-    [ROLES.VIEWER]: <ViewerDashboard />,
+    [ROLES.BUSINESS_USER]: <BusinessUserDashboard />,
   };
 
-  return componentByRole[role] || <ViewerDashboard />;
+  return componentByRole[role] || <BusinessUserDashboard />;
 }

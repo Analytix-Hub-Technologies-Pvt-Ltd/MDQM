@@ -7,20 +7,28 @@ import PipelineWidget from "../../components/widgets/PipelineWidget";
 import GovernanceScoreWidget from "../../components/widgets/GovernanceScoreWidget";
 import DataQualityWidget from "../../components/widgets/DataQualityWidget";
 import AuditWidget from "../../components/widgets/AuditWidget";
-import ClassicKpiSection from "./ClassicKpiSection";
 
-export default function BaseRoleDashboard({ endpoint, title, subtitle, accent = "blue", children = null }) {
+/**
+ * Core KPI / trend / health strip used inside tabbed enterprise dashboards (Overview tab).
+ */
+export default function RoleDashboardCore({ endpoint, accent = "blue", children = null }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     let active = true;
     const load = async () => {
+      setError("");
+      setLoading(true);
       try {
         const res = await getRoleDashboard(endpoint);
         if (active) setData(res.data);
-      } catch {
-        if (active) setData({});
+      } catch (e) {
+        if (active) {
+          setData({});
+          setError(e?.response?.data?.detail || "Could not load dashboard data");
+        }
       } finally {
         if (active) setLoading(false);
       }
@@ -31,24 +39,29 @@ export default function BaseRoleDashboard({ endpoint, title, subtitle, accent = 
     };
   }, [endpoint]);
 
-  if (loading) return <div className="p-8 text-sm text-slate-300">Loading role dashboard...</div>;
+  if (loading) {
+    return (
+      <div className="enterprise-card p-8 text-center text-sm text-[#9ab0d1] animate-pulse">
+        Loading overview metrics…
+      </div>
+    );
+  }
 
   const kpis = Array.isArray(data?.kpis) ? data.kpis : [];
   const trends = Array.isArray(data?.trends) ? data.trends : [];
 
-  const accentClass = accent === "violet" ? "from-[#8b5cf6] to-[#4f8cff]" : accent === "teal" ? "from-[#2dd4bf] to-[#4f8cff]" : "from-[#4f8cff] to-[#8b5cf6]";
-
   return (
-    <section className="p-6 space-y-6">
-      <header className={`enterprise-card p-5 border-none bg-gradient-to-r ${accentClass}`}>
-        <h1 className="text-2xl text-white">{title}</h1>
-        <p className="text-sm text-blue-100 mt-1">{subtitle}</p>
-      </header>
+    <div className="space-y-6">
+      {error ? <div className="text-sm text-amber-400 border border-amber-500/30 rounded-md px-3 py-2">{error}</div> : null}
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        {kpis.map((kpi, idx) => (
-          <KPIWidget key={`${kpi.title || "kpi"}-${idx}`} title={kpi.title} value={kpi.value} subtitle={kpi.subtitle} tone={kpi.tone} />
-        ))}
+        {kpis.length ? (
+          kpis.map((kpi, idx) => (
+            <KPIWidget key={`${kpi.title || "kpi"}-${idx}`} title={kpi.title} value={kpi.value} subtitle={kpi.subtitle} tone={kpi.tone} />
+          ))
+        ) : (
+          <div className="enterprise-card p-6 col-span-full text-center text-sm text-[#7f95b6]">No KPI snapshots available yet.</div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
@@ -65,8 +78,6 @@ export default function BaseRoleDashboard({ endpoint, title, subtitle, accent = 
       </div>
 
       <AuditWidget entries={data?.audit_events || []} />
-
-      <ClassicKpiSection />
-    </section>
+    </div>
   );
 }

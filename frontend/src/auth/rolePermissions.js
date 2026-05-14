@@ -8,7 +8,7 @@ export const ROLES = {
   DEVELOPER: "DEVELOPER",
   AUDITOR: "AUDITOR",
   ANALYST: "ANALYST",
-  VIEWER: "VIEWER",
+  BUSINESS_USER: "BUSINESS_USER",
 };
 
 const ALL_PERMISSIONS = Object.values(PERMISSIONS);
@@ -62,16 +62,25 @@ export const ROLE_PERMISSIONS = {
     PERMISSIONS.JOBS_VIEW,
     PERMISSIONS.RULES_VIEW,
   ],
-  [ROLES.VIEWER]: [PERMISSIONS.DASHBOARD_VIEW, PERMISSIONS.REPORTS_VIEW],
+  [ROLES.BUSINESS_USER]: [
+    PERMISSIONS.DASHBOARD_VIEW,
+    PERMISSIONS.REPORTS_VIEW,
+    PERMISSIONS.GOVERNANCE_VIEW,
+    PERMISSIONS.JOBS_VIEW,
+    PERMISSIONS.STEWARDSHIP_VIEW,
+    PERMISSIONS.COMPLIANCE_VIEW,
+    PERMISSIONS.LINEAGE_VIEW,
+  ],
 };
 
 export function normalizeRole(role) {
-  const value = String(role || "VIEWER").trim().toUpperCase();
+  const value = String(role || "BUSINESS_USER").trim().toUpperCase();
   if (value === "STEWARD") return ROLES.DATA_STEWARD;
   if (value === "OWNER") return ROLES.DATA_OWNER;
-  return ROLES[value] ? value : ROLES.VIEWER;
+  if (value === "BUSINESS" || value === "BU") return ROLES.BUSINESS_USER;
+  return ROLES[value] ? value : ROLES.BUSINESS_USER;
 }
 
 export function permissionsForRole(role) {
-  return ROLE_PERMISSIONS[normalizeRole(role)] || ROLE_PERMISSIONS[ROLES.VIEWER];
+  return ROLE_PERMISSIONS[normalizeRole(role)] || ROLE_PERMISSIONS[ROLES.BUSINESS_USER];
 }
