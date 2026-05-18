@@ -31,6 +31,14 @@ class BootstrapBody(BaseModel):
     password: str
 
 
+class BootstrapSetPasswordBody(BaseModel):
+    """Reset password on production when DB was empty / migrated separately from local."""
+
+    secret: str
+    email: EmailStr
+    password: str
+
+
 class CompleteInviteBody(BaseModel):
     token: str
     password: str
@@ -113,6 +121,20 @@ def bootstrap_admin(body: BootstrapBody, db: Session = Depends(get_db)):
         "token_type": "bearer",
         "user": _user_out(user),
     }
+
+
+@router.post("/bootstrap-set-password")
+def bootstrap_set_password(body: BootstrapSetPasswordBody, db: Session = Depends(get_db)):
+    if not BOOTSTRAP_SECRET or body.secret != BOOTSTRAP_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid bootstrap secret")
+    email = body.email.strip().lower()
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found for this email")
+    user.password_hash = hash_password(body.password)
+    user.password_configured = True
+    db.commit()
+    return {"message": "Password updated", "email": user.email}
 
 
 @router.post("/complete-invite")

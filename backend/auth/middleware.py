@@ -9,6 +9,7 @@ PUBLIC_PATHS = {
     "/favicon.ico",
     "/auth/login",
     "/auth/bootstrap",
+    "/auth/bootstrap-set-password",
     "/auth/complete-invite",
     "/access-request",
     "/docs",

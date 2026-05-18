@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>MDQM</title>
+    <script>
+      (function () {
+        var base = "/MDQM/";
+        var path = window.location.pathname || "";
+        var hash = window.location.hash || "";
+        if (path.indexOf(base) !== 0) {
+          var rest = path.replace(/^\//, "");
+          var target = base + (rest ? "#/" + rest : "#/");
+          if (hash && hash.indexOf("#") === 0) target = base + hash;
+          window.location.replace(target);
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <p>Redirecting to MDQM…</p>
+  </body>
+</html>
