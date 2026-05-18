@@ -6,7 +6,7 @@ services:
     runtime: python
     rootDir: backend
     plan: free
-    buildCommand: python --version && pip install -r requirements.txt
+    buildCommand: python scripts/ensure_requirements_utf8.py && python --version && pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
