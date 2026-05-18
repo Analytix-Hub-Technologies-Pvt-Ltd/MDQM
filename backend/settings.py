@@ -95,7 +95,10 @@ def get_postgres_config() -> dict:
     """
     load_env()
 
-    database_url = (os.getenv("DATABASE_URL") or "").strip()
+    database_url = (
+        (os.getenv("DATABASE_URL") or "").strip()
+        or (os.getenv("DATABASE_INTERNAL_URL") or "").strip()
+    )
     components = _postgres_components_from_env()
 
     if database_url:
@@ -142,23 +145,30 @@ def get_database_url() -> str:
 
 
 def get_engine_kwargs() -> dict:
-    """SQLAlchemy engine options for production PostgreSQL (pool + optional SSL)."""
+    """SQLAlchemy engine options (pool, timeout, optional SSL via DATABASE_SSLMODE)."""
     kwargs: dict = {"pool_pre_ping": True}
-    connect_args: dict = {}
+    connect_args: dict = {"connect_timeout": int(os.getenv("DATABASE_CONNECT_TIMEOUT", "10"))}
+
+    database_url = get_postgres_config()["url"]
+    sslmode = (os.getenv("DATABASE_SSLMODE") or "").strip()
+    # Do not force SSL here — Render internal URLs often omit it; use DATABASE_SSLMODE if needed.
+    if sslmode and "sslmode=" not in database_url.lower():
+        connect_args["sslmode"] = sslmode
+
+    kwargs["connect_args"] = connect_args
+    return kwargs
+
+
+def log_database_target() -> None:
+    """Log DB host (no secrets) so Render deploy logs show the resolved target."""
+    import sys
 
     cfg = get_postgres_config()
-    database_url = cfg["url"]
-    sslmode = (os.getenv("DATABASE_SSLMODE") or "").strip()
-    if not sslmode and is_production():
-        if "sslmode=" not in database_url.lower():
-            if "render.com" in database_url or cfg["host"].endswith(".render.com"):
-                sslmode = "require"
-
-    if sslmode:
-        connect_args["sslmode"] = sslmode
-    if connect_args:
-        kwargs["connect_args"] = connect_args
-    return kwargs
+    print(
+        f"[mdqm] PostgreSQL target: {cfg['host']}:{cfg['port']}/{cfg['database']} (user={cfg['user']})",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def get_cors_origins() -> list[str]:

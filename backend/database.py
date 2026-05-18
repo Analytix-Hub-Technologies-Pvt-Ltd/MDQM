@@ -2,11 +2,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-from settings import get_engine_kwargs, get_postgres_config, load_env
+from settings import get_engine_kwargs, get_postgres_config, load_env, log_database_target
 
 load_env()
 
 _pg = get_postgres_config()
+log_database_target()
 
 SQLALCHEMY_DATABASE_URL = _pg["url"]
 

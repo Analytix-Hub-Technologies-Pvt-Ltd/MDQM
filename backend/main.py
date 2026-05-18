@@ -18,11 +18,14 @@ if True:
     from urllib import parse as urlparse
     import base64
     import atexit
-    import models
+    import sys
     from settings import get_cors_origins, load_env
 
     load_env()
     from database import POSTGRES_DB, SessionLocal, engine
+
+    import models  # noqa: E402 — must run after database.py configures the engine
+
     os.makedirs("uploads", exist_ok=True)
     from engine.orchestrator import run_data_quality_job
     from fastapi.responses import StreamingResponse
@@ -55,13 +58,28 @@ if True:
 
 
     # Create required schemas + tables
-    with engine.begin() as conn:
-        conn.execute(text("CREATE SCHEMA IF NOT EXISTS auth"))
-        conn.execute(text("CREATE SCHEMA IF NOT EXISTS governance"))
-        conn.execute(text("CREATE SCHEMA IF NOT EXISTS metadata"))
-        conn.execute(text("CREATE SCHEMA IF NOT EXISTS quarantine"))
-        conn.execute(text("CREATE SCHEMA IF NOT EXISTS enterprise"))
-    models.Base.metadata.create_all(bind=engine)
+    def _init_database_schema():
+        from database import POSTGRES_HOST, POSTGRES_DB
+
+        print(
+            f"[mdqm] Initializing schemas on {POSTGRES_HOST}/{POSTGRES_DB}...",
+            file=sys.stderr,
+            flush=True,
+        )
+        with engine.begin() as conn:
+            conn.execute(text("CREATE SCHEMA IF NOT EXISTS auth"))
+            conn.execute(text("CREATE SCHEMA IF NOT EXISTS governance"))
+            conn.execute(text("CREATE SCHEMA IF NOT EXISTS metadata"))
+            conn.execute(text("CREATE SCHEMA IF NOT EXISTS quarantine"))
+            conn.execute(text("CREATE SCHEMA IF NOT EXISTS enterprise"))
+        models.Base.metadata.create_all(bind=engine)
+        print("[mdqm] Database schema ready.", file=sys.stderr, flush=True)
+
+    try:
+        _init_database_schema()
+    except Exception as exc:
+        print(f"[mdqm] FATAL: Database startup failed: {exc}", file=sys.stderr, flush=True)
+        raise
 
     try:
         _access_ddl = [

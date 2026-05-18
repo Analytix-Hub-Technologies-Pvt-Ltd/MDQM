@@ -6,12 +6,12 @@ services:
     runtime: python
     rootDir: backend
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: python --version && pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
-        value: "3.12.7"
+        value: "3.11.9"
       - key: ENV
         value: production
       - key: RENDER
@@ -24,6 +24,26 @@ services:
         fromDatabase:
           name: mdqm-db
           property: connectionString
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: mdqm-db
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: mdqm-db
+          property: port
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: mdqm-db
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: mdqm-db
+          property: password
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: mdqm-db
+          property: database
       - key: JWT_SECRET
         generateValue: true
       - key: MDQM_BOOTSTRAP_SECRET
