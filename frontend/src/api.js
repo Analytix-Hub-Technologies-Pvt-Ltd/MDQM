@@ -1,9 +1,9 @@
 import axios from 'axios';
+import { API_BASE_URL } from './config/apiConfig';
 
-const API_URL = 'http://127.0.0.1:8000';
-const apiClient = axios.create({ baseURL: API_URL });
+const apiClient = axios.create({ baseURL: API_BASE_URL });
 
-export { apiClient };
+export { apiClient, API_BASE_URL as API_URL };
 
 export const setAuthToken = (token) => {
     if (token) {
@@ -21,8 +21,11 @@ apiClient.interceptors.response.use(
         if (error?.response?.status === 401) {
             localStorage.removeItem("mdqm_token");
             localStorage.removeItem("mdqm_user");
-            if (!window.location.pathname.includes("/login")) {
-                window.location.href = "/login";
+            const onLogin =
+                window.location.hash.includes("/login") ||
+                window.location.pathname.includes("/login");
+            if (!onLogin) {
+                window.location.hash = "#/login";
             }
         }
         return Promise.reject(error);
@@ -61,75 +64,75 @@ export const getTablesByJob = async (jobId) => {
 // In frontend/src/api.js
 export const getTableDetails = async (jobId, tableId) => {
     // Now passing both IDs in the URL
-    return axios.get(`${API_URL}/tables/${jobId}/${tableId}/details`);
+    return apiClient.get(`/tables/${jobId}/${tableId}/details`);
 };
 
 // --- RULES ---
 export const addRule = async (payload) => {
-    return axios.post(`${API_URL}/rules/add`, payload);
+    return apiClient.post(`/rules/add`, payload);
 };
 
 export const toggleRule = async (ruleId, isActive) => {
-    return axios.put(`${API_URL}/rules/${ruleId}/toggle`, { is_active: isActive });
+    return apiClient.put(`/rules/${ruleId}/toggle`, { is_active: isActive });
 };
 
 export const deleteRule = async (ruleId) => {
-    return axios.delete(`${API_URL}/rules/${ruleId}`);
+    return apiClient.delete(`/rules/${ruleId}`);
 };
 
 // --- NEW EDITING FUNCTIONS ---
 export const updateRule = async (ruleId, payload) => {
-    return axios.put(`${API_URL}/rules/${ruleId}`, payload);
+    return apiClient.put(`/rules/${ruleId}`, payload);
 };
 
 export const getMasterData = async (jobId, tableId) => {
-    return axios.get(`${API_URL}/master-data/${jobId}/${tableId}`);
+    return apiClient.get(`/master-data/${jobId}/${tableId}`);
 };
 
 // Add these to your existing frontend/src/api.js
 
 export const runJobEngine = async (jobId) => {
-    return axios.post(`${API_URL}/jobs/${jobId}/run`);
+    return apiClient.post(`/jobs/${jobId}/run`);
 };
 
 export const scheduleJob = async (jobId, payload) => {
-    return axios.post(`${API_URL}/schedule-job/${jobId}`, payload);
+    return apiClient.post(`/schedule-job/${jobId}`, payload);
 };
 
 export const getAllSchedules = async () => {
-    return axios.get(`${API_URL}/schedules`);
+    return apiClient.get(`/schedules`);
 };
 
 export const getScheduleByJobId = async (jobId) => {
-    return axios.get(`${API_URL}/schedules/${jobId}`);
+    return apiClient.get(`/schedules/${jobId}`);
 };
 
 export const pauseSchedule = async (jobId) => {
-    return axios.post(`${API_URL}/schedules/${jobId}/pause`);
+    return apiClient.post(`/schedules/${jobId}/pause`);
 };
 
 export const resumeSchedule = async (jobId) => {
-    return axios.post(`${API_URL}/schedules/${jobId}/resume`);
+    return apiClient.post(`/schedules/${jobId}/resume`);
 };
 
 export const deleteSchedule = async (jobId) => {
-    return axios.delete(`${API_URL}/schedules/${jobId}`);
+    return apiClient.delete(`/schedules/${jobId}`);
 };
 
 export const deleteJob = async (jobId) => {
-    return axios.delete(`${API_URL}/jobs/${jobId}`);
+    return apiClient.delete(`/jobs/${jobId}`);
 };
 
 export const deleteTable = async (tableId) => {
-    return axios.delete(`${API_URL}/tables/${tableId}`);
+    return apiClient.delete(`/tables/${tableId}`);
 };
 
 export const renameJob = async (jobId, newName) => {
-    return axios.put(`${API_URL}/jobs/${jobId}/rename`, { name: newName });
+    return apiClient.put(`/jobs/${jobId}/rename`, { name: newName });
 };
 
 export const renameTable = async (tableId, newName) => {
-    return axios.put(`${API_URL}/tables/${tableId}/rename`, { name: newName });
+    return apiClient.put(`/tables/${tableId}/rename`, { name: newName });
 };
 
 export const uploadCsvToJob = async (jobId, file, previewEdits = [], sourcePath = "") => {
@@ -139,7 +142,7 @@ export const uploadCsvToJob = async (jobId, file, previewEdits = [], sourcePath 
     if (String(sourcePath || "").trim()) {
         formData.append("source_path", String(sourcePath).trim());
     }
-    return axios.post(`${API_URL}/jobs/${jobId}/upload`, formData, {
+    return apiClient.post(`/jobs/${jobId}/upload`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
     });
 };
@@ -147,25 +150,25 @@ export const uploadCsvToJob = async (jobId, file, previewEdits = [], sourcePath 
 export const previewCsvFile = async (file) => {
     const formData = new FormData();
     formData.append("file", file);
-    return axios.post(`${API_URL}/files/preview`, formData, {
+    return apiClient.post(`/files/preview`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
     });
 };
 
 export const previewCsvFileFromPath = async (filePath) => {
-    return axios.post(`${API_URL}/files/preview-from-path`, { file_path: filePath });
+    return apiClient.post(`/files/preview-from-path`, { file_path: filePath });
 };
 
 export const createNewJob = async (jobName) => {
-    return axios.post(`${API_URL}/jobs/create`, { job_name: jobName });
+    return apiClient.post(`/jobs/create`, { job_name: jobName });
 };
 
 export const uploadCsvPathToJob = async (jobId, filePath) => {
-    return axios.post(`${API_URL}/jobs/${jobId}/upload-from-path`, { file_path: filePath });
+    return apiClient.post(`/jobs/${jobId}/upload-from-path`, { file_path: filePath });
 };
 
 export const replaceTableFileFromPath = async (jobId, tableId, filePath) => {
-    return axios.post(`${API_URL}/jobs/${jobId}/tables/${tableId}/replace-from-path`, {
+    return apiClient.post(`/jobs/${jobId}/tables/${tableId}/replace-from-path`, {
         file_path: filePath,
     });
 };
@@ -176,58 +179,58 @@ export const replaceTableFileUpload = async (jobId, tableId, file, sourcePath = 
     if (String(sourcePath || "").trim()) {
         formData.append("source_path", String(sourcePath).trim());
     }
-    return axios.post(`${API_URL}/jobs/${jobId}/tables/${tableId}/replace-file`, formData, {
+    return apiClient.post(`/jobs/${jobId}/tables/${tableId}/replace-file`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
     });
 };
 
 // Note: DB Connection and Download endpoints will require specific backend logic
 export const connectToDb = async (credentials) => {
-    return axios.post(`${API_URL}/db/connect`, credentials);
+    return apiClient.post(`/db/connect`, credentials);
 };
 
 export const listDatabases = async (credentials) => {
-    return axios.post(`${API_URL}/db/list-databases`, credentials);
+    return apiClient.post(`/db/list-databases`, credentials);
 };
 
 export const listSchemasTables = async (payload) => {
-    return axios.post(`${API_URL}/db/list-schemas-tables`, payload);
+    return apiClient.post(`/db/list-schemas-tables`, payload);
 };
 
 export const previewDbTable = async (payload) => {
-    return axios.post(`${API_URL}/db/preview-table`, payload);
+    return apiClient.post(`/db/preview-table`, payload);
 };
 
 export const getDbLookupValues = async (payload) => {
-    return axios.post(`${API_URL}/db/lookup-values`, payload);
+    return apiClient.post(`/db/lookup-values`, payload);
 };
 
 export const getDbTableColumns = async (payload) => {
-    return axios.post(`${API_URL}/db/table-columns`, payload);
+    return apiClient.post(`/db/table-columns`, payload);
 };
 
 export const listSavedConnections = async () => {
-    return axios.get(`${API_URL}/db/connections`);
+    return apiClient.get(`/db/connections`);
 };
 
 export const saveDbConnection = async (payload) => {
-    return axios.post(`${API_URL}/db/connections`, payload);
+    return apiClient.post(`/db/connections`, payload);
 };
 
 export const testDbConnection = async (payload) => {
-    return axios.post(`${API_URL}/db/test-connection`, payload);
+    return apiClient.post(`/db/test-connection`, payload);
 };
 
 export const exportResultsToDb = async (payload) => {
-    return axios.post(`${API_URL}/db/export-results`, payload);
+    return apiClient.post(`/db/export-results`, payload);
 };
 
 export const emailTableOutput = async (tableId, payload) => {
-    return axios.post(`${API_URL}/tables/${tableId}/email`, payload);
+    return apiClient.post(`/tables/${tableId}/email`, payload);
 };
 
 export const downloadJobZip = async (jobId) => {
-    const res = await axios.get(`${API_URL}/jobs/${jobId}/download`, {
+    const res = await apiClient.get(`/jobs/${jobId}/download`, {
         responseType: "blob",
     });
     const filename = readFilenameFromDisposition(
@@ -238,7 +241,7 @@ export const downloadJobZip = async (jobId) => {
 };
 
 export const downloadTableOutputCsv = async (jobId, tableId) => {
-    const res = await axios.get(`${API_URL}/tables/${jobId}/${tableId}/download-csv`, {
+    const res = await apiClient.get(`/tables/${jobId}/${tableId}/download-csv`, {
         responseType: "blob",
     });
     const filename = readFilenameFromDisposition(
@@ -249,7 +252,7 @@ export const downloadTableOutputCsv = async (jobId, tableId) => {
 };
 
 export const downloadTableOutputExcel = async (jobId, tableId) => {
-    const res = await axios.get(`${API_URL}/tables/${jobId}/${tableId}/download`, {
+    const res = await apiClient.get(`/tables/${jobId}/${tableId}/download`, {
         responseType: "blob",
     });
     const filename = readFilenameFromDisposition(
@@ -260,42 +263,42 @@ export const downloadTableOutputExcel = async (jobId, tableId) => {
 };
 
 export const uploadTableOutputToSharePoint = async (tableId, payload) => {
-    return axios.post(`${API_URL}/tables/${tableId}/sharepoint-upload`, payload);
+    return apiClient.post(`/tables/${tableId}/sharepoint-upload`, payload);
 };
 
 // Add to frontend/src/api.js
 export const getQuarantineJobs = async () => {
-    return axios.get(`${API_URL}/quarantine/jobs`);
+    return apiClient.get(`/quarantine/jobs`);
 };
 
 export const getQuarantineTables = async (jobId) => {
-    return axios.get(`${API_URL}/quarantine/jobs/${jobId}/tables`);
+    return apiClient.get(`/quarantine/jobs/${jobId}/tables`);
 };
 
 // Add to frontend/src/api.js
 export const getValidationDetails = async (jobId, tableId) => {
-    return axios.get(`${API_URL}/quarantine/jobs/${jobId}/tables/${tableId}/validation`);
+    return apiClient.get(`/quarantine/jobs/${jobId}/tables/${tableId}/validation`);
 };
 
 export const updateQuarantineError = async (logId, newValue) => {
-    return axios.put(`${API_URL}/quarantine/errors/${logId}`, { new_value: newValue });
+    return apiClient.put(`/quarantine/errors/${logId}`, { new_value: newValue });
 };
 
 export const deleteQuarantineError = async (logId) => {
-    return axios.delete(`${API_URL}/quarantine/errors/${logId}`);
+    return apiClient.delete(`/quarantine/errors/${logId}`);
 };
 
 // Add to frontend/src/api.js
 export const getFuzzyDetails = async (jobId, tableId, params = {}) => {
-    return axios.get(`${API_URL}/quarantine/jobs/${jobId}/tables/${tableId}/fuzzy`, { params });
+    return apiClient.get(`/quarantine/jobs/${jobId}/tables/${tableId}/fuzzy`, { params });
 };
 
 export const addToMasterData = async (jobId, tableId, newMaster) => {
-    return axios.post(`${API_URL}/quarantine/jobs/${jobId}/tables/${tableId}/master`, { new_master: newMaster });
+    return apiClient.post(`/quarantine/jobs/${jobId}/tables/${tableId}/master`, { new_master: newMaster });
 };
 
 export const replaceFuzzyValue = async (jobId, tableId, rowId, colName, newValue) => {
-    return axios.put(`${API_URL}/quarantine/jobs/${jobId}/tables/${tableId}/fuzzy/replace`, {
+    return apiClient.put(`/quarantine/jobs/${jobId}/tables/${tableId}/fuzzy/replace`, {
         row_id: rowId,
         column_name: colName,
         new_value: newValue
@@ -304,7 +307,7 @@ export const replaceFuzzyValue = async (jobId, tableId, rowId, colName, newValue
 
 // Add to frontend/src/api.js
 export const getDashboardSummary = async () => {
-    return axios.get(`${API_URL}/dashboard/summary`);
+    return apiClient.get(`/dashboard/summary`);
 };
 
 export const getRoleDashboard = async (roleSlug) => {
@@ -312,11 +315,11 @@ export const getRoleDashboard = async (roleSlug) => {
 };
 
 export const getDataQualityMetrics = async () => {
-    return axios.get(`${API_URL}/dashboard/data-quality-metrics`);
+    return apiClient.get(`/dashboard/data-quality-metrics`);
 };
 
 export const removeMasterValue = async (jobId, tableId, value) => {
-    return axios.delete(`${API_URL}/master-data/remove`, {
+    return apiClient.delete(`/master-data/remove`, {
         data: { 
             job_id: jobId, 
             table_id: tableId, 
@@ -326,18 +329,18 @@ export const removeMasterValue = async (jobId, tableId, value) => {
 };
 
 export const getColumnStats = async (tableId) => {
-    return axios.get(`${API_URL}/tables/${tableId}/columns/stats`);
+    return apiClient.get(`/tables/${tableId}/columns/stats`);
 };
 
 export const renameColumn = async (tableId, oldName, newName) => {
-    return axios.put(`${API_URL}/tables/${tableId}/columns/rename`, {
+    return apiClient.put(`/tables/${tableId}/columns/rename`, {
         old_name: oldName,
         new_name: newName
     });
 };
 
 export const standardizeDates = (tableId, columnName) => {
-  return axios.post(`${API_URL}/tables/${tableId}/standardize-dates`, {
+  return apiClient.post(`/tables/${tableId}/standardize-dates`, {
     column_name: columnName
   });
 };
