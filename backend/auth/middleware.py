@@ -5,6 +5,7 @@ from permissions.role_map import normalize_role
 
 PUBLIC_PATHS = {
     "/",
+    "/health",
     "/favicon.ico",
     "/auth/login",
     "/auth/bootstrap",

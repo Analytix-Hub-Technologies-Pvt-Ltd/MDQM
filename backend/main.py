@@ -20,6 +20,10 @@ if True:
     import atexit
     import models
     from database import SessionLocal, engine
+    from settings import get_cors_origins, load_env
+
+    load_env()
+    os.makedirs("uploads", exist_ok=True)
     from engine.orchestrator import run_data_quality_job
     from fastapi.responses import StreamingResponse
     import io
@@ -73,11 +77,10 @@ if True:
     except Exception:
         pass
 
-    # --- 1. ENABLE CORS (FIXED PORT) ---
+    # --- 1. CORS (local dev + GitHub Pages via CORS_ORIGINS env) ---
     app.add_middleware(
         CORSMiddleware,
-        # Allow BOTH React ports to be safe
-        allow_origins=["http://localhost:3000", "http://localhost:5173"], 
+        allow_origins=get_cors_origins(),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -412,6 +415,10 @@ if True:
     @app.get("/")
     def read_root():
         return {"message": "MDQM Backend is Live"}
+
+    @app.get("/health")
+    def health_check():
+        return {"status": "ok"}
 
 
     @app.post("/files/preview")
