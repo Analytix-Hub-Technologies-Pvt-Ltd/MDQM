@@ -1,0 +1,58 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.venv/
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+
+# Logs & Databases
+*.sqlite
+.env
+.env.local
+
+# Local saved DB connection presets (may contain secrets)
+backend/saved_connections.json
+
+# Ignore the virtual environment inside backend
+backend/MDQM/
+
+# Ignore local test data and results
+backend/uploads/*.csv
+
+# Node modules (if you haven't already)
+node_modules/
+frontend/node_modules/
