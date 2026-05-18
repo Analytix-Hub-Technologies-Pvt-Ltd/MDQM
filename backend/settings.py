@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, unquote, urlparse
 
 _BACKEND_DIR = Path(__file__).resolve().parent
 
@@ -16,10 +16,17 @@ DEFAULT_CORS_ORIGINS = [
 
 GITHUB_PAGES_FRONTEND = "https://analytix-hub-technologies-pvt-ltd.github.io/MDQM/"
 
+_DEV_DEFAULT_HOST = "127.0.0.1"
+_DEV_DEFAULT_PORT = "5432"
+_DEV_DEFAULT_USER = "postgres"
+_DEV_DEFAULT_DB = "mdms"
+
 
 def load_env() -> None:
-    """Load backend/.env locally. On Render, platform env vars are used as-is."""
-    if os.getenv("RENDER"):
+    """Load backend/.env for local dev only. Never override platform env on Render/production."""
+    if is_production():
+        return
+    if (os.getenv("DATABASE_URL") or "").strip():
         return
     env_path = _BACKEND_DIR / ".env"
     if env_path.is_file():
@@ -35,23 +42,103 @@ def is_production() -> bool:
     )
 
 
-def get_database_url() -> str:
-    """Resolve DB URL from Render DATABASE_URL or POSTGRES_* components."""
-    url = (os.getenv("DATABASE_URL") or "").strip()
-    if url:
-        if url.startswith("postgres://"):
-            url = "postgresql://" + url[len("postgres://") :]
-        return url
+def _normalize_database_url(url: str) -> str:
+    url = url.strip()
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://") :]
+    return url
 
-    user = os.getenv("POSTGRES_USER", "postgres")
-    password = os.getenv("POSTGRES_PASSWORD", "")
-    host = os.getenv("POSTGRES_HOST", "127.0.0.1")
-    port = os.getenv("POSTGRES_PORT", "5432")
-    database = os.getenv("POSTGRES_DB", "mdms")
+
+def _build_url(user: str, password: str, host: str, port: str, database: str) -> str:
     return (
         f"postgresql://{quote_plus(user)}:{quote_plus(password)}"
         f"@{host}:{port}/{database}"
     )
+
+
+def _postgres_components_from_env() -> dict | None:
+    host = (os.getenv("POSTGRES_HOST") or "").strip()
+    user = (os.getenv("POSTGRES_USER") or "").strip()
+    database = (os.getenv("POSTGRES_DB") or "").strip()
+    if not (host and user and database):
+        return None
+    return {
+        "host": host,
+        "port": (os.getenv("POSTGRES_PORT") or _DEV_DEFAULT_PORT).strip(),
+        "user": user,
+        "password": os.getenv("POSTGRES_PASSWORD", ""),
+        "database": database,
+    }
+
+
+def _postgres_components_from_url(database_url: str) -> dict:
+    url = _normalize_database_url(database_url)
+    parsed = urlparse(url)
+    return {
+        "host": parsed.hostname or "",
+        "port": str(parsed.port or _DEV_DEFAULT_PORT),
+        "user": unquote(parsed.username or _DEV_DEFAULT_USER),
+        "password": unquote(parsed.password or "") if parsed.password else "",
+        "database": (parsed.path or "").lstrip("/") or _DEV_DEFAULT_DB,
+        "url": url,
+    }
+
+
+def get_postgres_config() -> dict:
+    """
+    Resolve PostgreSQL settings for SQLAlchemy and psycopg2.
+
+    Priority:
+      1. DATABASE_URL (Render injects this when Postgres is linked)
+      2. POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+      3. Local dev defaults (127.0.0.1) only when not in production
+    """
+    load_env()
+
+    database_url = (os.getenv("DATABASE_URL") or "").strip()
+    components = _postgres_components_from_env()
+
+    if database_url:
+        cfg = _postgres_components_from_url(database_url)
+    elif components:
+        cfg = {
+            **components,
+            "url": _build_url(
+                components["user"],
+                components["password"],
+                components["host"],
+                components["port"],
+                components["database"],
+            ),
+        }
+    elif is_production():
+        raise RuntimeError(
+            "Database not configured for production. Link a Render Postgres instance or set "
+            "DATABASE_URL, or POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB."
+        )
+    else:
+        cfg = {
+            "host": _DEV_DEFAULT_HOST,
+            "port": _DEV_DEFAULT_PORT,
+            "user": _DEV_DEFAULT_USER,
+            "password": os.getenv("POSTGRES_PASSWORD", ""),
+            "database": _DEV_DEFAULT_DB,
+        }
+        cfg["url"] = _build_url(
+            cfg["user"], cfg["password"], cfg["host"], cfg["port"], cfg["database"]
+        )
+
+    if is_production() and cfg["host"] in ("127.0.0.1", "localhost", "::1"):
+        raise RuntimeError(
+            "POSTGRES_HOST points to localhost in production. Set DATABASE_URL or Render "
+            "POSTGRES_* variables from your linked database."
+        )
+
+    return cfg
+
+
+def get_database_url() -> str:
+    return get_postgres_config()["url"]
 
 
 def get_engine_kwargs() -> dict:
@@ -59,15 +146,12 @@ def get_engine_kwargs() -> dict:
     kwargs: dict = {"pool_pre_ping": True}
     connect_args: dict = {}
 
+    cfg = get_postgres_config()
+    database_url = cfg["url"]
     sslmode = (os.getenv("DATABASE_SSLMODE") or "").strip()
     if not sslmode and is_production():
-        database_url = os.getenv("DATABASE_URL", "")
-        if database_url and "sslmode=" not in database_url.lower():
-            if "render.com" in database_url or os.getenv("DATABASE_SSL", "").lower() in (
-                "1",
-                "true",
-                "yes",
-            ):
+        if "sslmode=" not in database_url.lower():
+            if "render.com" in database_url or cfg["host"].endswith(".render.com"):
                 sslmode = "require"
 
     if sslmode:

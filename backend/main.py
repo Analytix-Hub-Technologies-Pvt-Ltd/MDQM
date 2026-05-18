@@ -19,10 +19,10 @@ if True:
     import base64
     import atexit
     import models
-    from database import SessionLocal, engine
     from settings import get_cors_origins, load_env
 
     load_env()
+    from database import POSTGRES_DB, SessionLocal, engine
     os.makedirs("uploads", exist_ok=True)
     from engine.orchestrator import run_data_quality_job
     from fastapi.responses import StreamingResponse
@@ -737,7 +737,7 @@ if True:
             )
         # Enforce split workflow: internal MDQM metadata stays in POSTGRES_DB (usually mdms),
         # while exported result tables must go to a separate target database.
-        internal_dbname = str(os.getenv("POSTGRES_DB", "mdms")).strip().lower()
+        internal_dbname = str(POSTGRES_DB).strip().lower()
         target_dbname = str(creds.get("dbname", "")).strip().lower()
         allow_internal_export = bool(payload.get("allow_internal_export_db", False))
         if target_dbname == internal_dbname and not allow_internal_export:

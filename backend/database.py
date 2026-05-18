@@ -1,28 +1,28 @@
-import os
-
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-from settings import get_database_url, get_engine_kwargs, load_env
+from settings import get_engine_kwargs, get_postgres_config, load_env
 
 load_env()
 
-SQLALCHEMY_DATABASE_URL = get_database_url()
+_pg = get_postgres_config()
 
-# Exposed for endpoints that build ad-hoc psycopg2 connections from env vars.
-POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "")
-POSTGRES_HOST = os.getenv("POSTGRES_HOST", "127.0.0.1")
-POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
-POSTGRES_DB = os.getenv("POSTGRES_DB", "mdms")
+SQLALCHEMY_DATABASE_URL = _pg["url"]
+
+# Used by /db/* endpoints and metadata checks — always match the app database connection.
+POSTGRES_USER = _pg["user"]
+POSTGRES_PASSWORD = _pg["password"]
+POSTGRES_HOST = _pg["host"]
+POSTGRES_PORT = _pg["port"]
+POSTGRES_DB = _pg["database"]
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL, **get_engine_kwargs())
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
 
-# Dependency to get DB session in endpoints
+
 def get_db():
     db = SessionLocal()
     try:
