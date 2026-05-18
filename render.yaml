@@ -1,0 +1,47 @@
+# Render Blueprint — MDQM FastAPI backend + PostgreSQL
+# Docs: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: mdqm-api
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: ENV
+        value: production
+      - key: RENDER
+        value: "true"
+      - key: CORS_ORIGINS
+        value: http://localhost:3000,http://localhost:5173,https://analytix-hub-technologies-pvt-ltd.github.io
+      - key: MDQM_FRONTEND_URL
+        value: https://analytix-hub-technologies-pvt-ltd.github.io/MDQM
+      - key: DATABASE_URL
+        fromDatabase:
+          name: mdqm-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: MDQM_BOOTSTRAP_SECRET
+        generateValue: true
+      # Set these in the Render dashboard (sync: false keeps them out of git):
+      - key: MS_GRAPH_TENANT_ID
+        sync: false
+      - key: MS_GRAPH_CLIENT_ID
+        sync: false
+      - key: MS_GRAPH_CLIENT_SECRET
+        sync: false
+      - key: MS_GRAPH_SENDER_EMAIL
+        sync: false
+      - key: ACCESS_REQUEST_NOTIFY_EMAIL
+        sync: false
+
+databases:
+  - name: mdqm-db
+    databaseName: mdms
+    user: mdqm
+    plan: free
