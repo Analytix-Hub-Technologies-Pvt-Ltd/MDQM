@@ -17,6 +17,7 @@ from auth.security import generate_invite_token, hash_invite_token, hash_passwor
 from auth.username_utils import build_unique_username
 from database import get_db
 from utils.audit import write_audit_log
+from services import enterprise_service as esvc
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -357,6 +358,16 @@ def complete_data_access_request(
     _stamp_access_request_approver(req, admin)
     db.add(req)
     db.commit()
+    try:
+        esvc.create_notification(
+            db,
+            user_id=user.id,
+            subject="Data access request approved",
+            body=f"Access to {req.dataset_name or 'dataset'} was approved.",
+            severity="info",
+        )
+    except Exception:
+        pass
     write_audit_log(
         db=db,
         user_id=admin.id,
@@ -391,6 +402,19 @@ def reject_request(request_id: int, request: Request, admin: models.User = Depen
     _stamp_access_request_approver(req, admin)
     db.add(req)
     db.commit()
+    try:
+        em = (req.email or "").strip().lower()
+        bu = db.query(models.User).filter(func.lower(models.User.email) == em).first()
+        if bu:
+            esvc.create_notification(
+                db,
+                user_id=bu.id,
+                subject="Data access request denied",
+                body=f"Access to {req.dataset_name or 'dataset'} was not approved.",
+                severity="warning",
+            )
+    except Exception:
+        pass
     write_audit_log(
         db=db,
         user_id=admin.id,

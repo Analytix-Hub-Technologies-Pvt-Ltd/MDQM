@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
+import re
 from datetime import datetime
 from typing import Any
 
@@ -596,11 +599,39 @@ def create_report_export(db: Session, *, report_type: str, format: str, payload:
     return row
 
 
-def export_report_payload(report_type: str, payload: dict | None) -> str:
-    """Return downloadable text (CSV-ish or JSON string)."""
-    if (payload or {}).get("format") == "csv":
-        return "id,name,status\n1,example,ok\n"
-    return json.dumps({"report_type": report_type, "generated_at": datetime.utcnow().isoformat() + "Z", "rows": payload or {}}, indent=2)
+def export_report_payload(report_type: str, payload: dict | None, export_format: str = "json") -> str:
+    """Return downloadable CSV or JSON for a business report card."""
+    data = dict(payload or {})
+    data.setdefault("report_type", report_type)
+    data["exported_at"] = datetime.utcnow().isoformat() + "Z"
+
+    if export_format == "csv":
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["field", "value"])
+        for key in (
+            "report_id",
+            "title",
+            "report_type",
+            "dataset_name",
+            "status",
+            "quality_score",
+            "last_refreshed",
+            "external_url",
+            "exported_at",
+        ):
+            if key in data and data[key] is not None and data[key] != "":
+                writer.writerow([key, data[key]])
+        return buf.getvalue()
+
+    return json.dumps(data, indent=2)
+
+
+def report_export_filename(payload: dict | None, export_format: str) -> str:
+    title = (payload or {}).get("title") or "report"
+    safe = re.sub(r"[^\w\-]+", "_", str(title).strip())[:80] or "report"
+    ext = "csv" if export_format == "csv" else "json"
+    return f"{safe}.{ext}"
 
 
 def list_access_requests(db: Session, page: int, page_size: int, status: str | None):

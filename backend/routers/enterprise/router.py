@@ -19,7 +19,9 @@ from engine.orchestrator import run_data_quality_job
 from permissions.access_control import require_any_permission, require_permission
 from permissions.permissions import Permissions
 from permissions.role_map import Roles, normalize_role
+from services import business_user_service as busvc
 from services import enterprise_service as esvc
+from services.lineage_service import lineage_graph_payload, seed_lineage_from_datasets
 from utils.audit import write_audit_log
 
 router = APIRouter(prefix="/api/enterprise", tags=["enterprise"])
@@ -396,6 +398,99 @@ def governance_dataset_create(request: Request, body: DatasetCreateBody, db: Ses
     return {"id": row.id, "name": row.name}
 
 
+class BusinessReportPublishBody(BaseModel):
+    title: str = Field(..., min_length=1)
+    report_type: str = Field(..., min_length=1)
+    dataset_name: str | None = None
+    status: str = "Certified"
+    quality_score: int | None = Field(None, ge=0, le=100)
+    last_refreshed_label: str | None = None
+    external_url: str | None = None
+
+
+@router.get("/governance/business-reports")
+def governance_business_reports_list(
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    q: str | None = None,
+):
+    require_any_permission(
+        _role(request),
+        Permissions.DASHBOARD_OWNER,
+        Permissions.DASHBOARD_CDO,
+        Permissions.GOVERNANCE_VIEW,
+        Permissions.ADMIN_VIEW,
+    )
+    return busvc.list_business_reports_manage(db, page, page_size, q)
+
+
+@router.post("/governance/business-reports")
+def governance_business_report_publish(
+    request: Request,
+    body: BusinessReportPublishBody,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_any_permission(
+        _role(request),
+        Permissions.DASHBOARD_OWNER,
+        Permissions.DASHBOARD_CDO,
+        Permissions.GOVERNANCE_VIEW,
+        Permissions.ADMIN_VIEW,
+    )
+    row = busvc.create_business_report(
+        db,
+        title=body.title,
+        report_type=body.report_type,
+        dataset_name=body.dataset_name,
+        status=body.status,
+        quality_score=body.quality_score,
+        last_refreshed_label=body.last_refreshed_label,
+        external_url=body.external_url,
+        user_id=None,
+    )
+    write_audit_log(
+        db,
+        user_id=user.id,
+        action="governance.business_report_published",
+        entity_type="business_report",
+        entity_id=str(row.id),
+        ip_address=request.client.host if request.client else None,
+        new_values={"title": row.title},
+    )
+    return {"id": row.id, "title": row.title}
+
+
+@router.delete("/governance/business-reports/{report_id}")
+def governance_business_report_delete(
+    request: Request,
+    report_id: int,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_any_permission(
+        _role(request),
+        Permissions.DASHBOARD_OWNER,
+        Permissions.DASHBOARD_CDO,
+        Permissions.GOVERNANCE_VIEW,
+        Permissions.ADMIN_VIEW,
+    )
+    if not busvc.delete_business_report(db, report_id):
+        raise HTTPException(status_code=404, detail="Report not found")
+    write_audit_log(
+        db,
+        user_id=user.id,
+        action="governance.business_report_deleted",
+        entity_type="business_report",
+        entity_id=str(report_id),
+        ip_address=request.client.host if request.client else None,
+    )
+    return {"deleted": True}
+
+
 @router.get("/governance/access-requests")
 def governance_access_requests(
     request: Request,
@@ -587,11 +682,15 @@ def reports_export(request: Request, body: ReportExportBody, db: Session = Depen
         )
     except Exception:
         pass
-    text_body = esvc.export_report_payload(body.report_type, body.payload)
+    text_body = esvc.export_report_payload(body.report_type, body.payload, body.format)
+    headers = {"X-Export-Id": str(row.id)}
+    if body.format == "csv":
+        filename = esvc.report_export_filename(body.payload, body.format)
+        headers["Content-Disposition"] = f'attachment; filename="{filename}"'
     return PlainTextResponse(
         content=text_body,
         media_type="text/csv" if body.format == "csv" else "application/json",
-        headers={"X-Export-Id": str(row.id)},
+        headers=headers,
     )
 
 
@@ -690,3 +789,173 @@ def stewardship_issues(
         Permissions.ADMIN_VIEW,
     )
     return esvc.list_stewardship_tasks(db, page, page_size, q)
+
+
+# --- Business user workspace (catalog, quality, overview, reports, alerts) ---
+
+
+@router.get("/business/overview")
+def business_overview(
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
+    return busvc.business_overview(db, user)
+
+
+@router.get("/business/catalog")
+def business_catalog(
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    q: str | None = None,
+):
+    require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
+    return busvc.list_catalog(db, page, page_size, q, user_email=user.email)
+
+
+@router.get("/business/quality-scores")
+def business_quality_scores(
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    q: str | None = None,
+):
+    require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
+    return busvc.list_quality_scores(db, page, page_size, q, user_email=user.email)
+
+
+@router.get("/business/glossary")
+def business_glossary(
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    q: str | None = None,
+):
+    require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
+    return busvc.list_glossary_business(db, page, page_size, q, approved_only=True)
+
+
+@router.get("/business/reports")
+def business_reports(
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+):
+    require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
+    return busvc.list_business_reports(db, user.id, page, page_size)
+
+
+@router.get("/business/alert-subscriptions")
+def business_alert_subscriptions(
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
+    return busvc.list_alert_subscriptions(db, user.id)
+
+
+class AlertSubscriptionBody(BaseModel):
+    dataset_name: str = Field(..., min_length=1)
+    threshold: int | None = Field(None, ge=50, le=100)
+
+
+class AlertSubscriptionUpdateBody(BaseModel):
+    threshold: int = Field(..., ge=50, le=100)
+
+
+@router.post("/business/alert-subscriptions")
+def business_alert_subscription_create(
+    request: Request,
+    body: AlertSubscriptionBody,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
+    row = busvc.create_alert_subscription(db, user.id, body.dataset_name, body.threshold)
+    return {"id": row.id, "dataset_name": row.dataset_name, "threshold": row.threshold}
+
+
+@router.patch("/business/alert-subscriptions/{sub_id}")
+def business_alert_subscription_update(
+    request: Request,
+    sub_id: int,
+    body: AlertSubscriptionUpdateBody,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
+    row = busvc.update_alert_subscription(db, user.id, sub_id, threshold=body.threshold)
+    if not row:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    return {"id": row.id, "dataset_name": row.dataset_name, "threshold": row.threshold}
+
+
+@router.delete("/business/alert-subscriptions/{sub_id}")
+def business_alert_subscription_delete(
+    request: Request,
+    sub_id: int,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
+    if not busvc.delete_alert_subscription(db, user.id, sub_id):
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    return {"deleted": True}
+
+
+@router.get("/business/lineage")
+def business_lineage_graph(
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+    dataset: str | None = Query(None, description="Filter graph around this dataset name"),
+):
+    require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
+    require_permission(_role(request), Permissions.LINEAGE_VIEW)
+    return lineage_graph_payload(db, auto_seed=True, dataset_name=dataset)
+
+
+@router.post("/business/lineage/seed")
+def business_lineage_seed(
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+    force: bool = Query(False),
+):
+    require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
+    require_permission(_role(request), Permissions.LINEAGE_VIEW)
+    return seed_lineage_from_datasets(db, force=force)
+
+
+@router.delete("/business/data-requests/{request_id}")
+def business_cancel_data_request(
+    request: Request,
+    request_id: int,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
+    if not busvc.cancel_data_request(db, user.email, request_id):
+        raise HTTPException(status_code=404, detail="Pending request not found")
+    try:
+        esvc.create_notification(
+            db,
+            user_id=user.id,
+            subject="Data access request cancelled",
+            body=f"Your request #{request_id} was cancelled.",
+            severity="info",
+        )
+    except Exception:
+        pass
+    return {"cancelled": True}

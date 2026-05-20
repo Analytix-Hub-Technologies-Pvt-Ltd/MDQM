@@ -393,8 +393,14 @@ class EnterpriseDataset(Base):
     name = Column(String(255), nullable=False, unique=True)
     domain = Column(String(128), nullable=True, index=True)
     owner_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
+    job_id = Column(Integer, ForeignKey("metadata.jobs.job_id"), nullable=True, index=True)
     classification = Column(String(64), nullable=True)
     description = Column(Text, nullable=True)
+    tier = Column(String(32), nullable=True)
+    quality_score = Column(Integer, nullable=True)
+    record_count_label = Column(String(64), nullable=True)
+    pii = Column(Boolean, nullable=False, default=False)
+    steward_name = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
 
 
@@ -407,6 +413,36 @@ class EnterpriseGlossaryTerm(Base):
     definition = Column(Text, nullable=False)
     domain = Column(String(128), nullable=True, index=True)
     status = Column(String(32), nullable=False, default="draft", index=True)
+    tags = Column(JSON, nullable=True)
+    related_terms = Column(JSON, nullable=True)
+    owner_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class EnterpriseBusinessReport(Base):
+    __tablename__ = "business_reports"
+    __table_args__ = {"schema": "enterprise"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String(255), nullable=False)
+    report_type = Column(String(64), nullable=False)
+    dataset_name = Column(String(255), nullable=True)
+    status = Column(String(32), nullable=False, default="Certified")
+    quality_score = Column(Integer, nullable=True)
+    last_refreshed_label = Column(String(64), nullable=True)
+    external_url = Column(String(512), nullable=True)
+    user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class EnterpriseAlertSubscription(Base):
+    __tablename__ = "alert_subscriptions"
+    __table_args__ = {"schema": "enterprise"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=False, index=True)
+    dataset_name = Column(String(255), nullable=False)
+    threshold = Column(Integer, nullable=False, default=85)
     created_at = Column(DateTime, default=func.now(), nullable=False)
 
 
