@@ -1,7 +1,6 @@
 import EnterpriseDashboardShell from "../../components/enterprise/EnterpriseDashboardShell";
-import ClassicKpiSection from "./ClassicKpiSection";
-import RoleDashboardCore from "./RoleDashboardCore";
-import { BusinessUserOverviewExtra, renderBusinessUserTab } from "./panels/BusinessUserPanels";
+import BusinessUserOverview from "../../components/business/BusinessUserOverview";
+import { renderBusinessUserTab } from "./panels/BusinessUserPanels";
 
 const TABS = [
   { id: "catalog", label: "Data Catalog" },
@@ -19,18 +18,12 @@ export default function BusinessUserDashboard() {
   return (
     <EnterpriseDashboardShell
       title="Business user workspace"
-      subtitle="Read-only catalog, glossary, quality results, lineage, and self-service access requests backed by enterprise APIs."
+      subtitle="Catalog, quality scores, glossary, lineage, reports, and self-service data access."
       accent="teal"
       overviewLabel="Overview"
       tabs={TABS}
-      overview={
-        <div className="space-y-6">
-          <RoleDashboardCore endpoint="business-user" />
-          <BusinessUserOverviewExtra />
-        </div>
-      }
+      overview={<BusinessUserOverview />}
       renderTab={renderBusinessUserTab}
-      footer={<ClassicKpiSection />}
       hideTabBar
     />
   );

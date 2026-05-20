@@ -147,8 +147,85 @@ export async function enterpriseBusinessDataRequestCreate(body) {
   return apiClient.post("/api/enterprise/business/data-requests", body);
 }
 
+export async function enterpriseBusinessOverview() {
+  return apiClient.get("/api/enterprise/business/overview");
+}
+
+export async function enterpriseBusinessCatalog(params) {
+  const res = await apiClient.get("/api/enterprise/business/catalog", { params });
+  return { data: unwrapList(res) };
+}
+
+export async function enterpriseBusinessQualityScores(params) {
+  return apiClient.get("/api/enterprise/business/quality-scores", { params });
+}
+
+export async function enterpriseBusinessGlossary(params) {
+  const res = await apiClient.get("/api/enterprise/business/glossary", { params });
+  return { data: unwrapList(res) };
+}
+
+export async function enterpriseBusinessReports(params) {
+  return apiClient.get("/api/enterprise/business/reports", { params });
+}
+
+export async function enterpriseGovernanceBusinessReports(params) {
+  const res = await apiClient.get("/api/enterprise/governance/business-reports", { params });
+  return { data: unwrapList(res) };
+}
+
+export async function enterpriseGovernanceBusinessReportPublish(body) {
+  return apiClient.post("/api/enterprise/governance/business-reports", body);
+}
+
+export async function enterpriseGovernanceBusinessReportDelete(reportId) {
+  return apiClient.delete(`/api/enterprise/governance/business-reports/${reportId}`);
+}
+
+export async function enterpriseBusinessAlertSubscriptions() {
+  return apiClient.get("/api/enterprise/business/alert-subscriptions");
+}
+
+export async function enterpriseBusinessAlertSubscriptionCreate(body) {
+  return apiClient.post("/api/enterprise/business/alert-subscriptions", body);
+}
+
+export async function enterpriseBusinessAlertSubscriptionDelete(subId) {
+  return apiClient.delete(`/api/enterprise/business/alert-subscriptions/${subId}`);
+}
+
+export async function enterpriseBusinessAlertSubscriptionUpdate(subId, body) {
+  return apiClient.patch(`/api/enterprise/business/alert-subscriptions/${subId}`, body);
+}
+
+export async function enterpriseBusinessDataRequestCancel(requestId) {
+  return apiClient.delete(`/api/enterprise/business/data-requests/${requestId}`);
+}
+
+function readFilenameFromDisposition(header, fallback) {
+  const match = /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(header || "");
+  return match ? decodeURIComponent(match[1].replace(/"/g, "")) : fallback;
+}
+
+/** POST export — returns blob + filename for browser download. */
+export async function enterpriseReportsExportDownload(body) {
+  const res = await apiClient.post("/api/enterprise/reports/export", body, { responseType: "blob" });
+  const title = body?.payload?.title || "report";
+  const fallback = `${String(title).replace(/[^\w\-]+/g, "_") || "report"}.csv`;
+  const filename = readFilenameFromDisposition(res.headers?.["content-disposition"], fallback);
+  return { blob: res.data, filename };
+}
+
 export async function lineageGraph() {
   return apiClient.get("/api/lineage/graph");
+}
+
+export async function enterpriseBusinessLineage(params) {
+  return apiClient.get("/api/enterprise/business/lineage", { params });
+}
+
+export async function enterpriseBusinessLineageSeed(force = false) {
+  return apiClient.post("/api/enterprise/business/lineage/seed", null, { params: { force } });
 }
 
 export async function getAuditLogsPaged({ page = 1, pageSize = 20 } = {}) {

@@ -24,13 +24,21 @@ export default function EnterpriseDashboardShell({
   footer = null,
   /** When true, horizontal tabs are hidden (e.g. business user uses left sidebar links). */
   hideTabBar = false,
+  /** When false, no Overview tab — first tab in `tabs` is the default. */
+  showOverview = true,
+  /** Used when showOverview is false and URL has no valid ?tab= */
+  defaultTab = null,
 }) {
   const [searchParams, setSearchParams] = useSearchParams();
-  const tabDefs = useMemo(() => [{ id: "overview", label: overviewLabel || "Overview" }, ...tabs], [tabs, overviewLabel]);
+  const tabDefs = useMemo(
+    () => (showOverview ? [{ id: "overview", label: overviewLabel || "Overview" }, ...tabs] : tabs),
+    [tabs, overviewLabel, showOverview],
+  );
   const validIds = useMemo(() => new Set(tabDefs.map((t) => t.id)), [tabDefs]);
+  const fallbackTab = showOverview ? "overview" : defaultTab || tabs[0]?.id || "overview";
 
   const rawTab = searchParams.get("tab");
-  const activeId = rawTab && validIds.has(rawTab) ? rawTab : "overview";
+  const activeId = rawTab && validIds.has(rawTab) ? rawTab : fallbackTab;
 
   const gradient = accentClassMap[accent] || accentClassMap.blue;
 

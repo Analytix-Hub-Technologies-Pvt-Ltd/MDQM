@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import EnterpriseDataPanel, { StatusBadge } from "../../../components/enterprise/EnterpriseDataPanel";
 import {
@@ -9,6 +9,9 @@ import {
   enterpriseGovernanceGlossaryCreate,
   enterpriseGovernancePolicies,
   enterpriseGovernancePolicyCreate,
+  enterpriseGovernanceBusinessReports,
+  enterpriseGovernanceBusinessReportPublish,
+  enterpriseGovernanceBusinessReportDelete,
 } from "../enterpriseApi";
 
 const dsCols = [
@@ -36,6 +39,36 @@ const accessCols = [
   { key: "request_ref", label: "Ref" },
   { key: "status", label: "Status", render: (v) => <StatusBadge status={v} /> },
   { key: "created_at", label: "Created" },
+];
+
+const reportCols = [
+  { key: "title", label: "Report" },
+  { key: "report_type", label: "Type" },
+  { key: "dataset_name", label: "Source dataset" },
+  { key: "status", label: "Status", render: (v) => <StatusBadge status={v} /> },
+  { key: "quality_score", label: "Score" },
+  { key: "last_refreshed", label: "Refreshed" },
+  {
+    key: "id",
+    label: "",
+    render: (_, row) => (
+      <button
+        type="button"
+        className="text-xs text-red-400 underline"
+        onClick={async () => {
+          if (!window.confirm(`Remove report "${row.title}"?`)) return;
+          try {
+            await enterpriseGovernanceBusinessReportDelete(row.id);
+            window.dispatchEvent(new CustomEvent("mdqm-owner-reports-refresh"));
+          } catch {
+            /* ignore */
+          }
+        }}
+      >
+        Delete
+      </button>
+    ),
+  },
 ];
 
 function GovernanceDatasetSection() {
@@ -74,6 +107,149 @@ function GovernancePoliciesSection() {
         searchPlaceholder="Policy name…"
         fetchPage={({ page, pageSize, query }) =>
           enterpriseGovernancePolicies({
+            page,
+            page_size: pageSize,
+            ...(query ? { q: query } : {}),
+          })
+        }
+      />
+    </div>
+  );
+}
+
+function BusinessReportsPublishSection() {
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [title, setTitle] = useState("");
+  const [reportType, setReportType] = useState("BI Dashboard");
+  const [datasetName, setDatasetName] = useState("");
+  const [status, setStatus] = useState("Certified");
+  const [score, setScore] = useState("");
+  const [refreshed, setRefreshed] = useState("");
+  const [url, setUrl] = useState("");
+  const [msg, setMsg] = useState("");
+  const [datasetOptions, setDatasetOptions] = useState([]);
+
+  useEffect(() => {
+    enterpriseGovernanceDatasets({ page: 1, page_size: 200 })
+      .then((res) => {
+        const items = res?.data?.items ?? [];
+        setDatasetOptions(items.map((d) => d.name).filter(Boolean));
+      })
+      .catch(() => setDatasetOptions([]));
+  }, []);
+
+  useEffect(() => {
+    const h = () => setRefreshKey((k) => k + 1);
+    window.addEventListener("mdqm-owner-reports-refresh", h);
+    return () => window.removeEventListener("mdqm-owner-reports-refresh", h);
+  }, []);
+
+  const onPublish = async (e) => {
+    e.preventDefault();
+    setMsg("");
+    try {
+      await enterpriseGovernanceBusinessReportPublish({
+        title: title.trim(),
+        report_type: reportType,
+        dataset_name: datasetName.trim() || null,
+        status,
+        quality_score: score === "" ? null : Number(score),
+        last_refreshed_label: refreshed.trim() || null,
+        external_url: url.trim() || null,
+      });
+      setMsg("Published — visible under Business user → My reports.");
+      setTitle("");
+      setRefreshed("");
+      setUrl("");
+      setRefreshKey((k) => k + 1);
+    } catch (err) {
+      setMsg(err?.response?.data?.detail || "Publish failed");
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="enterprise-card p-4 text-sm">
+        <h3 className="enterprise-title text-sm mb-1">Publish report for business users</h3>
+        <p className="text-xs text-[#7f95b6] mb-3">
+          Reports you add here appear on the Business user workspace → My reports. No SQL required.
+        </p>
+        <form onSubmit={onPublish} className="grid sm:grid-cols-2 gap-2 text-[#d7e3f7]">
+          <input
+            className="border border-[#2a3f63] bg-[#0f1b31] rounded px-2 py-2 sm:col-span-2"
+            placeholder="Report title *"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            required
+          />
+          <select
+            className="border border-[#2a3f63] bg-[#0f1b31] rounded px-2 py-2"
+            value={reportType}
+            onChange={(e) => setReportType(e.target.value)}
+          >
+            {["BI Dashboard", "Financial Report", "Analytics", "Compliance", "HR Analytics"].map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+          <select
+            className="border border-[#2a3f63] bg-[#0f1b31] rounded px-2 py-2"
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+          >
+            {["Certified", "Stale", "Outdated"].map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+          <select
+            className="border border-[#2a3f63] bg-[#0f1b31] rounded px-2 py-2 sm:col-span-2"
+            value={datasetName}
+            onChange={(e) => setDatasetName(e.target.value)}
+          >
+            <option value="">Source dataset (optional)</option>
+            {datasetOptions.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+          <input
+            className="border border-[#2a3f63] bg-[#0f1b31] rounded px-2 py-2"
+            placeholder="Quality score 0–100 (optional)"
+            value={score}
+            onChange={(e) => setScore(e.target.value)}
+            type="number"
+            min={0}
+            max={100}
+          />
+          <input
+            className="border border-[#2a3f63] bg-[#0f1b31] rounded px-2 py-2"
+            placeholder="Last refresh e.g. 1h ago"
+            value={refreshed}
+            onChange={(e) => setRefreshed(e.target.value)}
+          />
+          <input
+            className="border border-[#2a3f63] bg-[#0f1b31] rounded px-2 py-2 sm:col-span-2"
+            placeholder="Open URL (optional, for Open button)"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+          />
+          <button type="submit" className="sm:col-span-2 text-xs bg-[#2b7fff] text-white py-2 rounded uppercase tracking-wide">
+            Publish to My reports
+          </button>
+        </form>
+        {msg ? <p className="text-xs text-[#9ab0d1] mt-2">{msg}</p> : null}
+      </div>
+      <EnterpriseDataPanel
+        key={`br-${refreshKey}`}
+        title="Published reports"
+        columns={reportCols}
+        searchPlaceholder="Search title or dataset…"
+        fetchPage={({ page, pageSize, query }) =>
+          enterpriseGovernanceBusinessReports({
             page,
             page_size: pageSize,
             ...(query ? { q: query } : {}),
@@ -279,6 +455,8 @@ export function renderOwnerTab(tabId) {
       return <GovernancePoliciesSection />;
     case "glossary":
       return <GovernanceGlossarySection />;
+    case "business-reports":
+      return <BusinessReportsPublishSection />;
     case "access-requests":
       return (
         <EnterpriseDataPanel

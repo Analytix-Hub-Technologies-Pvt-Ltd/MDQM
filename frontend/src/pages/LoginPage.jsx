@@ -39,7 +39,7 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen bg-[#FBFBFB] flex items-center justify-center p-6 text-[#23243B]">
-      <div className="w-full max-w-md bg-white border border-gray-200 p-6 text-[#23243B]">
+      <div className="auth-surface-light w-full max-w-md bg-white border border-gray-200 p-6 text-[#23243B] shadow-sm">
         <h1 className="text-2xl tracking-wide uppercase text-[#23243B] mb-6">MDQM Login</h1>
         <form className="space-y-4" onSubmit={onSubmit}>
           <input

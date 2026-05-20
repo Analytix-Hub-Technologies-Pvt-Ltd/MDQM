@@ -15,6 +15,7 @@ import ProtectedRoute from "./auth/ProtectedRoute";
 import { useAuth } from "./auth/AuthContext";
 import PermissionGuard from "./auth/PermissionGuard";
 import { PERMISSIONS } from "./auth/permissions";
+import GovernanceRoute from "./pages/GovernanceRoute";
 
 function PlaceholderPage({ title, description }) {
   return (
@@ -68,7 +69,14 @@ function AppShell() {
                 </PermissionGuard>
               }
             />
-            <Route path="/governance" element={<PlaceholderPage title="Governance" description="Metadata catalog and policy management workspace." />} />
+            <Route
+              path="/governance"
+              element={
+                <PermissionGuard require={PERMISSIONS.GOVERNANCE_VIEW}>
+                  <GovernanceRoute />
+                </PermissionGuard>
+              }
+            />
             <Route path="/compliance" element={<PlaceholderPage title="Compliance" description="Compliance posture, policy attestations, and violations." />} />
             <Route path="/reports" element={<PlaceholderPage title="Reports" description="Role-based enterprise reporting and exports." />} />
             <Route path="/lineage" element={<PlaceholderPage title="Lineage" description="Data lineage graph and impact analysis." />} />

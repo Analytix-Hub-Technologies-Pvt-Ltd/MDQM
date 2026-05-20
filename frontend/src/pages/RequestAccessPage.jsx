@@ -2,6 +2,9 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { submitAccessRequest } from "../api";
 
+const fieldClass =
+  "w-full border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-500 focus:border-[#23243B] focus:outline-none focus:ring-1 focus:ring-[#23243B]/30";
+
 const getApiErrorMessage = (err, fallback) => {
   const detail = err?.response?.data?.detail;
   if (typeof detail === "string") return detail;
@@ -47,15 +50,15 @@ export default function RequestAccessPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#FBFBFB] flex items-center justify-center p-6">
-      <div className="w-full max-w-xl bg-white border border-gray-200 p-6">
+    <div className="min-h-screen bg-[#FBFBFB] flex items-center justify-center p-6 text-[#23243B]">
+      <div className="auth-surface-light w-full max-w-xl bg-white border border-gray-200 p-6 shadow-sm">
         <h1 className="text-xl uppercase tracking-widest text-[#23243B] mb-5">Request Access</h1>
         <form className="space-y-3" onSubmit={onSubmit}>
-          <input className="w-full border border-gray-300 px-3 py-2" placeholder="Full name" value={form.full_name} onChange={(e) => onChange("full_name", e.target.value)} required />
-          <input className="w-full border border-gray-300 px-3 py-2" placeholder="Username" value={form.username} onChange={(e) => onChange("username", e.target.value)} required autoComplete="username" />
-          <input className="w-full border border-gray-300 px-3 py-2" placeholder="Company email" type="email" value={form.email} onChange={(e) => onChange("email", e.target.value)} required />
-          <input className="w-full border border-gray-300 px-3 py-2" placeholder="Department" value={form.department} onChange={(e) => onChange("department", e.target.value)} />
-          <textarea className="w-full border border-gray-300 px-3 py-2 min-h-[110px]" placeholder="Reason for access" value={form.reason} onChange={(e) => onChange("reason", e.target.value)} />
+          <input className={fieldClass} placeholder="Full name" value={form.full_name} onChange={(e) => onChange("full_name", e.target.value)} required />
+          <input className={fieldClass} placeholder="Username" value={form.username} onChange={(e) => onChange("username", e.target.value)} required autoComplete="username" />
+          <input className={fieldClass} placeholder="Company email" type="email" value={form.email} onChange={(e) => onChange("email", e.target.value)} required />
+          <input className={fieldClass} placeholder="Department" value={form.department} onChange={(e) => onChange("department", e.target.value)} />
+          <textarea className={`${fieldClass} min-h-[110px] resize-y`} placeholder="Reason for access" value={form.reason} onChange={(e) => onChange("reason", e.target.value)} required />
           {status && <div className="text-sm text-green-700">{status}</div>}
           {error && <div className="text-sm text-red-600">{error}</div>}
           <div className="flex gap-2">

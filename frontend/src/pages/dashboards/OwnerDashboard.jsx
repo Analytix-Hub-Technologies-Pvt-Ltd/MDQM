@@ -7,6 +7,7 @@ const TABS = [
   { id: "datasets", label: "Datasets" },
   { id: "policies", label: "Policies" },
   { id: "glossary", label: "Glossary" },
+  { id: "business-reports", label: "Business reports" },
   { id: "access-requests", label: "Access Requests" },
   { id: "certifications", label: "Certifications" },
   { id: "lineage", label: "Lineage" },

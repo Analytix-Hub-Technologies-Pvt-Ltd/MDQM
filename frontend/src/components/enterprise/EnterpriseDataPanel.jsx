@@ -16,7 +16,14 @@ function StatusBadge({ status }) {
  * Paginated data panel with search, loading / empty / error states.
  * fetchPage: async ({ page, pageSize, query }) => { items, total, page, page_size }
  */
-export default function EnterpriseDataPanel({ title, columns, fetchPage, pageSize = 10, searchPlaceholder = "Search…" }) {
+export default function EnterpriseDataPanel({
+  title,
+  columns,
+  fetchPage,
+  pageSize = 10,
+  searchPlaceholder = "Search…",
+  emptyMessage = "No records match your filters.",
+}) {
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -73,7 +80,7 @@ export default function EnterpriseDataPanel({ title, columns, fetchPage, pageSiz
       {loading ? (
         <p className="text-sm text-[#9ab0d1] py-8 text-center">Loading…</p>
       ) : !items.length ? (
-        <p className="text-sm text-[#7f95b6] py-8 text-center">No records match your filters.</p>
+        <p className="text-sm text-[#7f95b6] py-8 text-center">{emptyMessage}</p>
       ) : (
         <div className="mdqm-scroll-x overflow-x-auto rounded-md border border-[#22324f]">
           <table className="w-full text-sm min-w-[520px]">

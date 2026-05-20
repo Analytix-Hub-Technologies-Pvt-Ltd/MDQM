@@ -61,3 +61,16 @@ body {
 .mdqm-scroll-x::-webkit-scrollbar-thumb:hover {
   background: rgba(79, 140, 255, 0.55);
 }
+
+/* Light auth cards (login, request access) — do not inherit dark dashboard text */
+.auth-surface-light,
+.auth-surface-light input,
+.auth-surface-light textarea {
+  color: #111827;
+}
+
+.auth-surface-light input::placeholder,
+.auth-surface-light textarea::placeholder {
+  color: #6b7280;
+  opacity: 1;
+}

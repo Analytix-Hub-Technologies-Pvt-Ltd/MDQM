@@ -2,6 +2,9 @@ import { useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { completeInvite } from "../api";
 
+const fieldClass =
+  "w-full border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-500 focus:border-[#23243B] focus:outline-none focus:ring-1 focus:ring-[#23243B]/30";
+
 const getApiErrorMessage = (err, fallback) => {
   const detail = err?.response?.data?.detail;
   if (typeof detail === "string") return detail;
@@ -56,25 +59,27 @@ export default function CompleteInvitePage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#FBFBFB] flex items-center justify-center p-6">
-      <div className="w-full max-w-md bg-white border border-gray-200 p-6">
+    <div className="min-h-screen bg-[#FBFBFB] flex items-center justify-center p-6 text-[#23243B]">
+      <div className="auth-surface-light w-full max-w-md bg-white border border-gray-200 p-6 shadow-sm">
         <h1 className="text-xl tracking-wide uppercase text-[#23243B] mb-5">Set your password</h1>
         <form className="space-y-3" onSubmit={onSubmit}>
           <input
-            className="w-full border border-gray-300 px-3 py-2"
+            className={fieldClass}
             type="password"
             placeholder="New password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
+            autoComplete="new-password"
           />
           <input
-            className="w-full border border-gray-300 px-3 py-2"
+            className={fieldClass}
             type="password"
             placeholder="Confirm password"
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
             required
+            autoComplete="new-password"
           />
           {msg && <div className="text-sm text-green-700">{msg}</div>}
           {error && <div className="text-sm text-red-600">{error}</div>}
