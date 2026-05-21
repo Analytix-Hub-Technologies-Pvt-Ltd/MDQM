@@ -369,11 +369,17 @@ class DatasetCreateBody(BaseModel):
     domain: str | None = None
     classification: str | None = None
     description: str | None = None
+    job_id: int | None = Field(None, ge=1)
 
 
 @router.post("/governance/datasets")
 def governance_dataset_create(request: Request, body: DatasetCreateBody, db: Session = Depends(_db), user: models.User = Depends(get_current_user)):
     require_any_permission(_role(request), Permissions.DASHBOARD_OWNER, Permissions.GOVERNANCE_VIEW, Permissions.ADMIN_VIEW)
+    jid = body.job_id
+    if jid is not None:
+        job_row = db.query(models.Job).filter(models.Job.job_id == jid).first()
+        if not job_row:
+            raise HTTPException(status_code=400, detail="job_id does not match an existing job.")
     try:
         row = esvc.create_dataset(
             db,
@@ -382,6 +388,7 @@ def governance_dataset_create(request: Request, body: DatasetCreateBody, db: Ses
             classification=body.classification,
             description=body.description,
             owner_user_id=user.id,
+            job_id=jid,
         )
     except IntegrityError:
         db.rollback()
@@ -395,7 +402,28 @@ def governance_dataset_create(request: Request, body: DatasetCreateBody, db: Ses
         ip_address=request.client.host if request.client else None,
         new_values={"name": row.name},
     )
-    return {"id": row.id, "name": row.name}
+    return {"id": row.id, "name": row.name, "job_id": row.job_id}
+
+
+@router.get("/governance/datasets/{dataset_id}/preview")
+def governance_dataset_preview(
+    dataset_id: int,
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_any_permission(
+        _role(request),
+        Permissions.DASHBOARD_OWNER,
+        Permissions.DASHBOARD_CDO,
+        Permissions.DASHBOARD_BUSINESS_USER,
+        Permissions.GOVERNANCE_VIEW,
+        Permissions.ADMIN_VIEW,
+    )
+    preview = esvc.build_dataset_inventory_preview(db, dataset_id)
+    if preview is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return preview
 
 
 class BusinessReportPublishBody(BaseModel):
@@ -499,9 +527,75 @@ def governance_access_requests(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     status: str | None = None,
+    q: str | None = None,
+    history: bool = Query(False),
+):
+    """Business-user data access queue for data owners (auth.access_requests)."""
+    require_any_permission(_role(request), Permissions.DASHBOARD_OWNER, Permissions.GOVERNANCE_VIEW, Permissions.ADMIN_VIEW)
+    return esvc.list_governance_auth_data_access_requests(db, page, page_size, status, q, history=history)
+
+
+@router.post("/governance/access-requests/{request_id}/approve")
+def governance_approve_data_access_request(
+    request_id: int,
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
 ):
     require_any_permission(_role(request), Permissions.DASHBOARD_OWNER, Permissions.GOVERNANCE_VIEW, Permissions.ADMIN_VIEW)
-    return esvc.list_access_requests(db, page, page_size, status)
+    try:
+        row = esvc.approve_governance_data_access_request(db, request_id, user)
+    except ValueError as exc:
+        code = str(exc)
+        if code == "pending_not_found":
+            raise HTTPException(status_code=404, detail="Pending request not found")
+        if code == "not_data_request":
+            raise HTTPException(status_code=400, detail="Not a dataset access request")
+        if code == "no_user_account":
+            raise HTTPException(
+                status_code=400,
+                detail="Requester has no login yet — use Admin → Access requests to approve signup first.",
+            )
+        raise HTTPException(status_code=400, detail="Cannot approve request")
+    write_audit_log(
+        db,
+        user_id=user.id,
+        action="governance.approve_data_access_request",
+        entity_type="access_request",
+        entity_id=str(request_id),
+        ip_address=request.client.host if request.client else None,
+        new_values={"status": "approved", "dataset": row.dataset_name},
+    )
+    return {"message": "Request approved", "id": row.id, "status": row.status}
+
+
+@router.post("/governance/access-requests/{request_id}/reject")
+def governance_reject_data_access_request(
+    request_id: int,
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_any_permission(_role(request), Permissions.DASHBOARD_OWNER, Permissions.GOVERNANCE_VIEW, Permissions.ADMIN_VIEW)
+    try:
+        row = esvc.reject_governance_data_access_request(db, request_id, user)
+    except ValueError as exc:
+        code = str(exc)
+        if code == "pending_not_found":
+            raise HTTPException(status_code=404, detail="Pending request not found")
+        if code == "not_data_request":
+            raise HTTPException(status_code=400, detail="Not a dataset access request")
+        raise HTTPException(status_code=400, detail="Cannot reject request")
+    write_audit_log(
+        db,
+        user_id=user.id,
+        action="governance.reject_data_access_request",
+        entity_type="access_request",
+        entity_id=str(request_id),
+        ip_address=request.client.host if request.client else None,
+        new_values={"status": "rejected", "dataset": row.dataset_name},
+    )
+    return {"message": "Request rejected", "id": row.id, "status": row.status}
 
 
 @router.get("/governance/glossary")
@@ -815,6 +909,20 @@ def business_catalog(
 ):
     require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
     return busvc.list_catalog(db, page, page_size, q, user_email=user.email)
+
+
+@router.get("/business/catalog/{dataset_id}/detail")
+def business_catalog_dataset_detail(
+    dataset_id: int,
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
+    detail = busvc.build_business_catalog_dataset_detail(db, dataset_id, user_email=user.email)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return detail
 
 
 @router.get("/business/quality-scores")

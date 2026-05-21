@@ -589,7 +589,15 @@ def get_tables_for_job(job_id: int, db: Session = Depends(get_db)):
             models.TableStats.table_id == t.table_id
         ).order_by(models.TableStats.stat_id.desc()).first()
         
-        rules_count = db.query(models.Rule).filter(models.Rule.table_id == t.table_id).count()
+        rules_count = (
+            db.query(models.Rule)
+            .filter(
+                models.Rule.job_id == job_id,
+                models.Rule.table_id == t.table_id,
+                models.Rule.is_active.is_(True),
+            )
+            .count()
+        )
         
         col_count = db.query(models.ColumnMetadata).filter(
             models.ColumnMetadata.job_id == job_id, 

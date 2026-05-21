@@ -22,17 +22,37 @@ _DEV_DEFAULT_USER = "postgres"
 _DEV_DEFAULT_DB = "mdms"
 
 
+def env_file_path() -> Path:
+    return _BACKEND_DIR / ".env"
+
+
+def require_local_env_file() -> None:
+    """Fail fast in local dev when backend/.env is missing (new environment setup)."""
+    if is_production():
+        return
+    if env_file_path().is_file():
+        return
+    example = _BACKEND_DIR / ".env.example"
+    hint = (
+        f" Copy {example.name} to .env in the backend folder and set PostgreSQL credentials, "
+        "JWT_SECRET, MDQM_BOOTSTRAP_SECRET, and other required values."
+        if example.is_file()
+        else " Create backend/.env with PostgreSQL credentials, JWT_SECRET, and MDQM_BOOTSTRAP_SECRET."
+    )
+    raise RuntimeError(
+        "Missing backend/.env file." + hint
+    )
+
+
 def load_env() -> None:
     """Load backend/.env for local dev only. Never override platform env on Render/production."""
     if is_production():
         return
-    if (os.getenv("DATABASE_URL") or "").strip():
-        return
-    env_path = _BACKEND_DIR / ".env"
-    if env_path.is_file():
-        from dotenv import load_dotenv
+    require_local_env_file()
+    env_path = env_file_path()
+    from dotenv import load_dotenv
 
-        load_dotenv(env_path, override=False)
+    load_dotenv(env_path, override=False)
 
 
 def is_production() -> bool:

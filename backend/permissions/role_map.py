@@ -58,6 +58,7 @@ ROLE_PERMISSION_MAP = {
         Permissions.REPORTS_VIEW,
         Permissions.GOVERNANCE_VIEW,
         Permissions.JOBS_VIEW,
+        Permissions.RULES_VIEW,
         Permissions.STEWARDSHIP_VIEW,
         Permissions.COMPLIANCE_VIEW,
         Permissions.LINEAGE_VIEW,

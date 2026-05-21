@@ -5,9 +5,12 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import re
 from datetime import datetime
 from typing import Any
+
+import pandas as pd
 
 from sqlalchemy import func, or_, text
 from sqlalchemy.exc import ProgrammingError
@@ -384,6 +387,13 @@ def list_policies(db: Session, page: int, page_size: int, domain: str | None, na
     return paginated_response(items, total, page, page_size)
 
 
+def _ellipsis_text(text: str | None, max_len: int = 280) -> str:
+    s = text or ""
+    if len(s) <= max_len:
+        return s
+    return s[:max_len] + "…"
+
+
 def create_policy(db: Session, *, policy_name: str, domain: str | None, content: str | None, owner_user_id: int | None):
     row = models.EnterprisePolicy(policy_name=policy_name, domain=domain, content=content, owner_user_id=owner_user_id)
     db.add(row)
@@ -400,6 +410,7 @@ def create_dataset(
     classification: str | None,
     description: str | None,
     owner_user_id: int | None,
+    job_id: int | None = None,
 ) -> models.EnterpriseDataset:
     row = models.EnterpriseDataset(
         name=name.strip(),
@@ -407,11 +418,102 @@ def create_dataset(
         classification=classification,
         description=description,
         owner_user_id=owner_user_id,
+        job_id=job_id,
     )
     db.add(row)
     db.commit()
     db.refresh(row)
     return row
+
+
+def compute_dataset_scores(db: Session, row: models.EnterpriseDataset) -> dict[str, Any]:
+    """
+    EDA score: exploratory profile of ingested CSVs (column completeness / null rate).
+    DQ score: validation outcomes from the latest TableStats per table on the linked job.
+    """
+    from services import business_user_service as busvc
+
+    job_id = busvc._resolve_job_id(db, row)
+    out: dict[str, Any] = {
+        "job_id": job_id,
+        "eda_score": None,
+        "eda_score_source": "none",
+        "dq_score": None,
+        "dq_score_source": "none",
+        "dq_job_linked": bool(job_id),
+        "has_dq_run": False,
+    }
+
+    if row.quality_score is not None:
+        out["dq_score"] = int(row.quality_score)
+        out["dq_score_source"] = "manual"
+        out["has_dq_run"] = True
+
+    if job_id:
+        from utils.upload_paths import resolve_table_csv_path
+
+        tables = (
+            db.query(models.TableMetadata)
+            .filter(models.TableMetadata.job_id == job_id)
+            .order_by(models.TableMetadata.table_id.asc())
+            .all()
+        )
+
+        eda_parts: list[float] = []
+        eda_weights: list[int] = []
+        for t in tables:
+            csv_path = resolve_table_csv_path(job_id, t.table_name)
+            if not csv_path:
+                continue
+            try:
+                df = pd.read_csv(csv_path)
+            except Exception:
+                continue
+            if df.empty or len(df.columns) == 0:
+                continue
+            col_completeness = [float(df[c].notna().mean()) * 100.0 for c in df.columns]
+            table_eda = sum(col_completeness) / len(col_completeness)
+            eda_parts.append(table_eda)
+            eda_weights.append(len(df))
+
+        if eda_parts:
+            if sum(eda_weights) > 0:
+                out["eda_score"] = round(
+                    sum(s * w for s, w in zip(eda_parts, eda_weights)) / sum(eda_weights), 1
+                )
+            else:
+                out["eda_score"] = round(sum(eda_parts) / len(eda_parts), 1)
+            out["eda_score_source"] = "csv_profile"
+        elif tables:
+            out["eda_score_source"] = "no_csv"
+
+        if out["dq_score"] is None:
+            total_rows = 0
+            good_rows = 0
+            has_run = False
+            for t in tables:
+                st = (
+                    db.query(models.TableStats)
+                    .filter(
+                        models.TableStats.job_id == job_id,
+                        models.TableStats.table_id == t.table_id,
+                    )
+                    .order_by(models.TableStats.stat_id.desc())
+                    .first()
+                )
+                if not st or not (st.total_rows or 0):
+                    continue
+                has_run = True
+                total_rows += int(st.total_rows or 0)
+                good_rows += int(st.good_rows or 0)
+            if has_run and total_rows > 0:
+                out["dq_score"] = round((good_rows / total_rows) * 100.0, 1)
+                out["dq_score_source"] = "job_stats"
+                out["has_dq_run"] = True
+            elif tables:
+                out["dq_score_source"] = "pending"
+
+    return out
 
 
 def list_datasets(db: Session, page: int, page_size: int, name_q: str | None = None):
@@ -421,18 +523,176 @@ def list_datasets(db: Session, page: int, page_size: int, name_q: str | None = N
         q = q.filter(models.EnterpriseDataset.name.ilike(f"%{name_q}%"))
     total = q.count()
     rows = q.offset(offset).limit(page_size).all()
-    items = [
-        {
-            "id": r.id,
-            "name": r.name,
-            "domain": r.domain,
-            "owner_user_id": r.owner_user_id,
-            "classification": r.classification,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
-        }
-        for r in rows
-    ]
+    items = []
+    for r in rows:
+        scores = compute_dataset_scores(db, r)
+        items.append(
+            {
+                "id": r.id,
+                "name": r.name,
+                "domain": r.domain,
+                "owner_user_id": r.owner_user_id,
+                "job_id": scores.get("job_id") or r.job_id,
+                "classification": r.classification,
+                "description": _ellipsis_text(r.description),
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "eda_score": scores.get("eda_score"),
+                "eda_score_source": scores.get("eda_score_source"),
+                "dq_score": scores.get("dq_score"),
+                "dq_score_source": scores.get("dq_score_source"),
+                "dq_job_linked": scores.get("dq_job_linked"),
+                "has_dq_run": scores.get("has_dq_run"),
+            }
+        )
     return paginated_response(items, total, page, page_size)
+
+
+def _dataset_refresh_meta(job_row: models.Job | None) -> dict[str, Any]:
+    if not job_row:
+        return {
+            "available": False,
+            "kind": None,
+            "manual_connection": False,
+            "stored_password_available": False,
+            "encryption_configured": False,
+        }
+    cfg = getattr(job_row, "db_source_config", None) or {}
+    if not isinstance(cfg, dict) or cfg.get("kind") != "postgres_tables":
+        return {
+            "available": False,
+            "kind": cfg.get("kind") if isinstance(cfg, dict) else None,
+            "manual_connection": False,
+            "stored_password_available": False,
+            "encryption_configured": False,
+        }
+    has_blob = bool(cfg.get("encrypted_db_pass"))
+    try:
+        from utils.source_secret_crypto import encryption_available
+
+        enc_avail = encryption_available()
+    except Exception:
+        enc_avail = False
+
+    cid_raw = cfg.get("connection_id")
+    has_saved_conn = False
+    if cid_raw is not None:
+        crs = str(cid_raw).strip()
+        if crs and crs.lower() not in ("null", "nan"):
+            try:
+                int(float(crs))
+                has_saved_conn = True
+            except (ValueError, TypeError):
+                has_saved_conn = False
+
+    stored_ok = bool(enc_avail and has_blob)
+    # Manual password in UI only when neither encrypted job secret nor saved connection id applies.
+    manual_connection = not stored_ok and not has_saved_conn
+
+    return {
+        "available": True,
+        "kind": "postgres_tables",
+        "manual_connection": manual_connection,
+        "stored_password_available": stored_ok,
+        "encryption_configured": bool(enc_avail),
+    }
+
+
+def build_dataset_inventory_preview(
+    db: Session, dataset_id: int, *, sample_rows: int = 15
+) -> dict[str, Any] | None:
+    """
+    Catalog dataset + linked DQ job: column metadata and a small CSV sample per table.
+    """
+    row = db.query(models.EnterpriseDataset).filter(models.EnterpriseDataset.id == dataset_id).first()
+    if not row:
+        return None
+
+    from services import business_user_service as busvc
+
+    job_id = row.job_id or busvc._resolve_job_id(db, row)
+    score_meta = compute_dataset_scores(db, row)
+    base = {
+        "dataset": {
+            "id": row.id,
+            "name": row.name,
+            "domain": row.domain,
+            "classification": row.classification,
+            "description": row.description,
+            "catalog_job_id": row.job_id,
+            "eda_score": score_meta.get("eda_score"),
+            "dq_score": score_meta.get("dq_score"),
+            "eda_score_source": score_meta.get("eda_score_source"),
+            "dq_score_source": score_meta.get("dq_score_source"),
+        },
+    }
+    if not job_id:
+        return {
+            **base,
+            "linked_job": None,
+            "tables": [],
+            "hint": "No MDQM job is linked to this catalog entry. Create again from Data Owner (links automatically) or ensure the dataset name matches the job name.",
+            "refresh": {
+                "available": False,
+                "kind": None,
+                "manual_connection": False,
+                "stored_password_available": False,
+                "encryption_configured": False,
+            },
+        }
+
+    job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+    tables_meta = (
+        db.query(models.TableMetadata)
+        .filter(models.TableMetadata.job_id == job_id)
+        .order_by(models.TableMetadata.table_id.asc())
+        .all()
+    )
+    from utils.upload_paths import resolve_table_csv_path
+
+    out_tables: list[dict[str, Any]] = []
+    for t in tables_meta:
+        cols = (
+            db.query(models.ColumnMetadata)
+            .filter(
+                models.ColumnMetadata.job_id == job_id,
+                models.ColumnMetadata.table_id == t.table_id,
+            )
+            .order_by(models.ColumnMetadata.column_name.asc())
+            .all()
+        )
+        col_list = [{"name": c.column_name, "data_type": c.data_type} for c in cols]
+        sample: list[dict[str, Any]] = []
+        csv_path = resolve_table_csv_path(job_id, t.table_name)
+        if csv_path:
+            try:
+                df = pd.read_csv(csv_path, nrows=sample_rows)
+                sample = df.fillna("").astype(str).to_dict(orient="records")
+            except Exception:
+                sample = []
+        rel_source = None
+        if csv_path:
+            rel_source = os.path.relpath(csv_path, "uploads").replace("\\", "/")
+        out_tables.append(
+            {
+                "table_id": t.table_id,
+                "table_name": t.table_name,
+                "row_count": t.row_count,
+                "columns": col_list,
+                "sample_rows": sample,
+                "source_file": rel_source,
+            }
+        )
+
+    return {
+        **base,
+        "linked_job": {
+            "job_id": job_id,
+            "job_name": job.job_name if job else None,
+            "status": job.status if job else None,
+        },
+        "refresh": _dataset_refresh_meta(job),
+        "tables": out_tables,
+    }
 
 
 def list_glossary(db: Session, page: int, page_size: int, q: str | None):
@@ -747,4 +1007,142 @@ def create_auth_access_request(
     db.add(row)
     db.commit()
     db.refresh(row)
+    notify_owners_new_data_access_request(db, row)
     return row
+
+
+def _stamp_access_request_approver(req: models.AccessRequest, reviewer: models.User) -> None:
+    req.approver_name = (reviewer.full_name or reviewer.username or reviewer.email or "Reviewer").strip()[:255]
+
+
+def list_governance_auth_data_access_requests(
+    db: Session,
+    page: int,
+    page_size: int,
+    status: str | None = None,
+    q: str | None = None,
+    *,
+    history: bool = False,
+):
+    """Business-user dataset access requests (auth.access_requests with dataset_name)."""
+    from sqlalchemy import or_
+
+    offset, page_size = _page_bounds(page, page_size)
+    query = db.query(models.AccessRequest).filter(
+        models.AccessRequest.dataset_name.isnot(None),
+        models.AccessRequest.dataset_name != "",
+    )
+    if history:
+        query = query.filter(func.lower(models.AccessRequest.status) != "pending")
+    elif status and str(status).strip():
+        query = query.filter(func.lower(models.AccessRequest.status) == str(status).strip().lower())
+    if q and str(q).strip():
+        term = f"%{str(q).strip()}%"
+        query = query.filter(
+            or_(
+                models.AccessRequest.dataset_name.ilike(term),
+                models.AccessRequest.email.ilike(term),
+                models.AccessRequest.full_name.ilike(term),
+                models.AccessRequest.reason.ilike(term),
+            )
+        )
+    query = query.order_by(models.AccessRequest.requested_at.desc())
+    total = query.count()
+    rows = query.offset(offset).limit(page_size).all()
+    items = [
+        {
+            "id": r.id,
+            "requester": r.full_name,
+            "email": r.email,
+            "dataset_name": r.dataset_name,
+            "access_type": r.access_type,
+            "duration": r.duration,
+            "reason": r.reason,
+            "department": r.department,
+            "status": r.status,
+            "requested_at": r.requested_at.isoformat() if r.requested_at else None,
+            "approver_name": r.approver_name,
+        }
+        for r in rows
+    ]
+    return paginated_response(items, total, page, page_size)
+
+
+def notify_owners_new_data_access_request(db: Session, row: models.AccessRequest) -> None:
+    """Alert data owners that a business user submitted a dataset access request."""
+    if not row.dataset_name:
+        return
+    owners = (
+        db.query(models.User)
+        .filter(models.User.is_active.is_(True), func.upper(models.User.role) == "DATA_OWNER")
+        .all()
+    )
+    subject = f"Data access request: {row.dataset_name}"
+    body = (
+        f"{row.full_name} ({row.email}) requested {row.access_type or 'read'} access "
+        f"for {row.duration or 'unspecified duration'}.\n\nPurpose: {row.reason or '—'}"
+    )
+    for owner in owners:
+        try:
+            create_notification(db, user_id=owner.id, subject=subject, body=body, severity="info")
+        except Exception:
+            pass
+
+
+def approve_governance_data_access_request(
+    db: Session, request_id: int, reviewer: models.User
+) -> models.AccessRequest:
+    req = db.query(models.AccessRequest).filter(models.AccessRequest.id == request_id).first()
+    if not req or req.status != "pending":
+        raise ValueError("pending_not_found")
+    if not (req.dataset_name or "").strip():
+        raise ValueError("not_data_request")
+    em = (req.email or "").strip().lower()
+    user = db.query(models.User).filter(func.lower(models.User.email) == em).first()
+    if not user:
+        raise ValueError("no_user_account")
+    req.status = "approved"
+    _stamp_access_request_approver(req, reviewer)
+    db.add(req)
+    db.commit()
+    db.refresh(req)
+    try:
+        create_notification(
+            db,
+            user_id=user.id,
+            subject="Data access request approved",
+            body=f"Access to {req.dataset_name} was approved.",
+            severity="info",
+        )
+    except Exception:
+        pass
+    return req
+
+
+def reject_governance_data_access_request(
+    db: Session, request_id: int, reviewer: models.User
+) -> models.AccessRequest:
+    req = db.query(models.AccessRequest).filter(models.AccessRequest.id == request_id).first()
+    if not req or req.status != "pending":
+        raise ValueError("pending_not_found")
+    if not (req.dataset_name or "").strip():
+        raise ValueError("not_data_request")
+    req.status = "rejected"
+    _stamp_access_request_approver(req, reviewer)
+    db.add(req)
+    db.commit()
+    db.refresh(req)
+    em = (req.email or "").strip().lower()
+    user = db.query(models.User).filter(func.lower(models.User.email) == em).first()
+    if user:
+        try:
+            create_notification(
+                db,
+                user_id=user.id,
+                subject="Data access request denied",
+                body=f"Access to {req.dataset_name or 'dataset'} was not approved.",
+                severity="warning",
+            )
+        except Exception:
+            pass
+    return req

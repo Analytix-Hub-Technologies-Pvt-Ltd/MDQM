@@ -3,6 +3,7 @@ if True:
     from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException, Body
     from fastapi.middleware.cors import CORSMiddleware
     from sqlalchemy.orm import Session
+    from sqlalchemy.exc import IntegrityError
     from sqlalchemy import func, distinct, inspect, update, create_engine, text
     from pydantic import BaseModel
     from typing import List, Optional
@@ -27,6 +28,12 @@ if True:
     import models  # noqa: E402 — must run after database.py configures the engine
 
     os.makedirs("uploads", exist_ok=True)
+    from utils.upload_paths import (
+        job_temp_upload_path,
+        rename_table_csv,
+        resolve_table_csv_path,
+        table_csv_path,
+    )
     from engine.orchestrator import run_data_quality_job
     from fastapi.responses import StreamingResponse
     import io
@@ -73,10 +80,27 @@ if True:
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS quarantine"))
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS enterprise"))
         models.Base.metadata.create_all(bind=engine)
+        # SQLAlchemy create_all does not alter existing tables; add column if model gained it via migration.
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS db_source_config JSONB"
+                )
+            )
         print("[mdqm] Database schema ready.", file=sys.stderr, flush=True)
+
+    def _seed_default_admin():
+        from auth.seed import ensure_default_admin
+
+        db = SessionLocal()
+        try:
+            ensure_default_admin(db)
+        finally:
+            db.close()
 
     try:
         _init_database_schema()
+        _seed_default_admin()
     except Exception as exc:
         print(f"[mdqm] FATAL: Database startup failed: {exc}", file=sys.stderr, flush=True)
         raise
@@ -242,25 +266,92 @@ if True:
         subject: Optional[str] = None
         body: Optional[str] = None
 
-    # Local file for saved DB connections
+    # Legacy file for saved DB connections (migrated once into metadata.db_connections).
     CONNECTIONS_FILE = os.path.join(os.path.dirname(__file__), "saved_connections.json")
     SOURCE_PATHS_FILE = os.path.join(os.path.dirname(__file__), "source_paths.json")
 
 
-    def _read_saved_connections():
-        if not os.path.exists(CONNECTIONS_FILE):
-            return []
+    def _sync_db_connections_id_sequence(db: Session) -> None:
+        """Keep PostgreSQL sequence past MAX(connection id) after explicit inserts."""
+        try:
+            db.execute(
+                text(
+                    "SELECT setval(pg_get_serial_sequence('metadata.db_connections', 'connection_id'), "
+                    "GREATEST(COALESCE((SELECT MAX(connection_id) FROM metadata.db_connections), 1), 1))"
+                )
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+
+
+    def _migrate_saved_connections_json_to_db(db: Session) -> None:
+        if not os.path.isfile(CONNECTIONS_FILE):
+            return
         try:
             with open(CONNECTIONS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                return data if isinstance(data, list) else []
         except Exception:
-            return []
+            return
+        items = data if isinstance(data, list) else []
+        from utils.source_secret_crypto import encrypt_db_password_optional, encryption_available
+
+        migrated_any = False
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            try:
+                cid = int(float(item.get("connection_id", 0)))
+            except (TypeError, ValueError):
+                continue
+            if cid <= 0:
+                continue
+            if db.query(models.DbConnection).filter(models.DbConnection.connection_id == cid).first():
+                continue
+            name = str(item.get("connection_name") or "").strip() or f"connection_{cid}"
+            if db.query(models.DbConnection).filter(models.DbConnection.connection_name == name).first():
+                continue
+            raw_pass = str(item.get("pass", "") or "")
+            stored_pw = None
+            if raw_pass.strip():
+                if encryption_available():
+                    stored_pw = encrypt_db_password_optional(raw_pass) or raw_pass
+                else:
+                    stored_pw = raw_pass
+            row = models.DbConnection(
+                connection_id=cid,
+                connection_name=name,
+                host=str(item.get("host") or ""),
+                port=str(item.get("port") or "5432"),
+                username=str(item.get("user") or "").strip(),
+                password=stored_pw,
+            )
+            db.add(row)
+            migrated_any = True
+        try:
+            if migrated_any:
+                db.commit()
+                _sync_db_connections_id_sequence(db)
+        except Exception:
+            db.rollback()
+            return
+        try:
+            os.replace(CONNECTIONS_FILE, CONNECTIONS_FILE + ".migrated")
+        except OSError:
+            pass
 
 
-    def _write_saved_connections(items):
-        with open(CONNECTIONS_FILE, "w", encoding="utf-8") as f:
-            json.dump(items, f, ensure_ascii=True, indent=2)
+    def _stored_connection_password_plain(row: models.DbConnection) -> str:
+        """Decrypt saved password or return legacy plaintext."""
+        from utils.source_secret_crypto import decrypt_db_password_optional
+
+        blob = row.password
+        if not blob or not str(blob).strip():
+            return ""
+        plain = decrypt_db_password_optional(blob)
+        if plain is not None:
+            return plain
+        return str(blob)
 
 
     def _read_source_paths():
@@ -313,9 +404,7 @@ if True:
         if not table:
             return
 
-        upload_dir = "uploads"
-        os.makedirs(upload_dir, exist_ok=True)
-        final_csv_path = os.path.join(upload_dir, f"{table.table_name}.csv")
+        final_csv_path = table_csv_path(job_id, table.table_name)
 
         if source_path.lower().endswith((".xlsx", ".xls")):
             df = pd.read_excel(source_path)
@@ -492,58 +581,138 @@ if True:
 
 
     @app.get("/db/connections")
-    def list_db_connections():
-        items = _read_saved_connections()
+    def list_db_connections(db: Session = Depends(get_db)):
+        _migrate_saved_connections_json_to_db(db)
+        rows = (
+            db.query(models.DbConnection)
+            .order_by(models.DbConnection.connection_id.asc())
+            .all()
+        )
         return [
             {
-                "connection_id": item.get("connection_id"),
-                "connection_name": item.get("connection_name", ""),
-                "host": item.get("host", ""),
-                "port": item.get("port", "5432"),
-                "user": item.get("user", ""),
+                "connection_id": r.connection_id,
+                "connection_name": r.connection_name or "",
+                "host": r.host or "",
+                "port": r.port or "5432",
+                "user": r.username or "",
             }
-            for item in items
+            for r in rows
         ]
 
 
+    @app.get("/db/connections/{connection_id}/credentials")
+    def get_saved_connection_credentials(connection_id: int, db: Session = Depends(get_db)):
+        """
+        Return decrypted credentials for a saved profile so the UI can pre-fill host/port/user/password.
+        Requires authentication (same as other /db routes). Password is at rest encrypted in metadata.db_connections.
+        """
+        _migrate_saved_connections_json_to_db(db)
+        row = (
+            db.query(models.DbConnection)
+            .filter(models.DbConnection.connection_id == connection_id)
+            .first()
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Saved connection not found")
+        return {
+            "connection_id": row.connection_id,
+            "connection_name": row.connection_name or "",
+            "host": row.host or "",
+            "port": row.port or "5432",
+            "user": row.username or "",
+            "password": _stored_connection_password_plain(row),
+        }
+
+
     @app.post("/db/connections")
-    def save_db_connection(payload: dict = Body(...)):
-        items = _read_saved_connections()
-        next_id = max([int(i.get("connection_id", 0)) for i in items] + [0]) + 1
-        # Accept both naming styles from frontend payloads.
+    def save_db_connection(payload: dict = Body(...), db: Session = Depends(get_db)):
+        _migrate_saved_connections_json_to_db(db)
         resolved_user = payload.get("user", payload.get("username", ""))
         resolved_pass = payload.get("pass", payload.get("password", ""))
-        new_item = {
-            "connection_id": next_id,
-            "connection_name": payload.get("connection_name", ""),
-            "host": payload.get("host", ""),
-            "port": str(payload.get("port", "5432")),
-            "user": str(resolved_user or "").strip(),
-            "pass": str(resolved_pass or ""),
-        }
-        items.append(new_item)
-        _write_saved_connections(items)
-        return {"message": "Connection saved", "connection_id": next_id}
+        plain_pw = str(resolved_pass or "").strip()
+        if plain_pw:
+            from utils.source_secret_crypto import encrypt_db_password_optional, encryption_available
+
+            if not encryption_available():
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Set MDQM_DB_SOURCE_MASTER_SECRET in the backend .env (see .env.example). "
+                        "It is required so saved connection passwords are encrypted in the database."
+                    ),
+                )
+            enc = encrypt_db_password_optional(plain_pw)
+            if not enc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Password encryption failed. Install the cryptography package in the backend "
+                        "(e.g. pip install cryptography), then restart the API."
+                    ),
+                )
+            stored_pw = enc
+        else:
+            stored_pw = None
+        name = str(payload.get("connection_name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="connection_name is required.")
+        row = models.DbConnection(
+            connection_name=name,
+            host=str(payload.get("host") or ""),
+            port=str(payload.get("port") or "5432"),
+            username=str(resolved_user or "").strip(),
+            password=stored_pw,
+        )
+        db.add(row)
+        try:
+            db.commit()
+            db.refresh(row)
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(
+                status_code=400,
+                detail="A saved connection with this name already exists.",
+            )
+        return {"message": "Connection saved", "connection_id": row.connection_id}
 
 
     def _resolve_connection_payload(payload: dict):
         """Resolve credentials from direct fields or saved connection id."""
         connection_id = payload.get("connection_id")
         if connection_id is not None:
-            items = _read_saved_connections()
-            selected = next(
-                (i for i in items if str(i.get("connection_id")) == str(connection_id)),
-                None,
-            )
-            if not selected:
-                raise HTTPException(status_code=404, detail="Saved connection not found")
-            return {
-                "host": selected.get("host"),
-                "port": str(selected.get("port", "5432")),
-                "user": selected.get("user"),
-                "pass": selected.get("pass", ""),
-                "dbname": payload.get("dbname"),
-            }
+            db = SessionLocal()
+            try:
+                _migrate_saved_connections_json_to_db(db)
+                try:
+                    cid = int(float(connection_id))
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=404, detail="Saved connection not found")
+                row = (
+                    db.query(models.DbConnection)
+                    .filter(models.DbConnection.connection_id == cid)
+                    .first()
+                )
+                if not row:
+                    raise HTTPException(status_code=404, detail="Saved connection not found")
+                creds = {
+                    "host": row.host,
+                    "port": str(row.port or "5432"),
+                    "user": row.username,
+                    "pass": _stored_connection_password_plain(row),
+                    "dbname": payload.get("dbname"),
+                }
+            finally:
+                db.close()
+            if str(payload.get("host") or "").strip():
+                creds["host"] = str(payload["host"]).strip()
+            if str(payload.get("port") or "").strip():
+                creds["port"] = str(payload["port"]).strip()
+            if str(payload.get("user") or "").strip():
+                creds["user"] = str(payload["user"]).strip()
+            pw = payload.get("pass")
+            if pw is not None and str(pw):
+                creds["pass"] = str(pw)
+            return creds
 
         return {
             "host": payload.get("host"),
@@ -570,13 +739,373 @@ if True:
             connect_timeout=8,
         )
 
+    def _pandas_dtype_to_mdqm(str_type_raw: str) -> str:
+        """Align with /jobs/*/upload column type labels."""
+        dt = str(str_type_raw).lower()
+        if "int" in dt:
+            return "Integer"
+        if "float" in dt:
+            return "Float"
+        if "datetime" in dt or "timestamp" in dt:
+            return "Date"
+        if "bool" in dt:
+            return "Boolean"
+        return "String"
+
+    def _normalize_import_dataframe_dates(df):
+        for col in df.columns:
+            if df[col].dtype == "object":
+                try:
+                    converted = pd.to_datetime(
+                        df[col], format="mixed", dayfirst=True, errors="coerce"
+                    )
+                    if not converted.isna().all():
+                        df[col] = converted
+                except Exception:
+                    pass
+        return df
+
+    def _snapshot_dataframe_to_job_table(db: Session, job_id: int, table_id: int, table_name: str, df):
+        """Write CSV snapshot and resync column metadata + clear stats (same idea as replace-from-path)."""
+        final_csv_path = table_csv_path(job_id, table_name)
+        df.to_csv(final_csv_path, index=False)
+        tbl = (
+            db.query(models.TableMetadata)
+            .filter(
+                models.TableMetadata.job_id == job_id,
+                models.TableMetadata.table_id == table_id,
+            )
+            .first()
+        )
+        if tbl:
+            tbl.row_count = int(len(df))
+        db.query(models.ColumnMetadata).filter(
+            models.ColumnMetadata.job_id == job_id,
+            models.ColumnMetadata.table_id == table_id,
+        ).delete(synchronize_session=False)
+        for col_name, dtype in df.dtypes.items():
+            str_type = _pandas_dtype_to_mdqm(str(dtype))
+            db.add(
+                models.ColumnMetadata(
+                    job_id=job_id,
+                    table_id=table_id,
+                    column_name=str(col_name),
+                    data_type=str_type,
+                )
+            )
+        db.query(models.TableStats).filter(
+            models.TableStats.job_id == job_id,
+            models.TableStats.table_id == table_id,
+        ).delete(synchronize_session=False)
+        db.commit()
+
+    @app.post("/db/connect")
+    def connect_db_create_job(payload: dict = Body(...), db: Session = Depends(get_db)):
+        """
+        Create one job and register one or more tables by snapshotting rows from an external Postgres DB into CSV uploads.
+        Response shape matches the frontend (created_jobs[].job_id).
+        """
+        job_name = str(payload.get("job_name") or "").strip()
+        schema_name = str(payload.get("schema_name") or "").strip()
+        raw_tables = payload.get("table_names")
+
+        if not job_name:
+            raise HTTPException(status_code=400, detail="job_name is required.")
+        if not schema_name:
+            raise HTTPException(status_code=400, detail="schema_name is required.")
+        if not isinstance(raw_tables, list) or len(raw_tables) == 0:
+            raise HTTPException(status_code=400, detail="table_names must be a non-empty list.")
+
+        table_names = []
+        for t in raw_tables:
+            s = str(t or "").strip()
+            if not s:
+                raise HTTPException(status_code=400, detail="Each table name must be a non-empty string.")
+            table_names.append(s)
+
+        seen = set()
+        table_names_unique = []
+        for t in table_names:
+            if t not in seen:
+                seen.add(t)
+                table_names_unique.append(t)
+        table_names = table_names_unique
+
+        creds = _resolve_connection_payload(payload)
+        if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
+            raise HTTPException(
+                status_code=400,
+                detail="host, user, and dbname are required (or provide connection_id + dbname).",
+            )
+
+        # Require encryption when a DB password is in use so it can persist on the job for refresh-from-db.
+        plain_pw = str(creds.get("pass") or "").strip()
+        if plain_pw:
+            from utils.source_secret_crypto import encrypt_db_password_optional, encryption_available
+
+            if not encryption_available():
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Set MDQM_DB_SOURCE_MASTER_SECRET in the backend .env (see .env.example). "
+                        "It is required so your database password can be encrypted and saved on the job for Refresh "
+                        "without typing it again."
+                    ),
+                )
+            enc_probe = encrypt_db_password_optional(plain_pw)
+            if not enc_probe:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Password encryption failed. Install the cryptography package in the backend "
+                        "(e.g. pip install cryptography), then restart the API."
+                    ),
+                )
+
+        external_conn = None
+
+        try:
+            new_job = models.Job(job_name=job_name, status="Pending")
+            db.add(new_job)
+            db.commit()
+            db.refresh(new_job)
+            job_id = new_job.job_id
+
+            external_conn = _connect_postgres_with_fallback(creds)
+            max_id = (
+                db.query(func.max(models.TableMetadata.table_id))
+                .filter(models.TableMetadata.job_id == job_id)
+                .scalar()
+            )
+            next_table_id = 1 if max_id is None else int(max_id) + 1
+
+            for table_name in table_names:
+                query = psql.SQL("SELECT * FROM {}.{}").format(
+                    psql.Identifier(schema_name),
+                    psql.Identifier(table_name),
+                )
+                q_str = query.as_string(external_conn)
+                df = pd.read_sql_query(q_str, external_conn)
+                df = _normalize_import_dataframe_dates(df)
+
+                new_table = models.TableMetadata(
+                    job_id=job_id,
+                    table_id=next_table_id,
+                    table_name=table_name,
+                    row_count=int(len(df)),
+                )
+                db.add(new_table)
+                db.commit()
+
+                _snapshot_dataframe_to_job_table(db, job_id, next_table_id, table_name, df)
+                next_table_id += 1
+
+            jr = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+            warnings = []
+            if jr:
+                from utils.source_secret_crypto import encrypt_db_password_optional, encryption_available
+
+                cfg_dict = {
+                    "kind": "postgres_tables",
+                    "connection_id": payload.get("connection_id"),
+                    "dbname": creds["dbname"],
+                    "schema_name": schema_name,
+                    "table_names": list(table_names),
+                    "host": creds.get("host"),
+                    "port": str(creds.get("port") or "5432"),
+                    "user": creds.get("user"),
+                }
+                enc = encrypt_db_password_optional(creds.get("pass") or "")
+                if enc:
+                    cfg_dict["encrypted_db_pass"] = enc
+                jr.db_source_config = cfg_dict
+                try:
+                    db.commit()
+                except Exception as cfg_exc:
+                    db.rollback()
+                    warnings.append(
+                        "Job and tables were created, but storing refresh settings failed. "
+                        f"Restart the API (and ensure column metadata.jobs.db_source_config exists). Detail: {cfg_exc}"
+                    )
+
+            resp = {
+                "message": "Connected and imported tables",
+                "created_jobs": [{"job_id": job_id}],
+            }
+            if warnings:
+                resp["warnings"] = warnings
+            return resp
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Database import failed: {str(e)}")
+        finally:
+            if external_conn is not None:
+                try:
+                    external_conn.close()
+                except Exception:
+                    pass
+
+    @app.post("/jobs/{job_id}/refresh-from-db")
+    def refresh_job_from_database(
+        job_id: int,
+        body: Optional[dict] = Body(None),
+        db: Session = Depends(get_db),
+    ):
+        """
+        Re-query Postgres using the connection info stored on the job (from /db/connect) and
+        rewrite uploads/*.csv plus column metadata for each registered table.
+        """
+        body = body or {}
+        job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        cfg = job.db_source_config
+        if not cfg or not isinstance(cfg, dict) or cfg.get("kind") != "postgres_tables":
+            raise HTTPException(
+                status_code=400,
+                detail="Refresh is only available for jobs created from Postgres tables (Data Owner → Table).",
+            )
+        schema_name = str(cfg.get("schema_name") or "").strip()
+        table_names = cfg.get("table_names") or []
+        if not schema_name or not isinstance(table_names, list) or len(table_names) == 0:
+            raise HTTPException(status_code=400, detail="Stored DB source configuration is incomplete.")
+
+        # connection_id from JSON may be int, float, or string
+        cid_raw = cfg.get("connection_id")
+        cid_norm = None
+        if cid_raw is not None and str(cid_raw).strip() != "" and str(cid_raw).lower() not in ("null", "nan"):
+            try:
+                cid_norm = int(float(cid_raw))
+            except (ValueError, TypeError):
+                cid_norm = None
+        has_saved = cid_norm is not None
+
+        resolve_pl: dict = {
+            "dbname": cfg.get("dbname"),
+            "host": cfg.get("host"),
+            "port": str(cfg.get("port") or "5432"),
+            "user": cfg.get("user"),
+        }
+
+        from utils.source_secret_crypto import decrypt_db_password_optional
+
+        decrypted_stored = decrypt_db_password_optional(cfg.get("encrypted_db_pass"))
+        if decrypted_stored:
+            resolve_pl["pass"] = decrypted_stored
+
+        if has_saved:
+            resolve_pl["connection_id"] = cid_norm
+        else:
+            resolve_pl.pop("connection_id", None)
+
+        if str(body.get("host") or "").strip():
+            resolve_pl["host"] = str(body["host"]).strip()
+        if str(body.get("port") or "").strip():
+            resolve_pl["port"] = str(body["port"]).strip()
+        if str(body.get("user") or "").strip():
+            resolve_pl["user"] = str(body["user"]).strip()
+        if str(body.get("dbname") or "").strip():
+            resolve_pl["dbname"] = str(body["dbname"]).strip()
+        if body.get("pass") is not None and str(body.get("pass", "")) != "":
+            resolve_pl["pass"] = body["pass"]
+
+        if not has_saved:
+            if not str(resolve_pl.get("pass") or "").strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Database password missing: enable MDQM_DB_SOURCE_MASTER_SECRET and re-import once to store "
+                    'it encrypted, or pass {"pass": "..."} in the refresh request body.',
+                )
+
+        try:
+            creds = _resolve_connection_payload(resolve_pl)
+        except HTTPException as exc:
+            if exc.status_code != 404 or not has_saved:
+                raise
+            creds = {
+                "host": cfg.get("host"),
+                "port": str(cfg.get("port") or "5432"),
+                "user": cfg.get("user"),
+                "pass": "",
+                "dbname": cfg.get("dbname"),
+            }
+            pb = body.get("pass")
+            if pb is not None and str(pb) != "":
+                creds["pass"] = str(pb)
+
+        def _pick(*vals):
+            for v in vals:
+                s = str(v or "").strip()
+                if s:
+                    return s
+            return ""
+
+        creds["host"] = _pick(creds.get("host"), cfg.get("host"))
+        creds["user"] = _pick(creds.get("user"), cfg.get("user"))
+        creds["dbname"] = _pick(creds.get("dbname"), cfg.get("dbname"))
+        creds["port"] = str(creds.get("port") or cfg.get("port") or "5432")
+        pb = body.get("pass")
+        if pb is not None and str(pb) != "":
+            creds["pass"] = str(pb)
+
+        if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot resolve database credentials for refresh. Enter the database password in the box below "
+                "(required if the saved connection has no password on disk, or if the saved connection was removed). "
+                "You can also re-create the dataset from Data Owner → Table.",
+            )
+
+        tms = db.query(models.TableMetadata).filter(models.TableMetadata.job_id == job_id).all()
+        name_to_tm = {t.table_name: t for t in tms}
+
+        external_conn = None
+        summaries = []
+        try:
+            external_conn = _connect_postgres_with_fallback(creds)
+            for table_name in table_names:
+                tn = str(table_name).strip()
+                tm = name_to_tm.get(tn)
+                if not tm:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Table '{tn}' is not registered on this job; cannot refresh.",
+                    )
+                query = psql.SQL("SELECT * FROM {}.{}").format(
+                    psql.Identifier(schema_name),
+                    psql.Identifier(tn),
+                )
+                q_str = query.as_string(external_conn)
+                df = pd.read_sql_query(q_str, external_conn)
+                df = _normalize_import_dataframe_dates(df)
+                _snapshot_dataframe_to_job_table(db, job_id, tm.table_id, tn, df)
+                summaries.append({"table_name": tn, "row_count": int(len(df))})
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Refresh failed: {str(e)}")
+        finally:
+            if external_conn is not None:
+                try:
+                    external_conn.close()
+                except Exception:
+                    pass
+
+        return {
+            "message": "Job tables refreshed from database",
+            "job_id": job_id,
+            "tables": summaries,
+        }
 
     @app.post("/db/list-schemas-tables")
     def list_schemas_tables(payload: dict = Body(...)):
         creds = _resolve_connection_payload(payload)
         if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
-            # Frontend can hit this while user is still typing credentials.
-            return {"schemas": [], "tables_by_schema": {}}
+            raise HTTPException(
+                status_code=400,
+                detail="Provide database name, host, and username (or fix the saved connection), then try again.",
+            )
 
         conn = None
         try:
@@ -785,8 +1314,8 @@ if True:
                 # Fallback: some runs may not materialize app_data clean/error tables
                 # (for example, identifier truncation on very long table names).
                 # In that case export the latest uploaded source CSV instead of failing hard.
-                source_csv_path = os.path.join("uploads", f"{src_table.table_name}.csv")
-                if not os.path.exists(source_csv_path):
+                source_csv_path = resolve_table_csv_path(src_table.job_id, src_table.table_name)
+                if not source_csv_path:
                     raise e
                 df = pd.read_csv(source_csv_path)
             ext_url = (
@@ -867,15 +1396,12 @@ if True:
         source_path: Optional[str] = Form(None),
         db: Session = Depends(get_db),
     ):
-        upload_dir = "uploads"
-        os.makedirs(upload_dir, exist_ok=True)
-        
         # Clean the table name upfront by removing any extension
         table_name = file.filename.replace(".csv", "").replace(".xlsx", "").replace(".xls", "")
         
-        # Force the final saved file to ALWAYS be a .csv so your orchestrator can read it
-        final_csv_path = f"{upload_dir}/{table_name}.csv"
-        temp_file_path = f"{upload_dir}/{file.filename}"
+        # Per-job CSV so the same filename on another job does not overwrite this one
+        final_csv_path = table_csv_path(job_id, table_name)
+        temp_file_path = job_temp_upload_path(job_id, file.filename)
         
         # Save the uploaded file temporarily
         with open(temp_file_path, "wb") as buffer:
@@ -961,12 +1487,9 @@ if True:
                 detail=f"File path not found. Use a full path like C:\\Downloads\\data.csv. Received: {file_path}",
             )
 
-        upload_dir = "uploads"
-        os.makedirs(upload_dir, exist_ok=True)
-
         file_name = os.path.basename(file_path)
         table_name = file_name.replace(".csv", "").replace(".xlsx", "").replace(".xls", "")
-        final_csv_path = os.path.join(upload_dir, f"{table_name}.csv")
+        final_csv_path = table_csv_path(job_id, table_name)
 
         max_id = db.query(func.max(models.TableMetadata.table_id)).filter(models.TableMetadata.job_id == job_id).scalar()
         next_table_id = 1 if max_id is None else max_id + 1
@@ -977,7 +1500,7 @@ if True:
             else:
                 df = pd.read_csv(file_path)
 
-            # Normalize to CSV in uploads for downstream engine.
+            # Normalize to job-scoped CSV for downstream engine.
             df.to_csv(final_csv_path, index=False)
 
             for col in df.columns:
@@ -1041,9 +1564,7 @@ if True:
         if not table:
             raise HTTPException(status_code=404, detail="Table not found for this job")
 
-        upload_dir = "uploads"
-        os.makedirs(upload_dir, exist_ok=True)
-        final_csv_path = os.path.join(upload_dir, f"{table.table_name}.csv")
+        final_csv_path = table_csv_path(job_id, table.table_name)
 
         try:
             if file_path.lower().endswith((".xlsx", ".xls")):
@@ -1108,10 +1629,8 @@ if True:
         if not table:
             raise HTTPException(status_code=404, detail="Table not found for this job")
 
-        upload_dir = "uploads"
-        os.makedirs(upload_dir, exist_ok=True)
-        temp_file_path = os.path.join(upload_dir, f"tmp_{file.filename}")
-        final_csv_path = os.path.join(upload_dir, f"{table.table_name}.csv")
+        temp_file_path = job_temp_upload_path(job_id, file.filename)
+        final_csv_path = table_csv_path(job_id, table.table_name)
 
         with open(temp_file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -1409,7 +1928,15 @@ if True:
                 models.TableStats.table_id == t.table_id
             ).order_by(models.TableStats.stat_id.desc()).first()
             
-            rules_count = db.query(models.Rule).filter(models.Rule.table_id == t.table_id).count()
+            rules_count = (
+                db.query(models.Rule)
+                .filter(
+                    models.Rule.job_id == job_id,
+                    models.Rule.table_id == t.table_id,
+                    models.Rule.is_active == True,
+                )
+                .count()
+            )
             
             col_count = db.query(models.ColumnMetadata).filter(
                 models.ColumnMetadata.job_id == job_id, 
@@ -1578,16 +2105,8 @@ if True:
             raise HTTPException(status_code=400, detail="New name is required in payload")
         
         try:
-            # --- SAFE PHYSICAL RENAME ---
-            old_file_path = f"uploads/{table.table_name}.csv"
-            new_file_path = f"uploads/{new_name}.csv"
-            
-            if os.path.exists(old_file_path):
-                try:
-                    os.rename(old_file_path, new_file_path)
-                except Exception as e:
-                    print(f"Warning: File locked or inaccessible: {e}")
-            
+            rename_table_csv(table.job_id, table.table_name, new_name)
+
             # --- UPDATE DATABASE ---
             table.table_name = new_name
             db.commit()
@@ -1836,7 +2355,7 @@ if True:
 
     def _build_table_output_bytes(db: Session, table, fmt: str):
         fmt = (fmt or "csv").strip().lower()
-        source_csv_path = os.path.join("uploads", f"{table.table_name}.csv")
+        source_csv_path = resolve_table_csv_path(table.job_id, table.table_name)
 
         if fmt == "excel":
             try:
@@ -1848,7 +2367,7 @@ if True:
                 )
             except Exception:
                 # Fallback for not-yet-run jobs: export raw uploaded CSV as Excel.
-                if not os.path.exists(source_csv_path):
+                if not source_csv_path:
                     raise
                 df = pd.read_csv(source_csv_path)
                 output = io.BytesIO()
@@ -1873,7 +2392,7 @@ if True:
             )
         except Exception:
             # Fallback for not-yet-run jobs: return raw uploaded CSV.
-            if not os.path.exists(source_csv_path):
+            if not source_csv_path:
                 raise
             with open(source_csv_path, "rb") as f:
                 return (f.read(), f"{table.table_name}_Source.csv", "text/csv")
@@ -2248,10 +2767,10 @@ if True:
         log.description = "Fixed Manually"
         
         # 2. Find the exact file
-        file_path = os.path.join("uploads", f"{log.table_name}.csv")
+        file_path = resolve_table_csv_path(log.job_id, log.table_name)
         
-        if not os.path.exists(file_path):
-            raise HTTPException(status_code=404, detail=f"Source CSV not found at {file_path}")
+        if not file_path:
+            raise HTTPException(status_code=404, detail=f"Source CSV not found for job {log.job_id} table {log.table_name}")
             
         try:
             # Read the file
@@ -2344,9 +2863,9 @@ if True:
         masters = db.query(models.MasterTable).filter_by(job_id=job_id, table_id=table_id).all()
         master_list = [m.master_value for m in masters]
 
-        file_path = os.path.join("uploads", f"{table.table_name}.csv")
-        if not os.path.exists(file_path):
-            raise HTTPException(status_code=404, detail="Source CSV not found.")
+        file_path = resolve_table_csv_path(job_id, table.table_name)
+        if not file_path:
+            raise HTTPException(status_code=404, detail="Source CSV not found for this job.")
 
         stat = (
             db.query(models.TableStats)
@@ -2439,15 +2958,19 @@ if True:
 
     @app.put("/quarantine/jobs/{job_id}/tables/{table_id}/fuzzy/replace")
     def replace_fuzzy_value(job_id: int, table_id: int, payload: FuzzyReplace, db: Session = Depends(get_db)):
-        table = db.query(models.TableMetadata).filter_by(table_id=table_id).first()
-        file_path = os.path.join("uploads", f"{table.table_name}.csv")
+        table = db.query(models.TableMetadata).filter_by(table_id=table_id, job_id=job_id).first()
+        if not table:
+            raise HTTPException(status_code=404, detail="Table not found")
+        file_path = resolve_table_csv_path(job_id, table.table_name)
+        if not file_path:
+            raise HTTPException(status_code=404, detail="Source CSV not found for this job.")
         
         try:
             df = pd.read_csv(file_path)
             # Bypass strict typing to safely inject the string alias
             df[payload.column_name] = df[payload.column_name].astype(object)
             df.loc[payload.row_id, payload.column_name] = payload.new_value
-            df.to_csv(file_path, index=False)
+            df.to_csv(table_csv_path(job_id, table.table_name), index=False)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
             
@@ -2584,10 +3107,10 @@ if True:
             raise HTTPException(status_code=404, detail="Table not found")
 
         # 2. Read the Physical CSV to get the current headers
-        file_path = f"uploads/{table.table_name}.csv"
-        if not os.path.exists(file_path):
-            return [] # Or handle error
-        
+        file_path = resolve_table_csv_path(table.job_id, table.table_name)
+        if not file_path:
+            return []
+
         df = pd.read_csv(file_path)
         all_columns = df.columns.tolist()
         total_rows = len(df)
@@ -2662,8 +3185,8 @@ if True:
                 print(f"DB SYNC: {actual_old_name} -> {new_name}")
 
             # --- 2. PHYSICAL FILE SYNC ---
-            file_path = f"uploads/{table.table_name}.csv"
-            if os.path.exists(file_path):
+            file_path = resolve_table_csv_path(table.job_id, table.table_name)
+            if file_path:
                 df = pd.read_csv(file_path)
                 
                 # Identify the column in CSV (case-insensitive)
@@ -2681,7 +3204,8 @@ if True:
                     ]
                     
                     # Save only the legitimate data columns without index
-                    df[cols_to_keep].to_csv(file_path, index=False)
+                    scoped_path = table_csv_path(table.job_id, table.table_name)
+                    df[cols_to_keep].to_csv(scoped_path, index=False)
                     print(f"FILE SYNC: {csv_target} -> {new_name} (Cleaned)")
 
             db.commit()
@@ -2707,7 +3231,9 @@ if True:
             raise HTTPException(status_code=400, detail="No active date rule")
 
         try:
-            file_path = f"uploads/{table.table_name}.csv"
+            file_path = resolve_table_csv_path(table.job_id, table.table_name)
+            if not file_path:
+                raise HTTPException(status_code=404, detail="Source CSV not found for this job")
             
             # 1. READ AS PURE TEXT (Prevents 00:00:00 on import)
             df = pd.read_csv(file_path, dtype=str, keep_default_na=False)
@@ -2739,7 +3265,7 @@ if True:
             # 3. SAVE WITHOUT INDEX (Prevents row jumbling/ID columns)
             # Only save columns that belong in the CSV
             original_cols = [c for c in df.columns if c not in ['job_id', 'table_id']]
-            df[original_cols].to_csv(file_path, index=False)
+            df[original_cols].to_csv(table_csv_path(table.job_id, table.table_name), index=False)
 
             return {"message": "Dates standardized successfully"}
         except Exception as e:

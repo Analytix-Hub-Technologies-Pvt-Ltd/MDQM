@@ -7,11 +7,12 @@ import models
 # --- IMPORT THE NEW LIBRARY ---
 from .rule_library import RuleLibrary 
 
-UPLOAD_DIR = "uploads" 
+from utils.upload_paths import resolve_table_csv_path
 
-def load_real_csv(table_name):
-    file_path = os.path.join(UPLOAD_DIR, f"{table_name}.csv")
-    return pd.read_csv(file_path) if os.path.exists(file_path) else None
+
+def load_real_csv(job_id: int, table_name: str):
+    file_path = resolve_table_csv_path(job_id, table_name)
+    return pd.read_csv(file_path) if file_path else None
 
 # In engine/orchestrator.py
 def save_dataframe_to_sql(df, table_name, job_id, suffix, db_engine):
@@ -39,9 +40,9 @@ def run_data_quality_job(job_id: int, db: Session):
         
         for table in tables:
             print(f"Processing {table.table_name}...")
-            df = load_real_csv(table.table_name)
-            if df is None: 
-                print(f"ERROR: Could not find file uploads/{table.table_name}.csv")
+            df = load_real_csv(job_id, table.table_name)
+            if df is None:
+                print(f"ERROR: Could not find CSV for job {job_id} table {table.table_name}")
                 continue
             
             # --- NEW: Strip hidden spaces from Excel column names! ---

@@ -13,6 +13,8 @@ class Job(Base):
     start_time = Column(DateTime)
     end_time = Column(DateTime)
     created_at = Column(DateTime, default=func.now())
+    """Stored when job is created from Postgres (see /db/connect); used by refresh-from-db."""
+    db_source_config = Column(JSON, nullable=True)
 
     tables = relationship("TableMetadata", back_populates="job")
     # FIX: Added overlaps to silence warning

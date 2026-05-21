@@ -75,6 +75,8 @@ def _metrics_from_stat(st: models.TableStats | None) -> dict[str, Any]:
     if not st:
         return {
             "completeness": 0.0,
+            "accuracy": 0.0,
+            "consistency": 0.0,
             "validity": 0.0,
             "uniqueness": 0.0,
             "timeliness": 0.0,
@@ -200,6 +202,117 @@ def enrich_dataset(db: Session, row: models.EnterpriseDataset, *, user_email: st
         "last_run": metrics["last_run"],
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
+
+
+def build_business_catalog_dataset_detail(
+    db: Session, dataset_id: int, *, user_email: str | None = None
+) -> dict[str, Any] | None:
+    """
+    Catalog dataset detail for business users: columns/samples plus validation rules and last DQ run stats.
+    """
+    row = db.query(models.EnterpriseDataset).filter(models.EnterpriseDataset.id == dataset_id).first()
+    if not row:
+        return None
+
+    from services import enterprise_service as esvc
+
+    preview = esvc.build_dataset_inventory_preview(db, dataset_id)
+    if not preview:
+        return None
+
+    catalog = enrich_dataset(db, row, user_email=user_email)
+    preview["catalog"] = catalog
+
+    job_id = (preview.get("linked_job") or {}).get("job_id")
+    if not job_id:
+        preview["dq"] = {
+            "rules_total": 0,
+            "has_run": False,
+            "message": "No data quality job is linked to this dataset yet.",
+        }
+        return preview
+
+    rules_total = 0
+    has_run = False
+    for t in preview.get("tables") or []:
+        tid = int(t["table_id"])
+        tname = str(t.get("table_name") or "")
+        rule_rows = (
+            db.query(models.Rule)
+            .filter(models.Rule.job_id == job_id, models.Rule.table_id == tid)
+            .order_by(models.Rule.column_name.asc(), models.Rule.rule_id.asc())
+            .all()
+        )
+        t["rules"] = [
+            {
+                "rule_id": r.rule_id,
+                "column_name": r.column_name,
+                "rule_type": r.rule_type,
+                "rule_value": r.rule_value,
+                "data_type": r.data_type,
+                "is_active": bool(r.is_active),
+            }
+            for r in rule_rows
+        ]
+        rules_total += len(t["rules"])
+
+        st = (
+            db.query(models.TableStats)
+            .filter(models.TableStats.job_id == job_id, models.TableStats.table_id == tid)
+            .order_by(models.TableStats.stat_id.desc())
+            .first()
+        )
+        if st:
+            has_run = True
+            total = int(st.total_rows or 0)
+            good = int(st.good_rows or 0)
+            v_err = int(st.validation_errors or 0)
+            f_err = int(st.fuzzy_errors or 0)
+            t["dq_run"] = {
+                "total_rows": total,
+                "good_rows": good,
+                "validation_errors": v_err,
+                "fuzzy_errors": f_err,
+                "pass_rate": round((good / total) * 100.0, 1) if total > 0 else 0.0,
+                "start_time": st.start_time.isoformat() if st.start_time else None,
+                "end_time": st.end_time.isoformat() if st.end_time else None,
+            }
+        else:
+            t["dq_run"] = None
+
+        if tname:
+            v_cnt = (
+                db.query(func.count(models.QuarantineLog.log_id))
+                .filter(
+                    models.QuarantineLog.job_id == job_id,
+                    models.QuarantineLog.table_name == tname,
+                    models.QuarantineLog.error_type == "Validation",
+                )
+                .scalar()
+            ) or 0
+            f_cnt = (
+                db.query(func.count(models.QuarantineLog.log_id))
+                .filter(
+                    models.QuarantineLog.job_id == job_id,
+                    models.QuarantineLog.table_name == tname,
+                    models.QuarantineLog.error_type == "Fuzzy",
+                )
+                .scalar()
+            ) or 0
+            t["quarantine_validation"] = int(v_cnt)
+            t["quarantine_fuzzy"] = int(f_cnt)
+        else:
+            t["quarantine_validation"] = 0
+            t["quarantine_fuzzy"] = 0
+
+    preview["dq"] = {
+        "rules_total": rules_total,
+        "has_run": has_run,
+        "message": None
+        if has_run
+        else "No DQ run recorded yet. Rules are configured; ask a steward to run the job in Jobs.",
+    }
+    return preview
 
 
 def list_catalog(db: Session, page: int, page_size: int, q: str | None = None, user_email: str | None = None):
