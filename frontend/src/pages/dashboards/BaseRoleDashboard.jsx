@@ -66,7 +66,7 @@ export default function BaseRoleDashboard({ endpoint, title, subtitle, accent = 
 
       <AuditWidget entries={data?.audit_events || []} />
 
-      <ClassicKpiSection />
+      <ClassicKpiSection defaultOpen />
     </section>
   );
 }

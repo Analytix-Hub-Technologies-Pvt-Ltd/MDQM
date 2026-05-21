@@ -1,9 +1,14 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { formatAccessType } from "../../../utils/formatRelativeTime";
 import EnterpriseDataPanel, { StatusBadge } from "../../../components/enterprise/EnterpriseDataPanel";
+import ScoreRing from "../../../components/business/ScoreRing";
+import CreateDatasetLightModal from "./CreateDatasetLightModal";
+import DatasetPreviewModal from "./DatasetPreviewModal";
 import {
   enterpriseGovernanceAccessRequests,
-  enterpriseGovernanceDatasetCreate,
+  enterpriseGovernanceAccessRequestApprove,
+  enterpriseGovernanceAccessRequestReject,
   enterpriseGovernanceDatasets,
   enterpriseGovernanceGlossary,
   enterpriseGovernanceGlossaryCreate,
@@ -13,13 +18,6 @@ import {
   enterpriseGovernanceBusinessReportPublish,
   enterpriseGovernanceBusinessReportDelete,
 } from "../enterpriseApi";
-
-const dsCols = [
-  { key: "name", label: "Dataset" },
-  { key: "domain", label: "Domain" },
-  { key: "classification", label: "Class", render: (v) => <StatusBadge status={v || "standard"} /> },
-  { key: "created_at", label: "Registered" },
-];
 
 const polCols = [
   { key: "policy_name", label: "Policy" },
@@ -33,13 +31,156 @@ const glCols = [
   { key: "domain", label: "Domain" },
 ];
 
-const accessCols = [
+const accessBaseCols = [
   { key: "id", label: "ID" },
-  { key: "request_type", label: "Type" },
-  { key: "request_ref", label: "Ref" },
-  { key: "status", label: "Status", render: (v) => <StatusBadge status={v} /> },
-  { key: "created_at", label: "Created" },
+  { key: "dataset_name", label: "Dataset" },
+  { key: "requester", label: "Requester" },
+  { key: "email", label: "Email" },
+  {
+    key: "access_type",
+    label: "Access",
+    render: (v) => <StatusBadge status={formatAccessType(v)} />,
+  },
+  { key: "duration", label: "Duration" },
+  {
+    key: "reason",
+    label: "Purpose",
+    render: (v) => <span className="line-clamp-2 text-xs text-[#9ab0d1] max-w-[200px]">{v || "—"}</span>,
+  },
 ];
+
+function AccessRequestActions({ row }) {
+  const [busy, setBusy] = useState(null);
+
+  const handleApprove = async () => {
+    setBusy("approve");
+    try {
+      await enterpriseGovernanceAccessRequestApprove(row.id);
+      window.dispatchEvent(new CustomEvent("mdqm-owner-access-refresh"));
+    } catch (e) {
+      alert(e?.response?.data?.detail || "Approve failed");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleDeny = async () => {
+    if (!window.confirm(`Deny access to "${row.dataset_name}" for ${row.email}?`)) return;
+    setBusy("deny");
+    try {
+      await enterpriseGovernanceAccessRequestReject(row.id);
+      window.dispatchEvent(new CustomEvent("mdqm-owner-access-refresh"));
+    } catch (e) {
+      alert(e?.response?.data?.detail || "Deny failed");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="flex flex-nowrap items-center gap-2 py-1">
+      <button
+        type="button"
+        disabled={busy !== null}
+        onClick={handleApprove}
+        className="inline-flex min-w-[5.5rem] items-center justify-center rounded-md border border-emerald-500/60 bg-emerald-600 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-white shadow-sm transition-colors hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-400/50 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {busy === "approve" ? "Working…" : "Approve"}
+      </button>
+      <button
+        type="button"
+        disabled={busy !== null}
+        onClick={handleDeny}
+        className="inline-flex min-w-[5.5rem] items-center justify-center rounded-md border border-red-500/50 bg-[#2a1518] px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-red-200 shadow-sm transition-colors hover:border-red-400 hover:bg-red-900/60 focus:outline-none focus:ring-2 focus:ring-red-400/40 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {busy === "deny" ? "Working…" : "Deny"}
+      </button>
+    </div>
+  );
+}
+
+const accessPendingCols = [
+  ...accessBaseCols,
+  { key: "requested_at", label: "Requested" },
+  {
+    key: "id",
+    label: "Actions",
+    render: (_, row) => <AccessRequestActions row={row} />,
+  },
+];
+
+const accessHistoryCols = [
+  ...accessBaseCols,
+  {
+    key: "status",
+    label: "Status",
+    render: (v) => {
+      const s = String(v || "").toLowerCase();
+      const label = s === "rejected" ? "Denied" : s === "approved" ? "Approved" : v;
+      return <StatusBadge status={label} />;
+    },
+  },
+  {
+    key: "approver_name",
+    label: "Reviewer",
+    render: (v) => <span className="text-xs text-[#9ab0d1]">{v || "—"}</span>,
+  },
+  { key: "requested_at", label: "Requested" },
+];
+
+function OwnerAccessRequestsSection() {
+  const [tableVer, setTableVer] = useState(0);
+
+  useEffect(() => {
+    const onRefresh = () => setTableVer((v) => v + 1);
+    window.addEventListener("mdqm-owner-access-refresh", onRefresh);
+    return () => window.removeEventListener("mdqm-owner-access-refresh", onRefresh);
+  }, []);
+
+  return (
+    <div className="space-y-8">
+      <p className="text-sm text-[#9ab0d1]">
+        Review business-user dataset access requests. Approve or deny pending items; past decisions appear in history.
+      </p>
+
+      <EnterpriseDataPanel
+        key={`owner-access-pending-${tableVer}`}
+        title="Pending requests"
+        columns={accessPendingCols}
+        pageSize={10}
+        searchPlaceholder="Search pending by dataset, email, or purpose…"
+        emptyMessage="No pending access requests."
+        fetchPage={({ page, pageSize, query }) =>
+          enterpriseGovernanceAccessRequests({
+            page,
+            page_size: pageSize,
+            status: "pending",
+            ...(query ? { q: query.trim() } : {}),
+          })
+        }
+        refreshEventName="mdqm-owner-access-refresh"
+      />
+
+      <EnterpriseDataPanel
+        key={`owner-access-history-${tableVer}`}
+        title="Request history"
+        columns={accessHistoryCols}
+        pageSize={10}
+        searchPlaceholder="Search history by dataset, email, or purpose…"
+        emptyMessage="No completed requests yet."
+        fetchPage={({ page, pageSize, query }) =>
+          enterpriseGovernanceAccessRequests({
+            page,
+            page_size: pageSize,
+            history: true,
+            ...(query ? { q: query.trim() } : {}),
+          })
+        }
+        refreshEventName="mdqm-owner-access-refresh"
+      />
+    </div>
+  );
+}
 
 const reportCols = [
   { key: "title", label: "Report" },
@@ -71,12 +212,96 @@ const reportCols = [
   },
 ];
 
+function scoreCell(value, source, pendingLabel) {
+  if (value == null || value === "") {
+    const hint =
+      source === "no_csv"
+        ? "No CSV snapshot"
+        : source === "pending"
+          ? pendingLabel || "Run DQ job"
+          : source === "none"
+            ? "No job linked"
+            : "—";
+    return <span className="text-[#5c6d8a] text-xs" title={hint}>{hint}</span>;
+  }
+  return <ScoreRing score={value} size={36} />;
+}
+
 function GovernanceDatasetSection() {
+  const [createOpen, setCreateOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  const bump = () => setRefreshKey((k) => k + 1);
+  const [previewDatasetId, setPreviewDatasetId] = useState(null);
+
+  const dsCols = [
+    { key: "name", label: "Dataset" },
+    {
+      key: "eda_score",
+      label: "EDA score",
+      render: (v, row) => scoreCell(v, row.eda_score_source, "Profile pending"),
+    },
+    {
+      key: "dq_score",
+      label: "DQ score",
+      render: (v, row) => scoreCell(v, row.dq_score_source, "Run validation"),
+    },
+    {
+      key: "job_id",
+      label: "DQ job",
+      render: (v) =>
+        v != null ? (
+          <span className="font-mono text-[#9ab0d1]">#{v}</span>
+        ) : (
+          <span className="text-[#5c6b84]">—</span>
+        ),
+    },
+    { key: "classification", label: "Class", render: (v) => <StatusBadge status={v || "standard"} /> },
+    { key: "created_at", label: "Registered" },
+    {
+      key: "view",
+      label: "",
+      render: (_, row) => (
+        <button
+          type="button"
+          className="text-xs font-semibold text-[#4f8cff] hover:underline whitespace-nowrap"
+          onClick={() => setPreviewDatasetId(row.id)}
+        >
+          View
+        </button>
+      ),
+    },
+  ];
+
   return (
-    <div>
-      <GovernanceForms variant="datasets" onSuccess={bump} />
+    <div className="space-y-4">
+      <DatasetPreviewModal
+        datasetId={previewDatasetId}
+        open={previewDatasetId != null}
+        onClose={() => setPreviewDatasetId(null)}
+      />
+      <CreateDatasetLightModal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={() => setRefreshKey((k) => k + 1)}
+      />
+      <div className="enterprise-card p-5 text-sm">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h3 className="enterprise-title text-sm">Create dataset</h3>
+            <p className="text-xs text-[#7f95b6] mt-2 max-w-2xl">
+              Name the dataset, attach a CSV file (or a server path), or connect to a database and pick table(s).{" "}
+              <strong className="text-[#9ab0d1] font-normal">EDA score</strong> profiles loaded CSV completeness;{" "}
+              <strong className="text-[#9ab0d1] font-normal">DQ score</strong> reflects the latest validation run on the linked job.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setCreateOpen(true)}
+            className="shrink-0 text-xs uppercase tracking-wide bg-[#2b7fff] text-white px-4 py-2.5 rounded font-semibold hover:opacity-90"
+          >
+            Create dataset
+          </button>
+        </div>
+      </div>
       <EnterpriseDataPanel
         key={`ds-${refreshKey}`}
         title="Registered datasets"
@@ -277,11 +502,6 @@ function GovernanceGlossarySection() {
 }
 
 function GovernanceForms({ variant, onSuccess }) {
-  const [dsName, setDsName] = useState("");
-  const [dsDomain, setDsDomain] = useState("");
-  const [dsClass, setDsClass] = useState("");
-  const [dsMsg, setDsMsg] = useState("");
-
   const [polName, setPolName] = useState("");
   const [polDomain, setPolDomain] = useState("");
   const [polContent, setPolContent] = useState("");
@@ -291,24 +511,6 @@ function GovernanceForms({ variant, onSuccess }) {
   const [definition, setDefinition] = useState("");
   const [termDomain, setTermDomain] = useState("");
   const [termMsg, setTermMsg] = useState("");
-
-  const onDataset = async (e) => {
-    e.preventDefault();
-    setDsMsg("");
-    try {
-      await enterpriseGovernanceDatasetCreate({
-        name: dsName.trim(),
-        domain: dsDomain.trim() || null,
-        classification: dsClass.trim() || null,
-        description: null,
-      });
-      setDsMsg("Dataset registered.");
-      setDsName("");
-      onSuccess?.();
-    } catch (err) {
-      setDsMsg(err?.response?.data?.detail || "Save failed");
-    }
-  };
 
   const onPolicy = async (e) => {
     e.preventDefault();
@@ -347,38 +549,6 @@ function GovernanceForms({ variant, onSuccess }) {
     }
   };
 
-  if (variant === "datasets") {
-    return (
-      <div className="enterprise-card p-4 mb-4 text-sm space-y-2">
-        <h3 className="enterprise-title text-sm">Register dataset</h3>
-        <form onSubmit={onDataset} className="grid sm:grid-cols-2 gap-2 text-[#d7e3f7]">
-          <input
-            className="border border-[#2a3f63] bg-[#0f1b31] rounded px-2 py-2"
-            placeholder="Unique name"
-            value={dsName}
-            onChange={(e) => setDsName(e.target.value)}
-            required
-          />
-          <input
-            className="border border-[#2a3f63] bg-[#0f1b31] rounded px-2 py-2"
-            placeholder="Domain (optional)"
-            value={dsDomain}
-            onChange={(e) => setDsDomain(e.target.value)}
-          />
-          <input
-            className="border border-[#2a3f63] bg-[#0f1b31] rounded px-2 py-2 sm:col-span-2"
-            placeholder="Classification e.g. internal, confidential"
-            value={dsClass}
-            onChange={(e) => setDsClass(e.target.value)}
-          />
-          <button type="submit" className="sm:col-span-2 text-xs bg-[#2a4a7a] text-white py-2 rounded uppercase tracking-wide">
-            Save to PostgreSQL
-          </button>
-        </form>
-        {dsMsg ? <p className="text-xs text-[#9ab0d1]">{dsMsg}</p> : null}
-      </div>
-    );
-  }
   if (variant === "policies") {
     return (
       <div className="enterprise-card p-4 mb-4 text-sm space-y-2">
@@ -458,20 +628,7 @@ export function renderOwnerTab(tabId) {
     case "business-reports":
       return <BusinessReportsPublishSection />;
     case "access-requests":
-      return (
-        <EnterpriseDataPanel
-          title="Workflow access requests (governance.workflow_approvals)"
-          columns={accessCols}
-          searchPlaceholder="Filter by status (exact): pending"
-          fetchPage={({ page, pageSize, query }) =>
-            enterpriseGovernanceAccessRequests({
-              page,
-              page_size: pageSize,
-              ...(query ? { status: query.trim() } : {}),
-            })
-          }
-        />
-      );
+      return <OwnerAccessRequestsSection />;
     case "certifications":
       return (
         <div className="enterprise-card p-5 text-sm text-[#9ab0d1]">

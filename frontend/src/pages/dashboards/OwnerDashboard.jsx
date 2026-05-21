@@ -22,7 +22,9 @@ export default function OwnerDashboard() {
       tabs={TABS}
       overview={<RoleDashboardCore endpoint="owner" />}
       renderTab={renderOwnerTab}
-      footer={<ClassicKpiSection />}
+      footer={<ClassicKpiSection defaultOpen />}
+      footerOnOverviewOnly
+      hideTabBar
     />
   );
 }

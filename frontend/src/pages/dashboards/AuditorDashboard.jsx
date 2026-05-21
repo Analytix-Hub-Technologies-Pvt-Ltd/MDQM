@@ -21,7 +21,8 @@ export default function AuditorDashboard() {
       tabs={TABS}
       overview={<RoleDashboardCore endpoint="auditor" />}
       renderTab={renderAuditorTab}
-      footer={<ClassicKpiSection />}
+      footer={<ClassicKpiSection defaultOpen />}
+      footerOnOverviewOnly
     />
   );
 }

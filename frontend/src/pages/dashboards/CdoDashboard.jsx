@@ -27,7 +27,8 @@ export default function CdoDashboard() {
         </RoleDashboardCore>
       }
       renderTab={renderCdoTab}
-      footer={<ClassicKpiSection />}
+      footer={<ClassicKpiSection defaultOpen />}
+      footerOnOverviewOnly
     />
   );
 }

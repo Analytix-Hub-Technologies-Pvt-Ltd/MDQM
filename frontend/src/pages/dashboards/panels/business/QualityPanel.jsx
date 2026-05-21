@@ -6,11 +6,14 @@ import StatCard from "../../../../components/business/StatCard";
 import { Sparkles, CheckCircle2, TriangleAlert, AlertCircle } from "lucide-react";
 import { StatusBadge } from "../../../../components/enterprise/EnterpriseDataPanel";
 import { formatRelativeTime } from "../../../../utils/formatRelativeTime";
+import BusinessQualityRulesModal from "./BusinessQualityRulesModal";
 
 export default function QualityPanel() {
   const [data, setData] = useState({ items: [], summary: {} });
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
+  const [rulesModalOpen, setRulesModalOpen] = useState(false);
+  const [rulesDataset, setRulesDataset] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -32,6 +35,12 @@ export default function QualityPanel() {
 
   const s = data.summary;
 
+  const openRules = (row) => {
+    if (!row?.job_id) return;
+    setRulesDataset(row);
+    setRulesModalOpen(true);
+  };
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -43,6 +52,9 @@ export default function QualityPanel() {
       {err ? <p className="text-xs text-amber-400">{err}</p> : null}
       <div className="enterprise-card overflow-x-auto">
         <h3 className="enterprise-title p-4 pb-2">Quality score overview</h3>
+        <p className="px-4 pb-2 text-[11px] text-[#7f95b6]">
+          Click a dataset with a linked DQ job to configure validation rules and run checks.
+        </p>
         {loading ? (
           <p className="p-4 text-sm text-[#7f95b6]">Loading…</p>
         ) : (
@@ -64,11 +76,19 @@ export default function QualityPanel() {
             <tbody>
               {data.items.map((r) => {
                 const assessed = r.dq_job_linked || r.score_source === "manual";
+                const canEditRules = Boolean(r.job_id);
                 return (
-                  <tr key={r.id ?? r.name} className="border-b border-[#22324f]/50">
+                  <tr
+                    key={r.id ?? r.name}
+                    className={`border-b border-[#22324f]/50 ${canEditRules ? "cursor-pointer hover:bg-[#132542]/60" : ""}`}
+                    onClick={() => canEditRules && openRules(r)}
+                    title={canEditRules ? "Configure DQ rules and run validation" : undefined}
+                  >
                     <td className="p-3 font-medium text-[#d7e3f7]">
                       {r.name}
-                      {!assessed ? (
+                      {canEditRules ? (
+                        <span className="block text-[10px] font-normal text-[#4f8cff]/90 mt-0.5">Click to set rules</span>
+                      ) : !assessed ? (
                         <span className="block text-[10px] font-normal text-amber-400/90 mt-0.5">No DQ job linked</span>
                       ) : null}
                     </td>
@@ -98,6 +118,18 @@ export default function QualityPanel() {
         )}
         {!loading && !data.items.length ? <p className="p-4 text-xs text-[#7f95b6]">Add datasets to the enterprise catalog to see scores.</p> : null}
       </div>
+
+      {rulesModalOpen ? (
+        <BusinessQualityRulesModal
+          dataset={rulesDataset}
+          open={rulesModalOpen}
+          onClose={() => {
+            setRulesModalOpen(false);
+            setRulesDataset(null);
+          }}
+          onRunComplete={load}
+        />
+      ) : null}
     </div>
   );
 }

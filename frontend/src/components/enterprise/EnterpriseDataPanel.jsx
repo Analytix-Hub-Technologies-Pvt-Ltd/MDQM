@@ -23,6 +23,7 @@ export default function EnterpriseDataPanel({
   pageSize = 10,
   searchPlaceholder = "Search…",
   emptyMessage = "No records match your filters.",
+  refreshEventName,
 }) {
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
@@ -57,6 +58,13 @@ export default function EnterpriseDataPanel({
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (!refreshEventName) return;
+    const onRefresh = () => load();
+    window.addEventListener(refreshEventName, onRefresh);
+    return () => window.removeEventListener(refreshEventName, onRefresh);
+  }, [refreshEventName, load]);
 
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
 
@@ -97,7 +105,7 @@ export default function EnterpriseDataPanel({
               {items.map((row, idx) => (
                 <tr key={row.id ?? idx} className="border-b border-[#22324f]/60 hover:bg-[#0f1b31]/60">
                   {columns.map((c) => (
-                    <td key={c.key} className="p-2 text-[#d7e3f7] align-top">
+                    <td key={c.key} className="p-2 text-[#d7e3f7] align-middle">
                       {c.render ? c.render(row[c.key], row) : String(row[c.key] ?? "—")}
                     </td>
                   ))}

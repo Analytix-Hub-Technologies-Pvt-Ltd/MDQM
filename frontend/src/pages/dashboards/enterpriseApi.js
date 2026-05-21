@@ -92,9 +92,21 @@ export async function enterpriseGovernanceDatasetCreate(body) {
   return apiClient.post("/api/enterprise/governance/datasets", body);
 }
 
+export async function enterpriseGovernanceDatasetPreview(datasetId) {
+  return apiClient.get(`/api/enterprise/governance/datasets/${datasetId}/preview`);
+}
+
 export async function enterpriseGovernanceAccessRequests(params) {
   const res = await apiClient.get("/api/enterprise/governance/access-requests", { params });
   return { data: unwrapList(res) };
+}
+
+export async function enterpriseGovernanceAccessRequestApprove(requestId) {
+  return apiClient.post(`/api/enterprise/governance/access-requests/${requestId}/approve`);
+}
+
+export async function enterpriseGovernanceAccessRequestReject(requestId) {
+  return apiClient.post(`/api/enterprise/governance/access-requests/${requestId}/reject`);
 }
 
 export async function enterpriseGovernanceGlossary(params) {
@@ -154,6 +166,10 @@ export async function enterpriseBusinessOverview() {
 export async function enterpriseBusinessCatalog(params) {
   const res = await apiClient.get("/api/enterprise/business/catalog", { params });
   return { data: unwrapList(res) };
+}
+
+export async function enterpriseBusinessCatalogDetail(datasetId) {
+  return apiClient.get(`/api/enterprise/business/catalog/${datasetId}/detail`);
 }
 
 export async function enterpriseBusinessQualityScores(params) {

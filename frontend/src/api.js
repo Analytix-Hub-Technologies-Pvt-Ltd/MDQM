@@ -189,6 +189,11 @@ export const connectToDb = async (credentials) => {
     return apiClient.post(`/db/connect`, credentials);
 };
 
+/** Re-pull all tables for a job created via /db/connect (uses stored db_source_config). */
+export const refreshJobFromDb = async (jobId, body = {}) => {
+    return apiClient.post(`/jobs/${jobId}/refresh-from-db`, body);
+};
+
 export const listDatabases = async (credentials) => {
     return apiClient.post(`/db/list-databases`, credentials);
 };
@@ -211,6 +216,11 @@ export const getDbTableColumns = async (payload) => {
 
 export const listSavedConnections = async () => {
     return apiClient.get(`/db/connections`);
+};
+
+/** Full credentials for a saved profile (password decrypted server-side); use only to pre-fill the form. */
+export const getSavedConnectionCredentials = async (connectionId) => {
+    return apiClient.get(`/db/connections/${connectionId}/credentials`);
 };
 
 export const saveDbConnection = async (payload) => {

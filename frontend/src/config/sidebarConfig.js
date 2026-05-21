@@ -16,7 +16,10 @@ import {
   Share2,
   TriangleAlert,
   Inbox,
-  Bell,
+  Database,
+  FileText,
+  BarChart3,
+  Award,
 } from "lucide-react";
 import { PERMISSIONS } from "../auth/permissions";
 import { ROLES } from "../auth/rolePermissions";
@@ -56,9 +59,17 @@ export const SIDEBAR_CONFIG = {
     ] },
   ],
   [ROLES.DATA_OWNER]: [
-    { group: "Ownership", items: [
-      { label: "Dashboard", path: "/dashboard", icon: LayoutDashboard, permission: PERMISSIONS.DASHBOARD_VIEW },
-      { label: "Governance", path: "/governance", icon: Landmark, permission: PERMISSIONS.GOVERNANCE_VIEW },
+    { group: "Governance desk", items: [
+      { label: "Overview", path: "/dashboard", icon: LayoutDashboard, permission: PERMISSIONS.DASHBOARD_VIEW },
+      { label: "Datasets", path: "/dashboard?tab=datasets", icon: Database, permission: PERMISSIONS.DASHBOARD_VIEW },
+      { label: "Policies", path: "/dashboard?tab=policies", icon: FileText, permission: PERMISSIONS.DASHBOARD_VIEW },
+      { label: "Glossary", path: "/dashboard?tab=glossary", icon: BookMarked, permission: PERMISSIONS.GOVERNANCE_VIEW },
+      { label: "Business reports", path: "/dashboard?tab=business-reports", icon: BarChart3, permission: PERMISSIONS.DASHBOARD_VIEW },
+      { label: "Access Requests", path: "/dashboard?tab=access-requests", icon: Inbox, permission: PERMISSIONS.DASHBOARD_VIEW },
+      { label: "Certifications", path: "/dashboard?tab=certifications", icon: Award, permission: PERMISSIONS.DASHBOARD_VIEW },
+      { label: "Lineage", path: "/dashboard?tab=lineage", icon: Share2, permission: PERMISSIONS.DASHBOARD_VIEW },
+    ] },
+    { group: "More", items: [
       { label: "Compliance", path: "/compliance", icon: ClipboardCheck, permission: PERMISSIONS.COMPLIANCE_VIEW },
       { label: "Reports", path: "/reports", icon: FileBarChart, permission: PERMISSIONS.REPORTS_VIEW },
     ] },
@@ -96,8 +107,6 @@ export const SIDEBAR_CONFIG = {
       { label: "My reports", path: "/dashboard?tab=reports", icon: FileBarChart, permission: PERMISSIONS.REPORTS_VIEW },
       { label: "Compliance", path: "/dashboard?tab=compliance", icon: ClipboardCheck, permission: PERMISSIONS.COMPLIANCE_VIEW },
       { label: "Issues", path: "/dashboard?tab=issues", icon: TriangleAlert, permission: PERMISSIONS.STEWARDSHIP_VIEW },
-      { label: "Data requests", path: "/dashboard?tab=requests", icon: Inbox, permission: PERMISSIONS.DASHBOARD_VIEW },
-      { label: "Alerts", path: "/dashboard?tab=alerts", icon: Bell, permission: PERMISSIONS.DASHBOARD_VIEW },
     ] },
   ],
 };

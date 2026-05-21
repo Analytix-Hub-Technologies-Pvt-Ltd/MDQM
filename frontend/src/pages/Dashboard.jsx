@@ -171,7 +171,7 @@ function DimensionSparkline({ values, gradientId }) {
   );
 }
 
-export default function Dashboard() {
+export default function Dashboard({ embedded = false }) {
   const [data, setData] = useState(null);
   const [activeView, setActiveView] = useState("overview");
   const [selectedMetric, setSelectedMetric] = useState("all");
@@ -336,27 +336,36 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="flex-1 bg-[#FBFBFB] text-[#23243B] h-screen overflow-y-auto p-8">
-      {/* HEADER SECTION */}
-      <div className="mb-10 border-b border-[#A1A3AF] border-opacity-20 pb-6 flex justify-between items-end">
-        <div>
-          <h1 className="text-4xl font-thin tracking-tighter uppercase flex items-center gap-3">
-            <Activity size={32} className="text-blue-600" /> Data Quality Hub
-          </h1>
-          <p className="text-sm text-gray-400 tracking-widest uppercase mt-2">
-            MDQM Monitoring Dashboard
-          </p>
+    <div
+      className={
+        embedded
+          ? "bg-[#FBFBFB] text-[#23243B] overflow-y-auto max-h-[min(75vh,820px)] p-4"
+          : "flex-1 bg-[#FBFBFB] text-[#23243B] h-screen overflow-y-auto p-8"
+      }
+    >
+      {!embedded ? (
+        <div className="mb-10 border-b border-[#A1A3AF] border-opacity-20 pb-6 flex justify-between items-end">
+          <div>
+            <h1 className="text-4xl font-thin tracking-tighter uppercase flex items-center gap-3">
+              <Activity size={32} className="text-blue-600" /> Data Quality Hub
+            </h1>
+            <p className="text-sm text-gray-400 tracking-widest uppercase mt-2">
+              MDQM Monitoring Dashboard
+            </p>
+          </div>
         </div>
-      </div>
+      ) : null}
 
-      <div className="mb-8 border-b border-gray-200 pb-3 flex gap-3">
+      <div className="mb-6 border-b border-gray-200 pb-3 flex flex-wrap gap-3">
         <button
+          type="button"
           onClick={() => setActiveView("overview")}
           className={`px-4 py-2 text-xs uppercase tracking-widest border ${tabClass("overview")}`}
         >
           Overview
         </button>
         <button
+          type="button"
           onClick={() => setActiveView("dimensions")}
           className={`px-4 py-2 text-xs uppercase tracking-widest border ${tabClass("dimensions")}`}
         >

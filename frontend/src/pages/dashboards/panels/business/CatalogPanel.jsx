@@ -1,17 +1,24 @@
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { enterpriseBusinessCatalog } from "../../enterpriseApi";
 import ScoreRing from "../../../../components/business/ScoreRing";
 import { StatusBadge } from "../../../../components/enterprise/EnterpriseDataPanel";
 import { formatRelativeTime } from "../../../../utils/formatRelativeTime";
+import DataAccessRequestModal from "./DataAccessRequestModal";
+import CatalogDatasetDetailModal from "./CatalogDatasetDetailModal";
 
 export default function CatalogPanel() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [debounced, setDebounced] = useState("");
   const [err, setErr] = useState("");
+  const [requestModalOpen, setRequestModalOpen] = useState(false);
+  const [requestDataset, setRequestDataset] = useState("");
+  const [detailModalOpen, setDetailModalOpen] = useState(false);
+  const [detailDatasetId, setDetailDatasetId] = useState(null);
 
   useEffect(() => {
     const t = setTimeout(() => setDebounced(q.trim()), 350);
@@ -36,10 +43,38 @@ export default function CatalogPanel() {
     load();
   }, [load]);
 
-  const goRequest = (name) => navigate(`/dashboard?tab=requests&dataset=${encodeURIComponent(name)}`);
+  /** Open request modal when redirected from legacy ?tab=requests or ?openRequest=name */
+  useEffect(() => {
+    const ds = searchParams.get("openRequest") || "";
+    if (!ds) return;
+    setRequestDataset(ds);
+    setRequestModalOpen(true);
+    const next = new URLSearchParams(searchParams);
+    next.delete("openRequest");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  const openRequestModal = (name) => {
+    setRequestDataset(name || "");
+    setRequestModalOpen(true);
+  };
+
+  const openDetailModal = (dataset) => {
+    if (dataset?.id == null) return;
+    setDetailDatasetId(dataset.id);
+    setDetailModalOpen(true);
+  };
+
   const goLineage = (name) => navigate(`/dashboard?tab=lineage&dataset=${encodeURIComponent(name)}`);
 
   const canAccess = (d) => Boolean(d.access_granted) || (d.dq_job_linked && (d.score ?? 0) >= 70);
+
+  const onRequestSubmitted = () => {
+    setRequestModalOpen(false);
+    setRequestDataset("");
+    window.dispatchEvent(new CustomEvent("mdqm-notifications-refresh"));
+    load();
+  };
 
   return (
     <div className="space-y-4">
@@ -93,6 +128,15 @@ export default function CatalogPanel() {
               <p className="text-[10px] text-[#5c6d8a] mb-2">Last DQ run: {formatRelativeTime(d.last_run)}</p>
             ) : null}
             <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="rounded border border-[#4f8cff]/50 bg-[#1a2844] px-3 py-1.5 text-xs font-semibold text-[#9ab0d1] hover:border-[#4f8cff] hover:text-[#d7e3f7]"
+                onClick={() => openDetailModal(d)}
+                disabled={!d.id && !d.dq_job_linked}
+                title={d.dq_job_linked ? "View validation rules and DQ run results" : "No dataset detail available"}
+              >
+                View details
+              </button>
               {canAccess(d) ? (
                 <button
                   type="button"
@@ -107,7 +151,11 @@ export default function CatalogPanel() {
                   Restricted
                 </button>
               )}
-              <button type="button" className="rounded border border-[#2a3f63] px-3 py-1.5 text-xs text-[#d7e3f7]" onClick={() => goRequest(d.name)}>
+              <button
+                type="button"
+                className="rounded border border-[#2a3f63] px-3 py-1.5 text-xs text-[#d7e3f7] hover:border-[#4f8cff]"
+                onClick={() => openRequestModal(d.name)}
+              >
                 Request access
               </button>
               <button type="button" className="rounded border border-[#2a3f63] px-3 py-1.5 text-xs text-[#d7e3f7]" onClick={() => goLineage(d.name)}>
@@ -118,6 +166,28 @@ export default function CatalogPanel() {
         ))}
       </div>
       {!loading && !items.length ? <p className="text-sm text-[#7f95b6]">No datasets match your search.</p> : null}
+
+      {requestModalOpen ? (
+        <DataAccessRequestModal
+          initialDataset={requestDataset}
+          onClose={() => {
+            setRequestModalOpen(false);
+            setRequestDataset("");
+          }}
+          onSubmitted={onRequestSubmitted}
+        />
+      ) : null}
+
+      {detailModalOpen ? (
+        <CatalogDatasetDetailModal
+          datasetId={detailDatasetId}
+          open={detailModalOpen}
+          onClose={() => {
+            setDetailModalOpen(false);
+            setDetailDatasetId(null);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

@@ -15,7 +15,7 @@ export default function AdminPanel() {
   const defaultRole = "ANALYST";
   const [users, setUsers] = useState([]);
   const [roles, setRoles] = useState([]);
-  const [form, setForm] = useState({ full_name: "", email: "", role: defaultRole, password: "" });
+  const [form, setForm] = useState({ full_name: "", username: "", email: "", role: defaultRole, password: "" });
   const [editUser, setEditUser] = useState(null);
   const [draftRole, setDraftRole] = useState(defaultRole);
   const [msg, setMsg] = useState("");
@@ -37,9 +37,13 @@ export default function AdminPanel() {
     setErr("");
     setMsg("");
     try {
-      await adminCreateUser({ ...form, password: form.password || undefined });
+      await adminCreateUser({
+        ...form,
+        username: form.username.trim() || undefined,
+        password: form.password || undefined,
+      });
       setMsg("User created");
-      setForm({ full_name: "", email: "", role: defaultRole, password: "" });
+      setForm({ full_name: "", username: "", email: "", role: defaultRole, password: "" });
       await load();
     } catch (e2) {
       setErr(e2?.response?.data?.detail || "Failed to create user");
@@ -125,6 +129,7 @@ export default function AdminPanel() {
           <h2 className="text-sm uppercase tracking-widest text-gray-600 mb-3">Create User</h2>
           <form className="space-y-2" onSubmit={createUser}>
             <input className="w-full border border-gray-300 px-3 py-2 text-sm text-gray-900" placeholder="Full name" value={form.full_name} onChange={(e) => setForm((p) => ({ ...p, full_name: e.target.value }))} required />
+            <input className="w-full border border-gray-300 px-3 py-2 text-sm text-gray-900" placeholder="Username" value={form.username} onChange={(e) => setForm((p) => ({ ...p, username: e.target.value }))} />
             <input className="w-full border border-gray-300 px-3 py-2 text-sm text-gray-900" placeholder="Email" value={form.email} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} required />
             <select className="w-full border border-gray-300 px-3 py-2 text-sm text-gray-900" value={form.role} onChange={(e) => setForm((p) => ({ ...p, role: e.target.value }))}>
               {(roles.length ? roles : ["ADMIN", "CDO", "DATA_STEWARD", "DATA_OWNER", "DEVELOPER", "AUDITOR", "ANALYST", "BUSINESS_USER"]).map((r) => (

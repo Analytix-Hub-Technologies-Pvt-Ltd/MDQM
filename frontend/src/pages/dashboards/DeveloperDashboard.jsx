@@ -23,7 +23,8 @@ export default function DeveloperDashboard() {
       tabs={TABS}
       overview={<RoleDashboardCore endpoint="developer" />}
       renderTab={renderDeveloperTab}
-      footer={<ClassicKpiSection />}
+      footer={<ClassicKpiSection defaultOpen />}
+      footerOnOverviewOnly
     />
   );
 }

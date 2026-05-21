@@ -1,5 +1,8 @@
+import { useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import EnterpriseDashboardShell from "../../components/enterprise/EnterpriseDashboardShell";
 import BusinessUserOverview from "../../components/business/BusinessUserOverview";
+import ClassicKpiSection from "./ClassicKpiSection";
 import { renderBusinessUserTab } from "./panels/BusinessUserPanels";
 
 const TABS = [
@@ -10,11 +13,21 @@ const TABS = [
   { id: "reports", label: "My reports" },
   { id: "compliance", label: "Compliance" },
   { id: "issues", label: "Issues" },
-  { id: "requests", label: "Data requests" },
-  { id: "alerts", label: "Alerts" },
 ];
 
 export default function BusinessUserDashboard() {
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  useEffect(() => {
+    if (searchParams.get("tab") !== "requests") return;
+    const next = new URLSearchParams(searchParams);
+    next.set("tab", "catalog");
+    const ds = searchParams.get("dataset");
+    if (ds) next.set("openRequest", ds);
+    next.delete("dataset");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+
   return (
     <EnterpriseDashboardShell
       title="Business user workspace"
@@ -24,6 +37,8 @@ export default function BusinessUserDashboard() {
       tabs={TABS}
       overview={<BusinessUserOverview />}
       renderTab={renderBusinessUserTab}
+      footer={<ClassicKpiSection defaultOpen />}
+      footerOnOverviewOnly
       hideTabBar
     />
   );

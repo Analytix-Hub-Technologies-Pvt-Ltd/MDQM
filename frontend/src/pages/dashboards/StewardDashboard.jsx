@@ -27,7 +27,8 @@ export default function StewardDashboard() {
         </RoleDashboardCore>
       }
       renderTab={renderStewardTab}
-      footer={<ClassicKpiSection />}
+      footer={<ClassicKpiSection defaultOpen />}
+      footerOnOverviewOnly
     />
   );
 }

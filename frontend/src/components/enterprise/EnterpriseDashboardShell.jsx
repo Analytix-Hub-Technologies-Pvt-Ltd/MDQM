@@ -22,6 +22,8 @@ export default function EnterpriseDashboardShell({
   overview,
   renderTab,
   footer = null,
+  /** When true, `footer` renders only on the Overview tab (not on sidebar workspace tabs). */
+  footerOnOverviewOnly = false,
   /** When true, horizontal tabs are hidden (e.g. business user uses left sidebar links). */
   hideTabBar = false,
   /** When false, no Overview tab — first tab in `tabs` is the default. */
@@ -60,7 +62,7 @@ export default function EnterpriseDashboardShell({
       {!hideTabBar ? <EnterpriseTabBar tabs={tabDefs} activeId={activeId} onChange={setTab} /> : null}
 
       <div className="min-h-[200px]">{content}</div>
-      {footer}
+      {footer && (!footerOnOverviewOnly || activeId === "overview") ? footer : null}
     </section>
   );
 }

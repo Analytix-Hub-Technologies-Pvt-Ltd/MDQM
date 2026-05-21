@@ -1,5 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import Sidebar from "./components/Sidebar";
+import AlertsBell from "./components/AlertsBell";
+import { normalizeRole, ROLES } from "./auth/rolePermissions";
 import ValidationRules from "./pages/ValidationRules";
 import JobList from "./pages/JobList";
 import QuarantineSection from "./components/QuarantineSection";
@@ -34,13 +36,20 @@ function AppShell() {
       <Sidebar />
 
       <div className="flex-1 overflow-hidden flex flex-col">
-        <div className="h-12 border-b border-gray-200 bg-white px-5 flex items-center justify-between">
-          <div className="text-xs uppercase tracking-widest text-gray-500">
+        <div className="h-12 border-b border-gray-200 bg-white px-5 flex items-center justify-between gap-3">
+          <div className="text-xs uppercase tracking-widest text-gray-500 truncate min-w-0">
             {user?.full_name} ({user?.role})
           </div>
-          <button className="text-xs uppercase tracking-widest border border-gray-300 px-3 py-1 text-gray-600" onClick={logout}>
-            Logout
-          </button>
+          <div className="flex items-center gap-3 shrink-0">
+            {normalizeRole(user?.role) === ROLES.BUSINESS_USER ? <AlertsBell /> : null}
+            <button
+              type="button"
+              className="text-xs uppercase tracking-widest border border-gray-300 px-3 py-1 text-gray-600 hover:bg-gray-50"
+              onClick={logout}
+            >
+              Logout
+            </button>
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto">
           <Routes>

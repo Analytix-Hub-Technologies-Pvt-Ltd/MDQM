@@ -1,8 +1,12 @@
 import { useState } from "react";
 import LegacyKpiDashboard from "../Dashboard";
 
-export default function ClassicKpiSection() {
-  const [show, setShow] = useState(false);
+/**
+ * @param {boolean} [defaultOpen] - Start expanded on the Overview tab.
+ */
+export default function ClassicKpiSection({ defaultOpen = false }) {
+  const [show, setShow] = useState(defaultOpen);
+
   return (
     <section className="enterprise-card mt-6">
       <div className="px-4 py-3 border-b border-[#22324f] flex items-center justify-between">
@@ -15,7 +19,7 @@ export default function ClassicKpiSection() {
           {show ? "Hide" : "Show"}
         </button>
       </div>
-      {show ? <LegacyKpiDashboard /> : null}
+      {show ? <LegacyKpiDashboard embedded /> : null}
     </section>
   );
 }
