@@ -1,0 +1,3 @@
+id,user_id,resource,action,ip_address,meta,created_at
+1,14,enterprise.schedule:1,scheduler.create,127.0.0.1,{'job_id': 212},2026-05-12 16:25:33.118839
+2,14,enterprise.schedule:2,scheduler.create,127.0.0.1,{'job_id': 209},2026-05-14 12:17:23.962727

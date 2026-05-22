@@ -1,6 +1,6 @@
 if True:
     from datetime import datetime
-    from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException, Body
+    from fastapi import BackgroundTasks, FastAPI, UploadFile, File, Form, Depends, HTTPException, Body
     from fastapi.middleware.cors import CORSMiddleware
     from sqlalchemy.orm import Session
     from sqlalchemy.exc import IntegrityError
@@ -195,21 +195,49 @@ if True:
         finally:
             db.close()
 
+    def _run_scheduled_refresh(job_id: int):
+        _execute_import_for_job(job_id, body=None)
+
 
     def _scheduler_job_key(job_id: int) -> str:
         return f"scheduled_job_{job_id}"
 
+    def _scheduler_refresh_job_key(job_id: int) -> str:
+        return f"{_scheduler_job_key(job_id)}_refresh"
+
+    def _parse_scheduled_job_id(scheduler_id: str) -> int | None:
+        raw = str(scheduler_id or "")
+        if not raw.startswith("scheduled_job_"):
+            return None
+        suffix = raw.replace("scheduled_job_", "", 1)
+        if suffix.endswith("_refresh"):
+            suffix = suffix[: -len("_refresh")]
+        try:
+            return int(suffix)
+        except ValueError:
+            return None
+
+    def _schedule_action_from_id(scheduler_id: str) -> str:
+        return "refresh" if str(scheduler_id or "").endswith("_refresh") else "dq"
+
+    def _find_scheduled_job(job_id: int, *, prefer_refresh: bool = False):
+        keys = (
+            [_scheduler_refresh_job_key(job_id), _scheduler_job_key(job_id)]
+            if prefer_refresh
+            else [_scheduler_job_key(job_id), _scheduler_refresh_job_key(job_id)]
+        )
+        for key in keys:
+            j = scheduler.get_job(key)
+            if j:
+                return j, key
+        return None, None
 
     def _serialize_schedule_job(job):
-        job_id = None
-        if str(getattr(job, "id", "")).startswith("scheduled_job_"):
-            try:
-                job_id = int(str(job.id).replace("scheduled_job_", "", 1))
-            except ValueError:
-                job_id = None
+        sid = str(getattr(job, "id", ""))
         return {
-            "scheduler_id": getattr(job, "id", ""),
-            "job_id": job_id,
+            "scheduler_id": sid,
+            "job_id": _parse_scheduled_job_id(sid),
+            "action": _schedule_action_from_id(sid),
             "next_run_time": job.next_run_time.isoformat() if getattr(job, "next_run_time", None) else None,
             "trigger": str(getattr(job, "trigger", "")),
             "paused": bool(getattr(job, "next_run_time", None) is None),
@@ -798,6 +826,214 @@ if True:
             models.TableStats.table_id == table_id,
         ).delete(synchronize_session=False)
         db.commit()
+
+    def _resolve_import_creds_from_job(db: Session, job: models.Job, body: dict | None = None):
+        """Build Postgres creds + schema/tables from job.db_source_config (saved connection aware)."""
+        body = body or {}
+        cfg = job.db_source_config
+        if not cfg or not isinstance(cfg, dict) or cfg.get("kind") != "postgres_tables":
+            raise HTTPException(
+                status_code=400,
+                detail="Import is only available for datasets registered from Postgres tables.",
+            )
+        schema_name = str(cfg.get("schema_name") or "").strip()
+        table_names = cfg.get("table_names") or []
+        if not schema_name or not isinstance(table_names, list) or len(table_names) == 0:
+            raise HTTPException(status_code=400, detail="Stored DB source configuration is incomplete.")
+
+        cid_raw = cfg.get("connection_id")
+        cid_norm = None
+        if cid_raw is not None and str(cid_raw).strip() != "" and str(cid_raw).lower() not in ("null", "nan"):
+            try:
+                cid_norm = int(float(cid_raw))
+            except (ValueError, TypeError):
+                cid_norm = None
+        has_saved = cid_norm is not None
+
+        resolve_pl: dict = {
+            "dbname": cfg.get("dbname"),
+            "host": cfg.get("host"),
+            "port": str(cfg.get("port") or "5432"),
+            "user": cfg.get("user"),
+        }
+        from utils.source_secret_crypto import decrypt_db_password_optional
+
+        decrypted_stored = decrypt_db_password_optional(cfg.get("encrypted_db_pass"))
+        if decrypted_stored:
+            resolve_pl["pass"] = decrypted_stored
+        if has_saved:
+            resolve_pl["connection_id"] = cid_norm
+
+        if str(body.get("host") or "").strip():
+            resolve_pl["host"] = str(body["host"]).strip()
+        if str(body.get("port") or "").strip():
+            resolve_pl["port"] = str(body["port"]).strip()
+        if str(body.get("user") or "").strip():
+            resolve_pl["user"] = str(body["user"]).strip()
+        if str(body.get("dbname") or "").strip():
+            resolve_pl["dbname"] = str(body["dbname"]).strip()
+        if body.get("pass") is not None and str(body.get("pass", "")) != "":
+            resolve_pl["pass"] = body["pass"]
+
+        if not has_saved and not str(resolve_pl.get("pass") or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail="No stored password for this dataset. Re-save using a saved DB connection profile.",
+            )
+
+        try:
+            creds = _resolve_connection_payload(resolve_pl)
+        except HTTPException as exc:
+            if exc.status_code != 404 or not has_saved:
+                raise
+            creds = {
+                "host": cfg.get("host"),
+                "port": str(cfg.get("port") or "5432"),
+                "user": cfg.get("user"),
+                "pass": "",
+                "dbname": cfg.get("dbname"),
+            }
+            if body.get("pass"):
+                creds["pass"] = str(body["pass"])
+
+        creds["host"] = str(creds.get("host") or cfg.get("host") or "").strip()
+        creds["user"] = str(creds.get("user") or cfg.get("user") or "").strip()
+        creds["dbname"] = str(creds.get("dbname") or cfg.get("dbname") or "").strip()
+        creds["port"] = str(creds.get("port") or cfg.get("port") or "5432")
+        if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
+            raise HTTPException(status_code=400, detail="Cannot resolve database credentials for import.")
+
+        return creds, schema_name, [str(t).strip() for t in table_names if str(t).strip()]
+
+    def _execute_import_for_job(job_id: int, body: dict | None = None):
+        from services.dataset_db_import import import_tables_into_job
+
+        db = SessionLocal()
+        external_conn = None
+        try:
+            job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+            if not job:
+                return
+            try:
+                creds, schema_name, table_names = _resolve_import_creds_from_job(db, job, body)
+            except HTTPException:
+                job.status = "Import failed"
+                db.commit()
+                return
+            job.status = "Importing"
+            db.commit()
+            external_conn = _connect_postgres_with_fallback(creds)
+            import_tables_into_job(
+                db,
+                job_id=job_id,
+                external_conn=external_conn,
+                schema_name=schema_name,
+                table_names=table_names,
+                snapshot_fn=_snapshot_dataframe_to_job_table,
+            )
+            job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+            if job:
+                job.status = "Pending"
+                db.commit()
+        except Exception:
+            job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+            if job:
+                job.status = "Import failed"
+                db.commit()
+        finally:
+            if external_conn is not None:
+                try:
+                    external_conn.close()
+                except Exception:
+                    pass
+            db.close()
+
+    @app.post("/db/register-dataset")
+    def register_dataset_source(payload: dict = Body(...), db: Session = Depends(get_db)):
+        """
+        Register a dataset job + single table without pulling rows yet.
+        Data Owner uses /jobs/{id}/import-from-db to load data in the background.
+        """
+        from services.dataset_db_import import build_db_source_config
+
+        job_name = str(payload.get("job_name") or "").strip()
+        schema_name = str(payload.get("schema_name") or "").strip()
+        raw_tables = payload.get("table_names")
+
+        if not job_name:
+            raise HTTPException(status_code=400, detail="job_name is required.")
+        if not schema_name:
+            raise HTTPException(status_code=400, detail="schema_name is required.")
+        if not isinstance(raw_tables, list) or len(raw_tables) != 1:
+            raise HTTPException(status_code=400, detail="Exactly one table must be selected.")
+
+        table_name = str(raw_tables[0] or "").strip()
+        if not table_name:
+            raise HTTPException(status_code=400, detail="table_names[0] must be a non-empty string.")
+
+        creds = _resolve_connection_payload(payload)
+        if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
+            raise HTTPException(
+                status_code=400,
+                detail="host, user, and dbname are required (or provide connection_id + dbname).",
+            )
+
+        new_job = models.Job(job_name=job_name, status="Registered")
+        db.add(new_job)
+        db.commit()
+        db.refresh(new_job)
+        job_id = new_job.job_id
+
+        new_table = models.TableMetadata(
+            job_id=job_id,
+            table_id=1,
+            table_name=table_name,
+            row_count=0,
+        )
+        db.add(new_table)
+        db.commit()
+
+        cfg_dict = build_db_source_config(payload, creds, schema_name, [table_name])
+        jr = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+        if jr:
+            jr.db_source_config = cfg_dict
+            db.commit()
+
+        return {
+            "message": "Dataset registered (data not loaded yet). Run import when ready.",
+            "job_id": job_id,
+            "status": "Registered",
+            "created_jobs": [{"job_id": job_id}],
+        }
+
+    @app.post("/jobs/{job_id}/import-from-db")
+    def import_job_from_database(
+        job_id: int,
+        background_tasks: BackgroundTasks,
+        body: Optional[dict] = Body(None),
+        db: Session = Depends(get_db),
+    ):
+        job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.status == "Importing":
+            raise HTTPException(status_code=409, detail="Import already in progress for this job.")
+
+        cfg = job.db_source_config
+        if not cfg or not isinstance(cfg, dict) or cfg.get("kind") != "postgres_tables":
+            raise HTTPException(
+                status_code=400,
+                detail="Import is only available for Postgres table datasets.",
+            )
+
+        job.status = "Importing"
+        db.commit()
+        background_tasks.add_task(_execute_import_for_job, job_id, body or {})
+        return {
+            "message": "Import started in the background. You can close this screen.",
+            "job_id": job_id,
+            "status": "Importing",
+        }
 
     @app.post("/db/connect")
     def connect_db_create_job(payload: dict = Body(...), db: Session = Depends(get_db)):
@@ -1715,7 +1951,12 @@ if True:
         if not schedule_type:
             raise HTTPException(status_code=400, detail="type is required")
 
+        action = str(data.get("action", "dq")).strip().lower()
+        run_fn = _run_scheduled_refresh if action == "refresh" else _run_scheduled_job
+
         job_key = _scheduler_job_key(job_id)
+        if action == "refresh":
+            job_key = f"{job_key}_refresh"
         try:
             scheduler.remove_job(job_key)
         except Exception:
@@ -1725,7 +1966,7 @@ if True:
             if schedule_type == "daily":
                 hour, minute = map(int, str(data.get("time", "")).split(":"))
                 scheduler.add_job(
-                    _run_scheduled_job,
+                    run_fn,
                     "cron",
                     id=job_key,
                     replace_existing=True,
@@ -1737,7 +1978,7 @@ if True:
             elif schedule_type == "weekly":
                 hour, minute = map(int, str(data.get("time", "")).split(":"))
                 scheduler.add_job(
-                    _run_scheduled_job,
+                    run_fn,
                     "cron",
                     id=job_key,
                     replace_existing=True,
@@ -1750,7 +1991,7 @@ if True:
             elif schedule_type == "hourly":
                 interval = max(int(data.get("interval", 1)), 1)
                 scheduler.add_job(
-                    _run_scheduled_job,
+                    run_fn,
                     "interval",
                     id=job_key,
                     replace_existing=True,
@@ -1767,7 +2008,7 @@ if True:
                 if not run_date:
                     raise HTTPException(status_code=400, detail="date is required for once schedule")
                 scheduler.add_job(
-                    _run_scheduled_job,
+                    run_fn,
                     "date",
                     id=job_key,
                     replace_existing=True,
@@ -1779,7 +2020,7 @@ if True:
                 day_of_month = int(data.get("date", 1))
                 hour, minute = map(int, str(data.get("time", "")).split(":"))
                 scheduler.add_job(
-                    _run_scheduled_job,
+                    run_fn,
                     "cron",
                     id=job_key,
                     replace_existing=True,
@@ -1794,7 +2035,7 @@ if True:
                 if not expr:
                     raise HTTPException(status_code=400, detail="cron is required for cron schedule")
                 scheduler.add_job(
-                    _run_scheduled_job,
+                    run_fn,
                     trigger=CronTrigger.from_crontab(expr),
                     id=job_key,
                     replace_existing=True,
@@ -1807,7 +2048,7 @@ if True:
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Failed to schedule job: {str(e)}")
 
-        return {"message": "Scheduled successfully"}
+        return {"message": "Scheduled successfully", "action": action}
 
 
     @app.get("/schedules")
@@ -1820,39 +2061,43 @@ if True:
 
 
     @app.get("/schedules/{job_id}")
-    def get_schedule(job_id: int):
-        j = scheduler.get_job(_scheduler_job_key(job_id))
+    def get_schedule(job_id: int, action: str | None = None):
+        prefer_refresh = str(action or "").strip().lower() == "refresh"
+        j, _key = _find_scheduled_job(job_id, prefer_refresh=prefer_refresh)
         if not j:
             raise HTTPException(status_code=404, detail="Schedule not found")
         return _serialize_schedule_job(j)
 
 
     @app.post("/schedules/{job_id}/pause")
-    def pause_schedule(job_id: int):
-        j = scheduler.get_job(_scheduler_job_key(job_id))
+    def pause_schedule(job_id: int, action: str | None = None):
+        prefer_refresh = str(action or "").strip().lower() == "refresh"
+        j, key = _find_scheduled_job(job_id, prefer_refresh=prefer_refresh)
         if not j:
             raise HTTPException(status_code=404, detail="Schedule not found")
-        scheduler.pause_job(_scheduler_job_key(job_id))
-        j = scheduler.get_job(_scheduler_job_key(job_id))
+        scheduler.pause_job(key)
+        j = scheduler.get_job(key)
         return {"message": "Schedule paused", "schedule": _serialize_schedule_job(j)}
 
 
     @app.post("/schedules/{job_id}/resume")
-    def resume_schedule(job_id: int):
-        j = scheduler.get_job(_scheduler_job_key(job_id))
+    def resume_schedule(job_id: int, action: str | None = None):
+        prefer_refresh = str(action or "").strip().lower() == "refresh"
+        j, key = _find_scheduled_job(job_id, prefer_refresh=prefer_refresh)
         if not j:
             raise HTTPException(status_code=404, detail="Schedule not found")
-        scheduler.resume_job(_scheduler_job_key(job_id))
-        j = scheduler.get_job(_scheduler_job_key(job_id))
+        scheduler.resume_job(key)
+        j = scheduler.get_job(key)
         return {"message": "Schedule resumed", "schedule": _serialize_schedule_job(j)}
 
 
     @app.delete("/schedules/{job_id}")
-    def delete_schedule(job_id: int):
-        j = scheduler.get_job(_scheduler_job_key(job_id))
+    def delete_schedule(job_id: int, action: str | None = None):
+        prefer_refresh = str(action or "").strip().lower() == "refresh"
+        j, key = _find_scheduled_job(job_id, prefer_refresh=prefer_refresh)
         if not j:
             raise HTTPException(status_code=404, detail="Schedule not found")
-        scheduler.remove_job(_scheduler_job_key(job_id))
+        scheduler.remove_job(key)
         return {"message": "Schedule deleted", "job_id": job_id}
 
     # --- SMART GETTERS (WITH STATS) ---

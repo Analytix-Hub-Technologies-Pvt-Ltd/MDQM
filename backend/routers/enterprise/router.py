@@ -7,7 +7,7 @@ import time
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -424,6 +424,52 @@ def governance_dataset_preview(
     if preview is None:
         raise HTTPException(status_code=404, detail="Dataset not found")
     return preview
+
+
+@router.get("/governance/datasets/{dataset_id}/eda-report")
+def governance_dataset_eda_report(
+    dataset_id: int,
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    """HTML exploratory report (ydata-profiling) for the first loaded table on the linked job."""
+    require_any_permission(
+        _role(request),
+        Permissions.DASHBOARD_OWNER,
+        Permissions.DASHBOARD_CDO,
+        Permissions.GOVERNANCE_VIEW,
+        Permissions.ADMIN_VIEW,
+    )
+    row = db.query(models.EnterpriseDataset).filter(models.EnterpriseDataset.id == dataset_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    job_id = row.job_id or busvc._resolve_job_id(db, row)
+    if not job_id:
+        raise HTTPException(status_code=400, detail="No job linked to this dataset.")
+    if not esvc.dataset_has_loaded_data(db, job_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Load data first (Run import), then open the EDA report.",
+        )
+    try:
+        from services.eda_profiling_service import build_ydata_profiling_html
+
+        html = build_ydata_profiling_html(db, job_id)
+    except ValueError as e:
+        if str(e) == "no_data":
+            raise HTTPException(status_code=400, detail="No ingested data available for profiling.")
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"EDA report failed: {e}")
+
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in (row.name or "dataset"))[:80]
+    return HTMLResponse(
+        content=html,
+        headers={"Content-Disposition": f'inline; filename="{safe_name}_eda_report.html"'},
+    )
 
 
 class BusinessReportPublishBody(BaseModel):

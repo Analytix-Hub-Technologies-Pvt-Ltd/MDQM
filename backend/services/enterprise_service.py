@@ -516,6 +516,90 @@ def compute_dataset_scores(db: Session, row: models.EnterpriseDataset) -> dict[s
     return out
 
 
+def dataset_source_kind(
+    db: Session, row: models.EnterpriseDataset, job_id: int | None
+) -> str:
+    """file | table | unknown"""
+    if job_id:
+        job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+        if job:
+            cfg = getattr(job, "db_source_config", None) or {}
+            if isinstance(cfg, dict) and cfg.get("kind") == "postgres_tables":
+                return "table"
+    if (row.classification or "").lower() == "file":
+        return "file"
+    if job_id:
+        return "file"
+    return "unknown"
+
+
+def format_dataset_source_details(
+    db: Session, row: models.EnterpriseDataset, job_id: int | None
+) -> str:
+    """Human-readable source line for the datasets table."""
+    kind = dataset_source_kind(db, row, job_id)
+    if kind == "file":
+        job = (
+            db.query(models.Job).filter(models.Job.job_id == job_id).first() if job_id else None
+        )
+        if job and job.job_name:
+            return f"CSV · {job.job_name}"
+        return "CSV file"
+
+    if not job_id:
+        return (row.description or "—")[:120]
+
+    job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+    if not job:
+        return row.classification or "—"
+
+    cfg = getattr(job, "db_source_config", None) or {}
+    if isinstance(cfg, dict) and cfg.get("kind") == "postgres_tables":
+        host = str(cfg.get("host") or "").strip() or "—"
+        dbname = str(cfg.get("dbname") or "").strip() or "—"
+        schema = str(cfg.get("schema_name") or "").strip() or "—"
+        tables = cfg.get("table_names") or []
+        table = str(tables[0]).strip() if tables else "—"
+        return f"{host} · {dbname} · {schema}.{table}"
+
+    return row.classification or job.job_name or "—"
+
+
+def dataset_column_count(db: Session, job_id: int | None) -> int | None:
+    if not job_id:
+        return None
+    return (
+        db.query(models.ColumnMetadata)
+        .filter(models.ColumnMetadata.job_id == job_id)
+        .count()
+    )
+
+
+def dataset_has_loaded_data(db: Session, job_id: int | None) -> bool:
+    if not job_id:
+        return False
+    from utils.upload_paths import resolve_table_csv_path
+
+    tables = (
+        db.query(models.TableMetadata)
+        .filter(models.TableMetadata.job_id == job_id)
+        .all()
+    )
+    for t in tables:
+        path = resolve_table_csv_path(job_id, t.table_name)
+        if path and (t.row_count or 0) > 0:
+            return True
+        if path:
+            try:
+                import os
+
+                if os.path.isfile(path) and os.path.getsize(path) > 0:
+                    return True
+            except OSError:
+                pass
+    return False
+
+
 def list_datasets(db: Session, page: int, page_size: int, name_q: str | None = None):
     offset, page_size = _page_bounds(page, page_size)
     q = db.query(models.EnterpriseDataset).order_by(models.EnterpriseDataset.id.desc())
@@ -526,16 +610,24 @@ def list_datasets(db: Session, page: int, page_size: int, name_q: str | None = N
     items = []
     for r in rows:
         scores = compute_dataset_scores(db, r)
+        jid = scores.get("job_id") or r.job_id
+        job = db.query(models.Job).filter(models.Job.job_id == jid).first() if jid else None
         items.append(
             {
                 "id": r.id,
                 "name": r.name,
                 "domain": r.domain,
                 "owner_user_id": r.owner_user_id,
-                "job_id": scores.get("job_id") or r.job_id,
+                "job_id": jid,
                 "classification": r.classification,
                 "description": _ellipsis_text(r.description),
                 "created_at": r.created_at.isoformat() if r.created_at else None,
+                "source_kind": dataset_source_kind(db, r, jid),
+                "source_details": format_dataset_source_details(db, r, jid),
+                "column_count": dataset_column_count(db, jid),
+                "import_status": job.status if job else None,
+                "data_loaded": dataset_has_loaded_data(db, jid),
+                "eda_report_ready": dataset_has_loaded_data(db, jid),
                 "eda_score": scores.get("eda_score"),
                 "eda_score_source": scores.get("eda_score_source"),
                 "dq_score": scores.get("dq_score"),
