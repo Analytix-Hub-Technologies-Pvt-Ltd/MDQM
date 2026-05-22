@@ -364,6 +364,18 @@ export const authMe = async () => {
     return apiClient.get(`/auth/me`);
 };
 
+export const getProfile = async () => {
+    return apiClient.get(`/auth/profile`);
+};
+
+export const updateProfile = async (payload) => {
+    return apiClient.put(`/auth/profile`, payload);
+};
+
+export const changePassword = async (payload) => {
+    return apiClient.put(`/auth/change-password`, payload);
+};
+
 export const bootstrapAdmin = async (payload) => {
     return apiClient.post(`/auth/bootstrap`, payload);
 };
@@ -413,6 +425,10 @@ export const adminDeleteUser = async (id) => {
 
 export const adminUpdateUserRole = async (id, role) => {
     return apiClient.post(`/admin/update-user-role/${id}`, { role });
+};
+
+export const adminResetUserPassword = async (id, newPassword) => {
+    return apiClient.post(`/admin/reset-user-password/${id}`, { new_password: newPassword });
 };
 
 export const adminRoles = async () => {

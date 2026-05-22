@@ -7,6 +7,7 @@ import {
   adminListUsers,
   adminRoles,
   adminUpdateUserRole,
+  adminResetUserPassword,
 } from "../api";
 import { useAuth } from "../auth/AuthContext";
 
@@ -20,6 +21,9 @@ export default function AdminPanel() {
   const [draftRole, setDraftRole] = useState(defaultRole);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
+  const [showResetPassword, setShowResetPassword] = useState(false);
+  const [resetPassword, setResetPassword] = useState("");
+  const [resetPasswordConfirm, setResetPasswordConfirm] = useState("");
 
   const load = async () => {
     const [u, roleRes] = await Promise.all([adminListUsers(), adminRoles()]);
@@ -106,6 +110,43 @@ export default function AdminPanel() {
     } catch (e2) {
       setErr(e2?.response?.data?.detail || "Failed to delete user");
     }
+  };
+
+  const handleResetPassword = async () => {
+    if (!editUser) return;
+    if (!resetPassword) {
+      setErr("Please enter a new password");
+      return;
+    }
+    if (resetPassword.length < 8) {
+      setErr("Password must be at least 8 characters");
+      return;
+    }
+    if (resetPassword !== resetPasswordConfirm) {
+      setErr("Passwords do not match");
+      return;
+    }
+    
+    setErr("");
+    setMsg("");
+    try {
+      await adminResetUserPassword(editUser.id, resetPassword);
+      setMsg(`Password reset for user ${editUser.email}`);
+      setShowResetPassword(false);
+      setResetPassword("");
+      setResetPasswordConfirm("");
+      closeUserEditor();
+      await load();
+    } catch (e2) {
+      setErr(e2?.response?.data?.detail || "Failed to reset password");
+    }
+  };
+
+  const closeResetPasswordDialog = () => {
+    setShowResetPassword(false);
+    setResetPassword("");
+    setResetPasswordConfirm("");
+    setErr("");
   };
 
   const isSelf = editUser && currentUser && editUser.id === currentUser.id;
@@ -241,6 +282,13 @@ export default function AdminPanel() {
               </button>
               <button
                 type="button"
+                className="bg-blue-600 px-4 py-2 text-xs uppercase tracking-widest text-white hover:bg-blue-700"
+                onClick={() => setShowResetPassword(true)}
+              >
+                Reset Password
+              </button>
+              <button
+                type="button"
                 className="border border-gray-300 px-4 py-2 text-xs uppercase tracking-widest text-gray-700"
                 onClick={closeUserEditor}
               >
@@ -273,6 +321,70 @@ export default function AdminPanel() {
         <h2 className="text-sm uppercase tracking-widest text-gray-600 mb-3">Roles</h2>
         <div className="text-sm text-gray-700">{roles.join(", ") || "ADMIN, CDO, DATA_STEWARD, DATA_OWNER, DEVELOPER, AUDITOR, ANALYST, BUSINESS_USER"}</div>
       </div>
+
+      {/* Reset Password Modal */}
+      {showResetPassword && editUser && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          role="presentation"
+          onClick={closeResetPasswordDialog}
+        >
+          <div
+            className="w-full max-w-md border border-gray-200 bg-white p-5 shadow-lg"
+            role="dialog"
+            aria-labelledby="reset-password-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 id="reset-password-title" className="text-sm uppercase tracking-widest text-[#23243B] mb-4">
+              Reset Password for {editUser.email}
+            </h3>
+            
+            {err && <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded">{err}</div>}
+            {msg && <div className="mb-4 p-3 bg-green-50 border border-green-200 text-green-700 text-sm rounded">{msg}</div>}
+            
+            <div className="space-y-3 mb-4">
+              <div>
+                <label className="block text-xs uppercase tracking-wider text-gray-500 mb-1">New Password</label>
+                <input
+                  type="password"
+                  className="w-full border border-gray-300 px-3 py-2 text-sm"
+                  placeholder="Enter new password (min 8 characters)"
+                  value={resetPassword}
+                  onChange={(e) => setResetPassword(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-xs uppercase tracking-wider text-gray-500 mb-1">Confirm Password</label>
+                <input
+                  type="password"
+                  className="w-full border border-gray-300 px-3 py-2 text-sm"
+                  placeholder="Confirm new password"
+                  value={resetPasswordConfirm}
+                  onChange={(e) => setResetPasswordConfirm(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="bg-blue-600 px-4 py-2 text-xs uppercase tracking-widest text-white hover:bg-blue-700"
+                onClick={handleResetPassword}
+              >
+                Reset Password
+              </button>
+              <button
+                type="button"
+                className="border border-gray-300 px-4 py-2 text-xs uppercase tracking-widest text-gray-700"
+                onClick={closeResetPasswordDialog}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+

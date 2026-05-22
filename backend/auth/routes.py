@@ -44,6 +44,17 @@ class CompleteInviteBody(BaseModel):
     password: str
 
 
+class UpdateProfileBody(BaseModel):
+    full_name: str | None = None
+    username: str | None = None
+    email: EmailStr | None = None
+
+
+class ChangePasswordBody(BaseModel):
+    current_password: str
+    new_password: str
+
+
 def _user_out(user: models.User):
     return {
         "id": user.id,
@@ -160,3 +171,65 @@ def complete_invite(body: CompleteInviteBody, db: Session = Depends(get_db)):
         "token_type": "bearer",
         "user": _user_out(user),
     }
+
+
+@router.get("/profile")
+def get_profile(user: models.User = Depends(get_current_user)):
+    """Get the current user's profile details."""
+    return {"user": _user_out(user)}
+
+
+@router.put("/profile")
+def update_profile(
+    body: UpdateProfileBody,
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update the current user's profile (full_name, username, email)."""
+    if body.full_name is not None:
+        user.full_name = body.full_name.strip()
+    
+    if body.email is not None:
+        email = body.email.strip().lower()
+        # Check if email is already used by another user
+        existing_user = (
+            db.query(models.User)
+            .filter(models.User.email == email, models.User.id != user.id)
+            .first()
+        )
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Email already in use")
+        user.email = email
+    
+    if body.username is not None:
+        username = _sanitize_username(body.username)
+        if not username:
+            raise HTTPException(status_code=400, detail="Invalid username")
+        # Check if username is already used by another user
+        existing_user = (
+            db.query(models.User)
+            .filter(models.User.username == username, models.User.id != user.id)
+            .first()
+        )
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Username already in use")
+        user.username = username
+    
+    db.commit()
+    db.refresh(user)
+    return {"message": "Profile updated", "user": _user_out(user)}
+
+
+@router.put("/change-password")
+def change_password(
+    body: ChangePasswordBody,
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Change the current user's password."""
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    
+    user.password_hash = hash_password(body.new_password)
+    db.commit()
+    return {"message": "Password changed successfully"}

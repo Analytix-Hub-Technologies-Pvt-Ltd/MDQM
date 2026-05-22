@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import Sidebar from "./components/Sidebar";
 import AlertsBell from "./components/AlertsBell";
+import ProfileDropdown from "./components/ProfileDropdown";
 import { normalizeRole, ROLES } from "./auth/rolePermissions";
 import ValidationRules from "./pages/ValidationRules";
 import JobList from "./pages/JobList";
@@ -9,6 +10,7 @@ import DashboardRouter from "./pages/DashboardRouter";
 import LoginPage from "./pages/LoginPage";
 import RequestAccessPage from "./pages/RequestAccessPage";
 import CompleteInvitePage from "./pages/CompleteInvitePage";
+import ProfilePage from "./pages/ProfilePage";
 import AdminPanel from "./pages/AdminPanel";
 import AdminDashboardLayout from "./pages/admin/AdminDashboardLayout";
 import AdminAccessRequestsPage from "./pages/admin/AdminAccessRequestsPage";
@@ -29,7 +31,7 @@ function PlaceholderPage({ title, description }) {
 }
 
 function AppShell() {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
 
   return (
     <div className="flex h-screen bg-[#FBFBFB]">
@@ -42,18 +44,13 @@ function AppShell() {
           </div>
           <div className="flex items-center gap-3 shrink-0">
             {normalizeRole(user?.role) === ROLES.BUSINESS_USER ? <AlertsBell /> : null}
-            <button
-              type="button"
-              className="text-xs uppercase tracking-widest border border-gray-300 px-3 py-1 text-gray-600 hover:bg-gray-50"
-              onClick={logout}
-            >
-              Logout
-            </button>
+            <ProfileDropdown />
           </div>
         </div>
         <div className="flex-1 overflow-y-auto">
           <Routes>
             <Route path="/dashboard" element={<DashboardRouter />} />
+            <Route path="/profile" element={<ProfilePage />} />
             <Route
               path="/jobs"
               element={

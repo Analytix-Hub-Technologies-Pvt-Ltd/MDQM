@@ -60,6 +60,12 @@ export function AuthProvider({ children }) {
     setAuthToken(null);
   };
 
+  const updateUser = (updatedUserData) => {
+    const mergedUser = { ...user, ...updatedUserData };
+    setUser(mergedUser);
+    localStorage.setItem("mdqm_user", JSON.stringify(mergedUser));
+  };
+
   const value = useMemo(
     () => ({
       token,
@@ -70,6 +76,7 @@ export function AuthProvider({ children }) {
       isViewer: normalizeRole(user?.role) === ROLES.BUSINESS_USER,
       login,
       logout,
+      updateUser,
     }),
     [token, user, ready]
   );

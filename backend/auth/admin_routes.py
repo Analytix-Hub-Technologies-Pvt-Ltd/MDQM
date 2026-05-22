@@ -70,6 +70,10 @@ class RoleUpdateBody(BaseModel):
     role: str
 
 
+class ResetPasswordBody(BaseModel):
+    new_password: str
+
+
 def _normalize_role_input(role: str) -> str:
     raw = (role or "").strip()
     if not raw:
@@ -539,3 +543,38 @@ def delete_user(
         new_values={"deleted": True},
     )
     return {"message": "User deleted"}
+
+
+@router.post("/reset-user-password/{user_id}")
+def reset_user_password(
+    user_id: int,
+    body: ResetPasswordBody,
+    request: Request,
+    admin: models.User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Admin endpoint to reset a user's password."""
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if len(body.new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    
+    old_password_hash = user.password_hash
+    user.password_hash = hash_password(body.new_password)
+    user.password_configured = True
+    db.commit()
+    
+    write_audit_log(
+        db=db,
+        user_id=admin.id,
+        action="admin.reset_user_password",
+        entity_type="user",
+        entity_id=str(user_id),
+        ip_address=request.client.host if request.client else None,
+        old_values={"password_hash": old_password_hash[:20] + "..."},
+        new_values={"password_hash": user.password_hash[:20] + "..."},
+    )
+    
+    return {"message": f"Password reset for user {user.email}"}
