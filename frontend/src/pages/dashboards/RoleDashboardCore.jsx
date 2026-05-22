@@ -7,11 +7,10 @@ import PipelineWidget from "../../components/widgets/PipelineWidget";
 import GovernanceScoreWidget from "../../components/widgets/GovernanceScoreWidget";
 import DataQualityWidget from "../../components/widgets/DataQualityWidget";
 import AuditWidget from "../../components/widgets/AuditWidget";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Card, CardContent } from "@/components/ui/card";
 
-/**
- * Core KPI / trend / health strip used inside tabbed enterprise dashboards (Overview tab).
- */
-export default function RoleDashboardCore({ endpoint, accent = "blue", children = null }) {
+export default function RoleDashboardCore({ endpoint, children = null }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -41,8 +40,13 @@ export default function RoleDashboardCore({ endpoint, accent = "blue", children 
 
   if (loading) {
     return (
-      <div className="enterprise-card p-8 text-center text-sm text-[#9ab0d1] animate-pulse">
-        Loading overview metrics…
+      <div className="space-y-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+          {[1, 2, 3, 4].map((i) => (
+            <Skeleton key={i} className="h-28 rounded-2xl" />
+          ))}
+        </div>
+        <Skeleton className="h-48 rounded-2xl" />
       </div>
     );
   }
@@ -52,27 +56,45 @@ export default function RoleDashboardCore({ endpoint, accent = "blue", children 
 
   return (
     <div className="space-y-6">
-      {error ? <div className="text-sm text-amber-400 border border-amber-500/30 rounded-md px-3 py-2">{error}</div> : null}
+      {error ? (
+        <Card className="border-warning/30 bg-warning/5">
+          <CardContent className="p-4 text-sm text-warning">{error}</CardContent>
+        </Card>
+      ) : null}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
         {kpis.length ? (
           kpis.map((kpi, idx) => (
-            <KPIWidget key={`${kpi.title || "kpi"}-${idx}`} title={kpi.title} value={kpi.value} subtitle={kpi.subtitle} tone={kpi.tone} />
+            <KPIWidget
+              key={`${kpi.title || "kpi"}-${idx}`}
+              title={kpi.title}
+              value={kpi.value}
+              subtitle={kpi.subtitle}
+              tone={kpi.tone}
+            />
           ))
         ) : (
-          <div className="enterprise-card p-6 col-span-full text-center text-sm text-[#7f95b6]">No KPI snapshots available yet.</div>
+          <Card className="col-span-full">
+            <CardContent className="p-6 text-center text-sm text-muted-foreground">
+              No KPI snapshots available yet.
+            </CardContent>
+          </Card>
         )}
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <TrendChart title="Performance Trend" data={trends} />
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <TrendChart title="Performance trend" data={trends} />
         <PipelineWidget pipelines={data?.pipelines || []} />
       </div>
 
-      {children ? <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">{children}</div> : null}
+      {children ? <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">{children}</div> : null}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <StatusCard label="System Health" status={data?.system_health || "Healthy"} description="Current platform operating state." />
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        <StatusCard
+          label="System health"
+          status={data?.system_health || "Healthy"}
+          description="Current platform operating state."
+        />
         <GovernanceScoreWidget score={data?.governance_score || 0} />
         <DataQualityWidget metrics={data?.data_quality || {}} />
       </div>

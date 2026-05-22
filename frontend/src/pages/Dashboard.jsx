@@ -1,122 +1,48 @@
 import React, { useState, useEffect } from "react";
+import { motion } from "framer-motion";
 import { Bar } from "react-chartjs-2";
-import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Tooltip, Legend, LineElement, PointElement } from "chart.js";
-import { ResponsiveContainer, AreaChart, Area, Line, Tooltip as ReTooltip } from "recharts";
-import { getDashboardSummary, getDataQualityMetrics, getAllJobs } from "../api";
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  Tooltip,
+  Legend,
+  LineElement,
+  PointElement,
+} from "chart.js";
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  Line,
+  Tooltip as ReTooltip,
+} from "recharts";
 import {
   Activity,
   Database,
   CheckCircle,
   AlertTriangle,
-  Fingerprint,
-  ShieldAlert,
   Layers,
+  RefreshCw,
+  TrendingUp,
 } from "lucide-react";
+import { getDashboardSummary, getDataQualityMetrics, getAllJobs } from "../api";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Skeleton } from "@/components/ui/skeleton";
+import KpiMetricCard from "@/components/dashboard/KpiMetricCard";
+import RechartsTooltip from "@/components/charts/RechartsTooltip";
+import { getChartColors, scoreColor, scoreTone } from "@/lib/chartTheme";
+import { cn } from "@/lib/utils";
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend, LineElement, PointElement);
 
-function MetricChart({ label, dataList, keyName }) {
-  console.log("Chart Data:", dataList);
-  const rows = (Array.isArray(dataList) ? dataList : []).slice(0, 10);
-  const fullNames = rows.map((row) => String(row.table || ""));
-  const labels = rows.map((row) => {
-    const name = String(row.table || "");
-    return name.length > 10 ? `${name.slice(0, 10)}...` : name;
-  });
-  const values = rows.map((row) => Number(row[keyName] || 0));
-  const avg = values.length ? values.reduce((sum, v) => sum + v, 0) / values.length : 0;
-  const min = values.length ? Math.min(...values) : 0;
-  const max = values.length ? Math.max(...values) : 0;
-  const thresholdColor = (v) => (v >= 90 ? "rgba(34, 197, 94, 0.85)" : v >= 70 ? "rgba(249, 115, 22, 0.85)" : "rgba(239, 68, 68, 0.85)");
-
-  const data = {
-    labels,
-    datasets: [
-      {
-        type: "bar",
-        data: values,
-        backgroundColor: values.map((v) => thresholdColor(v)),
-        borderColor: values.map((v) => thresholdColor(v).replace("0.85", "1")),
-        borderWidth: 1,
-      },
-      {
-        type: "line",
-        data: new Array(values.length).fill(90),
-        borderColor: "rgba(59, 130, 246, 0.9)",
-        borderDash: [6, 4],
-        borderWidth: 2,
-        pointRadius: 0,
-        pointHoverRadius: 0,
-      },
-    ],
-  };
-
-  const options = {
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: {
-      duration: 700,
-      easing: "easeOutQuart",
-    },
-    plugins: {
-      legend: { display: false },
-      tooltip: {
-        callbacks: {
-          title: (items) => {
-            const idx = items?.[0]?.dataIndex ?? 0;
-            return fullNames[idx] || "";
-          },
-          label: (context) => `${Number(context.raw || 0).toFixed(2)}%`,
-        },
-      },
-    },
-    scales: {
-      x: {
-        ticks: {
-          autoSkip: true,
-          maxRotation: 0,
-          minRotation: 0,
-        },
-      },
-      y: {
-        min: 0,
-        max: 100,
-        ticks: {
-          callback: (value) => `${value}%`,
-        },
-      },
-    },
-  };
-
-  return (
-    <div className="bg-white border border-gray-200 p-4">
-      <div className="text-[12px] uppercase tracking-widest text-gray-500 mb-3">{label}</div>
-      <div className="flex items-center gap-2 mb-3">
-        <span className="text-[11px] uppercase tracking-wider px-2 py-1 border border-gray-200 bg-gray-50 text-gray-600">
-          Avg {avg.toFixed(2)}%
-        </span>
-        <span className="text-[11px] uppercase tracking-wider px-2 py-1 border border-gray-200 bg-gray-50 text-gray-600">
-          Min {min.toFixed(2)}%
-        </span>
-        <span className="text-[11px] uppercase tracking-wider px-2 py-1 border border-gray-200 bg-gray-50 text-gray-600">
-          Max {max.toFixed(2)}%
-        </span>
-      </div>
-      <div className="h-[250px]">
-        <Bar data={data} options={options} />
-      </div>
-    </div>
-  );
-}
-
 function DimensionSparkline({ values, gradientId }) {
-  console.log("Sparkline values:", values);
-  (values || []).forEach((value) => {
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric) || numeric < 0 || numeric > 100) {
-      console.warn("Invalid metric value:", value);
-    }
-  });
+  const colors = getChartColors();
   const hasSingleValue = Array.isArray(values) && values.length <= 1;
   const safeValues = (() => {
     const base = (values && values.length ? values : [0]).slice(-7).map((v) => Number(v || 0));
@@ -126,58 +52,125 @@ function DimensionSparkline({ values, gradientId }) {
     }
     return base;
   })();
-  if (safeValues.length > 1 && safeValues.every((v) => v === safeValues[0])) {
-    console.warn("All values are identical → flat graph");
-  }
   const chartData = safeValues.map((value, index) => ({ index, value }));
   const latest = safeValues[safeValues.length - 1] || 0;
-  const lineColor = latest >= 90 ? "#22c55e" : latest >= 70 ? "#f97316" : "#ef4444";
+  const lineColor = scoreColor(latest);
 
   return (
     <div className="w-[140px]">
       <div className="h-[60px]">
-      <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={chartData} margin={{ top: 4, right: 4, left: 4, bottom: 4 }}>
-          <defs>
-            <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={lineColor} stopOpacity={0.28} />
-              <stop offset="100%" stopColor={lineColor} stopOpacity={0.02} />
-            </linearGradient>
-          </defs>
-          <ReTooltip
-            formatter={(value) => [`${Number(value).toFixed(2)}%`, "Value"]}
-            labelFormatter={() => ""}
-            contentStyle={{ border: "1px solid #e5e7eb", fontSize: "12px", padding: "6px 8px" }}
-          />
-          <Area type="monotone" dataKey="value" stroke="none" fill={`url(#${gradientId})`} />
-          <Line
-            type="monotone"
-            dataKey="value"
-            stroke={lineColor}
-            strokeWidth={2}
-            dot={false}
-            isAnimationActive={true}
-            animationDuration={800}
-          />
-        </AreaChart>
-      </ResponsiveContainer>
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={chartData} margin={{ top: 4, right: 4, left: 4, bottom: 4 }}>
+            <defs>
+              <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={lineColor} stopOpacity={0.28} />
+                <stop offset="100%" stopColor={lineColor} stopOpacity={0.02} />
+              </linearGradient>
+            </defs>
+            <ReTooltip content={<RechartsTooltip />} />
+            <Area type="monotone" dataKey="value" stroke="none" fill={`url(#${gradientId})`} />
+            <Line type="monotone" dataKey="value" stroke={lineColor} strokeWidth={2} dot={false} isAnimationActive animationDuration={800} />
+          </AreaChart>
+        </ResponsiveContainer>
       </div>
-      {hasSingleValue && (
-        <div className="text-[9px] uppercase tracking-wider text-gray-400 mt-1">
-          No trend data available
-        </div>
-      )}
+      {hasSingleValue ? (
+        <div className="mt-1 text-[9px] uppercase tracking-wider text-muted-foreground">No trend data</div>
+      ) : null}
     </div>
+  );
+}
+
+function MetricChart({ label, dataList, keyName }) {
+  const colors = getChartColors();
+  const rows = (Array.isArray(dataList) ? dataList : []).slice(0, 10);
+  const fullNames = rows.map((row) => String(row.table || ""));
+  const labels = rows.map((row) => {
+    const name = String(row.table || "");
+    return name.length > 10 ? `${name.slice(0, 10)}…` : name;
+  });
+  const values = rows.map((row) => Number(row[keyName] || 0));
+  const avg = values.length ? values.reduce((sum, v) => sum + v, 0) / values.length : 0;
+  const min = values.length ? Math.min(...values) : 0;
+  const max = values.length ? Math.max(...values) : 0;
+
+  const data = {
+    labels,
+    datasets: [
+      {
+        type: "bar",
+        data: values,
+        backgroundColor: values.map((v) => scoreColor(v) + "cc"),
+        borderColor: values.map((v) => scoreColor(v)),
+        borderWidth: 1,
+        borderRadius: 6,
+      },
+      {
+        type: "line",
+        data: new Array(values.length).fill(90),
+        borderColor: colors.info,
+        borderDash: [6, 4],
+        borderWidth: 2,
+        pointRadius: 0,
+      },
+    ],
+  };
+
+  const options = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: colors.card,
+        titleColor: colors.foreground,
+        bodyColor: colors.muted,
+        borderColor: colors.border,
+        borderWidth: 1,
+        callbacks: {
+          title: (items) => fullNames[items?.[0]?.dataIndex ?? 0] || "",
+          label: (ctx) => `${Number(ctx.raw || 0).toFixed(2)}%`,
+        },
+      },
+    },
+    scales: {
+      x: {
+        ticks: { color: colors.muted, maxRotation: 0 },
+        grid: { color: colors.border + "40" },
+      },
+      y: {
+        min: 0,
+        max: 100,
+        ticks: { color: colors.muted, callback: (v) => `${v}%` },
+        grid: { color: colors.border + "40" },
+      },
+    },
+  };
+
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium">{label}</CardTitle>
+        <div className="flex flex-wrap gap-2 pt-2">
+          <Badge variant="outline">Avg {avg.toFixed(1)}%</Badge>
+          <Badge variant="outline">Min {min.toFixed(1)}%</Badge>
+          <Badge variant="outline">Max {max.toFixed(1)}%</Badge>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="h-[250px]">
+          <Bar data={data} options={options} />
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
 export default function Dashboard({ embedded = false }) {
   const [data, setData] = useState(null);
   const [activeView, setActiveView] = useState("overview");
-  const [selectedMetric, setSelectedMetric] = useState("all");
+  const [selectedJobId, setSelectedJobId] = useState("all");
   const [dqMetrics, setDqMetrics] = useState([]);
   const [jobs, setJobs] = useState([]);
-  const [selectedJobId, setSelectedJobId] = useState("all");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState("");
@@ -198,7 +191,6 @@ export default function Dashboard({ embedded = false }) {
       setDqMetrics(Array.isArray(metricsRes.data) ? metricsRes.data : []);
       setJobs(Array.isArray(jobsRes.data) ? jobsRes.data : []);
       setLastUpdated(new Date().toLocaleTimeString());
-      console.log("API Response (dqMetrics):", Array.isArray(metricsRes.data) ? metricsRes.data : []);
     } catch (err) {
       console.error("Failed to fetch dashboard data:", err);
     }
@@ -208,62 +200,29 @@ export default function Dashboard({ embedded = false }) {
 
   if (loading || !data) {
     return (
-      <div className="p-10 font-mono text-gray-500 uppercase tracking-widest">
-        Compiling System Metrics...
+      <div className={cn("space-y-4", embedded ? "p-4" : "")}>
+        <Skeleton className="h-10 w-64" />
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          {[1, 2, 3].map((i) => (
+            <Skeleton key={i} className="h-32 rounded-2xl" />
+          ))}
+        </div>
+        <Skeleton className="h-64 rounded-2xl" />
       </div>
     );
   }
 
   const { system_metrics, data_health } = data;
+  const overallScore = Number(data_health.overall_score || 0);
+  const tone = scoreTone(overallScore);
+  const scoreLabel = overallScore >= 90 ? "Excellent" : overallScore >= 70 ? "Needs Attention" : "Critical";
 
-  // Determine color based on health score
-  const scoreColor =
-    data_health.overall_score >= 90
-      ? "text-green-500"
-      : data_health.overall_score >= 70
-        ? "text-orange-500"
-        : "text-red-600";
-  const scoreBadgeClass =
-    data_health.overall_score >= 90
-      ? "bg-green-50 text-green-700 border-green-200"
-      : data_health.overall_score >= 70
-        ? "bg-orange-50 text-orange-700 border-orange-200"
-        : "bg-red-50 text-red-700 border-red-200";
-  const scoreLabel =
-    data_health.overall_score >= 90
-      ? "Excellent"
-      : data_health.overall_score >= 70
-        ? "Needs Attention"
-        : "Critical";
-
-  const metricLabels = {
-    completeness: "COMPLETENESS",
-    accuracy: "ACCURACY",
-    consistency: "CONSISTENCY",
-    uniqueness: "UNIQUENESS",
-    validity: "VALIDITY",
-    timeliness: "TIMELINESS",
-  };
-
-  const allMetricKeys = [
-    "completeness",
-    "accuracy",
-    "consistency",
-    "uniqueness",
-    "validity",
-    "timeliness",
-  ];
-
-  const visibleKeys = selectedMetric === "all" ? allMetricKeys : [selectedMetric];
-  const tabClass = (view) =>
-    activeView === view
-      ? "bg-[#23243B] text-white border-[#23243B]"
-      : "bg-white text-gray-600 border-gray-300";
-  console.log("DQ Metrics:", dqMetrics);
+  const allMetricKeys = ["completeness", "accuracy", "consistency", "uniqueness", "validity", "timeliness"];
   const filteredDqMetrics =
     selectedJobId === "all"
       ? dqMetrics
       : dqMetrics.filter((row) => String(row.job_id) === String(selectedJobId));
+
   const aggregatedMetrics = allMetricKeys.reduce((acc, key) => {
     if (!filteredDqMetrics.length) {
       acc[key] = 0;
@@ -273,251 +232,261 @@ export default function Dashboard({ embedded = false }) {
     acc[key] = total / filteredDqMetrics.length;
     return acc;
   }, {});
-  console.log("Aggregated Metrics:", aggregatedMetrics);
+
   const dimensionCards = [
-    {
-      key: "completeness",
-      title: "COMPLETENESS",
-      description: "All required fields are present",
-    },
-    {
-      key: "accuracy",
-      title: "ACCURACY",
-      description: "Values correctly represent real-world data",
-    },
-    {
-      key: "consistency",
-      title: "CONSISTENCY",
-      description: "Data follows the same format everywhere",
-    },
-    {
-      key: "uniqueness",
-      title: "UNIQUENESS",
-      description: "Duplicate records are minimized",
-    },
-    {
-      key: "validity",
-      title: "VALIDITY",
-      description: "Values conform to expected rules",
-    },
-    {
-      key: "timeliness",
-      title: "TIMELINESS",
-      description: "Data is current and available when needed",
-    },
+    { key: "completeness", title: "Completeness", description: "Required fields are present" },
+    { key: "accuracy", title: "Accuracy", description: "Values represent real-world data" },
+    { key: "consistency", title: "Consistency", description: "Uniform format across sources" },
+    { key: "uniqueness", title: "Uniqueness", description: "Duplicates minimized" },
+    { key: "validity", title: "Validity", description: "Conforms to business rules" },
+    { key: "timeliness", title: "Timeliness", description: "Data is current when needed" },
   ];
-  const trendDelta = Number(aggregatedMetrics.completeness || 0) - Number(data_health.overall_score || 0);
+
+  const trendDelta = Number(aggregatedMetrics.completeness || 0) - overallScore;
   const trendLabel = `${trendDelta >= 0 ? "+" : ""}${trendDelta.toFixed(1)}% vs overall`;
+
   const lowQualityTables = [...dqMetrics]
     .map((row) => ({
       job_id: row.job_id,
       table: row.table,
-      quality: (
+      quality:
         (Number(row.completeness || 0) +
           Number(row.accuracy || 0) +
           Number(row.consistency || 0) +
           Number(row.uniqueness || 0) +
           Number(row.validity || 0) +
           Number(row.timeliness || 0)) /
-        6
-      ),
+        6,
     }))
     .sort((a, b) => a.quality - b.quality)
     .slice(0, 5);
+
   const getTrendInfo = (values) => {
     const points = (values && values.length ? values : [0]).slice(-7).map((v) => Number(v || 0));
     const first = points[0] || 0;
     const last = points[points.length - 1] || 0;
     const delta = last - first;
-    return {
-      up: delta >= 0,
-      text: `${delta >= 0 ? "+" : ""}${delta.toFixed(1)}%`,
-    };
+    return { up: delta >= 0, text: `${delta >= 0 ? "+" : ""}${delta.toFixed(1)}%` };
   };
 
+  const wrapperClass = embedded
+    ? "space-y-6 overflow-y-auto max-h-[min(75vh,820px)]"
+    : "space-y-6";
+
   return (
-    <div
-      className={
-        embedded
-          ? "bg-[#FBFBFB] text-[#23243B] overflow-y-auto max-h-[min(75vh,820px)] p-4"
-          : "flex-1 bg-[#FBFBFB] text-[#23243B] h-screen overflow-y-auto p-8"
-      }
-    >
+    <div className={wrapperClass}>
       {!embedded ? (
-        <div className="mb-10 border-b border-[#A1A3AF] border-opacity-20 pb-6 flex justify-between items-end">
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"
+        >
           <div>
-            <h1 className="text-4xl font-thin tracking-tighter uppercase flex items-center gap-3">
-              <Activity size={32} className="text-blue-600" /> Data Quality Hub
-            </h1>
-            <p className="text-sm text-gray-400 tracking-widest uppercase mt-2">
-              MDQM Monitoring Dashboard
-            </p>
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/15 text-primary">
+                <Activity className="h-5 w-5" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-semibold tracking-tight text-foreground">Data Quality Hub</h1>
+                <p className="text-sm text-muted-foreground">MDQM monitoring & analytics</p>
+              </div>
+            </div>
           </div>
-        </div>
+          <Button variant="outline" size="sm" onClick={() => fetchSummary(true)} disabled={refreshing}>
+            <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
+            {refreshing ? "Refreshing…" : "Refresh"}
+          </Button>
+        </motion.div>
       ) : null}
 
-      <div className="mb-6 border-b border-gray-200 pb-3 flex flex-wrap gap-3">
-        <button
-          type="button"
-          onClick={() => setActiveView("overview")}
-          className={`px-4 py-2 text-xs uppercase tracking-widest border ${tabClass("overview")}`}
-        >
-          Overview
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveView("dimensions")}
-          className={`px-4 py-2 text-xs uppercase tracking-widest border ${tabClass("dimensions")}`}
-        >
-          Metrics
-        </button>
-      </div>
+      <Tabs value={activeView} onValueChange={setActiveView}>
+        <TabsList>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="dimensions">Dimensions</TabsTrigger>
+        </TabsList>
 
-      <div className={activeView === "overview" ? "" : "hidden"}>
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-8">
-          <div className="xl:col-span-2 bg-white border border-gray-200 p-6">
-            <div className="flex items-start justify-between mb-5">
-              <div>
-                <div className="text-[12px] uppercase tracking-widest text-gray-500 mb-2">Executive Quality View</div>
-                <div className={`text-6xl font-normal tracking-tighter leading-none ${scoreColor}`}>
-                  {data_health.overall_score}%
-                </div>
-              </div>
-              <div className="flex gap-2">
-                <span className={`px-2 py-1 text-[11px] uppercase tracking-wider border ${scoreBadgeClass}`}>{scoreLabel}</span>
-                <span className="px-2 py-1 text-[11px] uppercase tracking-wider border border-blue-200 text-blue-700 bg-blue-50">
-                  {trendLabel}
-                </span>
-              </div>
-            </div>
-            <div className="grid grid-cols-3 gap-4">
-              <div className="border border-gray-200 p-4">
-                <div className="text-[11px] uppercase tracking-widest text-gray-500 mb-1">Configured Jobs</div>
-                <div className="text-3xl font-bold text-[#23243B]">{system_metrics.total_jobs}</div>
-              </div>
-              <div className="border border-gray-200 p-4">
-                <div className="text-[11px] uppercase tracking-widest text-gray-500 mb-1">Tables Tracked</div>
-                <div className="text-3xl font-bold text-[#23243B]">{system_metrics.total_tables}</div>
-              </div>
-              <div className="border border-gray-200 p-4">
-                <div className="text-[11px] uppercase tracking-widest text-gray-500 mb-1">Active Rules</div>
-                <div className="text-3xl font-bold text-[#23243B]">{system_metrics.active_rules}</div>
-              </div>
-            </div>
+        <TabsContent value="overview" className="space-y-6 mt-6">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <KpiMetricCard
+              title="Configured Jobs"
+              value={system_metrics.total_jobs}
+              icon={Layers}
+              delay={0}
+            />
+            <KpiMetricCard
+              title="Tables Tracked"
+              value={system_metrics.total_tables}
+              icon={Database}
+              delay={0.05}
+            />
+            <KpiMetricCard
+              title="Active Rules"
+              value={system_metrics.active_rules}
+              icon={CheckCircle}
+              delay={0.1}
+            />
           </div>
 
-          <div className="bg-white border border-gray-200 p-6">
-            <div className="text-[12px] uppercase tracking-widest text-gray-500 mb-4">Top Risk Tables</div>
-            {lowQualityTables.length === 0 ? (
-              <div className="text-sm text-gray-500">No dynamic data available</div>
-            ) : (
-              <div className="space-y-4">
-                {lowQualityTables.map((item, idx) => (
-                  <div key={`${item.job_id || "na"}-${item.table}-${idx}`}>
-                    <div className="flex items-center justify-between text-xs mb-1">
-                      <span className="text-gray-600 truncate max-w-[170px]">{item.table}</span>
-                      <span className="font-semibold text-gray-700">{item.quality.toFixed(2)}%</span>
-                    </div>
-                    <div className="h-2 bg-gray-100 border border-gray-200">
-                      <div className="h-full bg-blue-500" style={{ width: `${Math.max(0, Math.min(100, item.quality))}%` }} />
-                    </div>
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+            <Card className="xl:col-span-2 overflow-hidden border-primary/20">
+              <CardContent className="p-6">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                      Executive quality score
+                    </p>
+                    <p
+                      className={cn(
+                        "mt-2 text-6xl font-semibold tracking-tight",
+                        tone === "success" && "text-success",
+                        tone === "warning" && "text-warning",
+                        tone === "destructive" && "text-destructive",
+                      )}
+                    >
+                      {overallScore}%
+                    </p>
                   </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Badge variant={tone === "success" ? "success" : tone === "warning" ? "warning" : "destructive"}>
+                      {scoreLabel}
+                    </Badge>
+                    <Badge variant="outline" className="gap-1">
+                      <TrendingUp className="h-3 w-3" />
+                      {trendLabel}
+                    </Badge>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 text-warning" />
+                  Top risk tables
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4 pt-0">
+                {lowQualityTables.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No dynamic data available</p>
+                ) : (
+                  lowQualityTables.map((item, idx) => (
+                    <div key={`${item.job_id || "na"}-${item.table}-${idx}`}>
+                      <div className="mb-1 flex justify-between text-xs">
+                        <span className="truncate text-muted-foreground max-w-[170px]">{item.table}</span>
+                        <span className="font-semibold">{item.quality.toFixed(1)}%</span>
+                      </div>
+                      <div className="h-2 overflow-hidden rounded-full bg-muted">
+                        <motion.div
+                          initial={{ width: 0 }}
+                          animate={{ width: `${Math.max(0, Math.min(100, item.quality))}%` }}
+                          transition={{ duration: 0.6, delay: idx * 0.05 }}
+                          className="h-full rounded-full bg-primary"
+                        />
+                      </div>
+                    </div>
+                  ))
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="dimensions" className="space-y-6 mt-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-foreground">Data quality dimensions</h2>
+              <p className="text-xs text-muted-foreground">Last updated: {lastUpdated || "—"}</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Select value={selectedJobId} onChange={(e) => setSelectedJobId(e.target.value)} className="w-auto min-w-[180px]">
+                <option value="all">All jobs</option>
+                {jobs.map((job) => (
+                  <option key={job.job_id} value={job.job_id}>
+                    {job.job_id} — {job.job_name}
+                  </option>
                 ))}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div className={activeView === "dimensions" ? "mt-2" : "hidden"}>
-        <div className="mb-4 border-b border-gray-200 pb-2 flex items-center justify-between">
-          <h2 className="text-lg font-normal tracking-widest uppercase text-gray-600">
-            DATA QUALITY METRICS
-          </h2>
-          <div className="flex items-center gap-2">
-            <select
-              value={selectedJobId}
-              onChange={(e) => setSelectedJobId(e.target.value)}
-              className="bg-white border border-gray-300 px-3 py-2 text-sm tracking-wider"
-            >
-              <option value="all">All Jobs</option>
-              {jobs.map((job) => (
-                <option key={job.job_id} value={job.job_id}>
-                  {job.job_id} - {job.job_name}
-                </option>
-              ))}
-            </select>
-            <button
-              onClick={() => fetchSummary(true)}
-              className="border border-gray-300 bg-white px-3 py-2 text-xs uppercase tracking-wider text-gray-600"
-            >
-              {refreshing ? "Refreshing..." : "Refresh"}
-            </button>
-          </div>
-        </div>
-        <div className="text-[11px] uppercase tracking-wider text-gray-400 mb-3">
-          Last Updated: {lastUpdated || "--"}
-        </div>
-
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          {dimensionCards.map((card) => {
-            const sparkValues = filteredDqMetrics.slice(0, 10).map((row) => Number(row[card.key] || 0));
-            const trend = getTrendInfo(sparkValues);
-            return (
-            <div key={card.key} className="bg-white border border-gray-200 p-4">
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="text-[12px] uppercase tracking-widest text-gray-500 mb-2">
-                    {card.title}
-                  </div>
-                  <div
-                    className={`text-4xl font-bold mb-2 ${
-                      Number(aggregatedMetrics[card.key] || 0) >= 90
-                        ? "text-green-600"
-                        : Number(aggregatedMetrics[card.key] || 0) >= 70
-                          ? "text-orange-500"
-                          : "text-red-500"
-                    }`}
-                  >
-                    {Number(aggregatedMetrics[card.key] || 0).toFixed(2)}%
-                  </div>
-                  <div className="text-[10px] text-gray-400 mb-1">
-                    Raw Values: [
-                    {filteredDqMetrics
-                      .slice(0, 10)
-                      .map((row) => Number(row[card.key] || 0).toFixed(2))
-                      .join(", ")}
-                    ]
-                  </div>
-                </div>
-                <div className="pt-1 text-right">
-                  <DimensionSparkline
-                    values={sparkValues}
-                    gradientId={`spark-gradient-${card.key}`}
-                  />
-                  <div className={`text-xs font-semibold mt-1 ${trend.up ? "text-green-600" : "text-red-600"}`}>
-                    {trend.up ? "▲" : "▼"} {trend.text}
-                  </div>
-                </div>
-              </div>
-              <div className="mt-1 mb-3 h-2 bg-gray-100 border border-gray-200 relative">
-                <div
-                  className={`h-full ${
-                    Number(aggregatedMetrics[card.key] || 0) >= 90
-                      ? "bg-green-500"
-                      : Number(aggregatedMetrics[card.key] || 0) >= 70
-                        ? "bg-orange-500"
-                        : "bg-red-500"
-                  }`}
-                  style={{ width: `${Math.max(0, Math.min(100, Number(aggregatedMetrics[card.key] || 0)))}%` }}
-                />
-                <div className="absolute top-[-3px] h-3 border-l border-blue-500" style={{ left: "90%" }} />
-              </div>
-              <div className="text-sm text-gray-500">{card.description}</div>
+              </Select>
+              <Button variant="outline" size="sm" onClick={() => fetchSummary(true)} disabled={refreshing}>
+                <RefreshCw className={cn("h-4 w-4 mr-1", refreshing && "animate-spin")} />
+                Refresh
+              </Button>
             </div>
-          );})}
-        </div>
-      </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+            {dimensionCards.map((card, idx) => {
+              const sparkValues = filteredDqMetrics.slice(0, 10).map((row) => Number(row[card.key] || 0));
+              const trend = getTrendInfo(sparkValues);
+              const val = Number(aggregatedMetrics[card.key] || 0);
+              const cardTone = scoreTone(val);
+
+              return (
+                <motion.div
+                  key={card.key}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: idx * 0.04 }}
+                >
+                  <Card className="hover:border-primary/25">
+                    <CardContent className="p-5">
+                      <div className="flex justify-between gap-4">
+                        <div>
+                          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                            {card.title}
+                          </p>
+                          <p
+                            className={cn(
+                              "mt-2 text-3xl font-semibold",
+                              cardTone === "success" && "text-success",
+                              cardTone === "warning" && "text-warning",
+                              cardTone === "destructive" && "text-destructive",
+                            )}
+                          >
+                            {val.toFixed(2)}%
+                          </p>
+                          <p className="mt-2 text-sm text-muted-foreground">{card.description}</p>
+                        </div>
+                        <div className="text-right">
+                          <DimensionSparkline values={sparkValues} gradientId={`spark-${card.key}`} />
+                          <p className={cn("mt-1 text-xs font-medium", trend.up ? "text-success" : "text-destructive")}>
+                            {trend.up ? "▲" : "▼"} {trend.text}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="relative mt-4 h-2 overflow-hidden rounded-full bg-muted">
+                        <div
+                          className="h-full rounded-full transition-all"
+                          style={{
+                            width: `${Math.max(0, Math.min(100, val))}%`,
+                            backgroundColor: scoreColor(val),
+                          }}
+                        />
+                        <div
+                          className="absolute top-0 h-full w-0.5 bg-info"
+                          style={{ left: "90%" }}
+                          title="90% threshold"
+                        />
+                      </div>
+                    </CardContent>
+                  </Card>
+                </motion.div>
+              );
+            })}
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+            {allMetricKeys.slice(0, 2).map((key) => (
+              <MetricChart
+                key={key}
+                label={key.charAt(0).toUpperCase() + key.slice(1)}
+                dataList={filteredDqMetrics}
+                keyName={key}
+              />
+            ))}
+          </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

@@ -73,6 +73,7 @@ export default function CatalogPanel() {
     setRequestModalOpen(false);
     setRequestDataset("");
     window.dispatchEvent(new CustomEvent("mdqm-notifications-refresh"));
+    window.dispatchEvent(new CustomEvent("mdqm-owner-access-refresh"));
     load();
   };
 

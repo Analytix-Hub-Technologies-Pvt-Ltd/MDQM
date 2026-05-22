@@ -1,15 +1,67 @@
 import { useCallback, useEffect, useState } from "react";
+import { cn } from "@/lib/utils";
+import { Input } from "@/components/ui/input";
+
+const badgeBase =
+  "inline-flex items-center rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide whitespace-nowrap";
+
+function resolveBadgeVariant(status) {
+  const s = String(status || "").toLowerCase();
+  if (
+    s.includes("success") ||
+    s.includes("pass") ||
+    s === "healthy" ||
+    s === "running" ||
+    s === "open" ||
+    s === "approved" ||
+    s === "read" ||
+    s === "active" ||
+    s === "certified" ||
+    s.includes("granted")
+  ) {
+    return "success";
+  }
+  if (s === "write") return "info";
+  if (s.includes("read/export") || s.includes("export")) return "info";
+  if (
+    s.includes("fail") ||
+    s.includes("error") ||
+    s === "attention" ||
+    s === "denied" ||
+    s === "rejected" ||
+    s === "failed"
+  ) {
+    return "danger";
+  }
+  if (s.includes("queue") || s.includes("pending") || s === "draft" || s.includes("warn") || s === "stale") {
+    return "warning";
+  }
+  return "neutral";
+}
+
+const badgeVariantClasses = {
+  success:
+    "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-600/50 dark:bg-emerald-950/60 dark:text-emerald-200",
+  info: "border-sky-300 bg-sky-50 text-sky-800 dark:border-sky-600/50 dark:bg-sky-950/60 dark:text-sky-200",
+  warning:
+    "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-600/50 dark:bg-amber-950/60 dark:text-amber-200",
+  danger: "border-red-300 bg-red-50 text-red-800 dark:border-red-600/50 dark:bg-red-950/60 dark:text-red-200",
+  neutral:
+    "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-600 dark:bg-slate-800/80 dark:text-slate-200",
+};
 
 function StatusBadge({ status }) {
-  const s = String(status || "").toLowerCase();
-  let cls = "bg-[#1d2b46] text-[#9ab0d1] border-[#2a3f63]";
-  if (s.includes("success") || s === "healthy" || s === "running" || s === "open" || s === "approved" || s === "read")
-    cls = "bg-emerald-950/40 text-emerald-300 border-emerald-600/30";
-  else if (s.includes("fail") || s.includes("error") || s === "attention" || s === "denied" || s === "rejected")
-    cls = "bg-red-950/40 text-red-300 border-red-600/30";
-  else if (s.includes("queue") || s.includes("pending") || s === "draft") cls = "bg-amber-950/40 text-amber-200 border-amber-600/30";
-  else if (s === "write") cls = "bg-sky-950/40 text-sky-200 border-sky-600/30";
-  return <span className={`text-[10px] px-2 py-0.5 rounded border uppercase tracking-wide ${cls}`}>{status || "—"}</span>;
+  const variant = resolveBadgeVariant(status);
+  return (
+    <span className={cn(badgeBase, badgeVariantClasses[variant])}>{status || "—"}</span>
+  );
+}
+
+/** Readable body text for table cells (purpose, reviewer, notes). */
+function TableCellText({ children, className }) {
+  return (
+    <span className={cn("text-sm font-medium text-foreground leading-snug", className)}>{children}</span>
+  );
 }
 
 /**
@@ -72,30 +124,33 @@ export default function EnterpriseDataPanel({
     <div className="enterprise-card p-4 space-y-3">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <h3 className="enterprise-title">{title}</h3>
-        <input
+        <Input
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
             setPage(1);
           }}
           placeholder={searchPlaceholder}
-          className="border border-[#2a3f63] bg-[#0f1b31] text-[#d7e3f7] placeholder:text-[#5c6d8a] rounded px-3 py-2 text-sm max-w-xs w-full"
+          className="max-w-xs w-full h-9"
         />
       </div>
 
-      {error ? <p className="text-sm text-red-400">{error}</p> : null}
+      {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
       {loading ? (
-        <p className="text-sm text-[#9ab0d1] py-8 text-center">Loading…</p>
+        <p className="text-sm text-muted-foreground py-8 text-center">Loading…</p>
       ) : !items.length ? (
-        <p className="text-sm text-[#7f95b6] py-8 text-center">{emptyMessage}</p>
+        <p className="text-sm text-muted-foreground py-8 text-center">{emptyMessage}</p>
       ) : (
-        <div className="mdqm-scroll-x overflow-x-auto rounded-md border border-[#22324f]">
+        <div className="mdqm-scroll-x overflow-x-auto rounded-xl border border-border">
           <table className="w-full text-sm min-w-[520px]">
             <thead>
-              <tr className="text-left text-[#9ab0d1] border-b border-[#22324f] bg-[#0a1220]">
+              <tr className="text-left border-b border-[var(--table-header-border)] bg-[var(--table-header-bg)]">
                 {columns.map((c) => (
-                  <th key={c.key} className="p-2 whitespace-nowrap">
+                  <th
+                    key={c.key}
+                    className="p-3 whitespace-nowrap text-xs font-bold uppercase tracking-wide text-[var(--table-header-fg)]"
+                  >
                     {c.label}
                   </th>
                 ))}
@@ -103,9 +158,9 @@ export default function EnterpriseDataPanel({
             </thead>
             <tbody>
               {items.map((row, idx) => (
-                <tr key={row.id ?? idx} className="border-b border-[#22324f]/60 hover:bg-[#0f1b31]/60">
+                <tr key={row.id ?? idx} className="border-b border-border">
                   {columns.map((c) => (
-                    <td key={c.key} className="p-2 text-[#d7e3f7] align-middle">
+                    <td key={c.key} className="p-3 align-middle text-foreground">
                       {c.render ? c.render(row[c.key], row) : String(row[c.key] ?? "—")}
                     </td>
                   ))}
@@ -117,7 +172,7 @@ export default function EnterpriseDataPanel({
       )}
 
       {total > pageSize ? (
-        <div className="flex items-center justify-between text-xs text-[#9ab0d1]">
+        <div className="flex items-center justify-between text-xs text-muted-foreground">
           <span>
             Page {page} of {pageCount} · {total} total
           </span>
@@ -125,7 +180,7 @@ export default function EnterpriseDataPanel({
             <button
               type="button"
               disabled={page <= 1}
-              className="border border-[#2a3f63] px-2 py-1 rounded disabled:opacity-40"
+              className="rounded-lg border border-border px-2 py-1 text-foreground hover:bg-[var(--table-row-hover)] disabled:opacity-40"
               onClick={() => setPage((p) => Math.max(1, p - 1))}
             >
               Prev
@@ -133,7 +188,7 @@ export default function EnterpriseDataPanel({
             <button
               type="button"
               disabled={page >= pageCount}
-              className="border border-[#2a3f63] px-2 py-1 rounded disabled:opacity-40"
+              className="rounded-lg border border-border px-2 py-1 text-foreground hover:bg-[var(--table-row-hover)] disabled:opacity-40"
               onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
             >
               Next
@@ -145,4 +200,4 @@ export default function EnterpriseDataPanel({
   );
 }
 
-export { StatusBadge };
+export { StatusBadge, TableCellText };

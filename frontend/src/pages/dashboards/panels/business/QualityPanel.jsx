@@ -80,7 +80,7 @@ export default function QualityPanel() {
                 return (
                   <tr
                     key={r.id ?? r.name}
-                    className={`border-b border-[#22324f]/50 ${canEditRules ? "cursor-pointer hover:bg-[#132542]/60" : ""}`}
+                    className={`border-b border-[#22324f]/50 ${canEditRules ? "cursor-pointer mdqm-row-hover" : ""}`}
                     onClick={() => canEditRules && openRules(r)}
                     title={canEditRules ? "Configure DQ rules and run validation" : undefined}
                   >

@@ -103,20 +103,24 @@ export const getAllSchedules = async () => {
     return apiClient.get(`/schedules`);
 };
 
-export const getScheduleByJobId = async (jobId) => {
-    return apiClient.get(`/schedules/${jobId}`);
+export const getScheduleByJobId = async (jobId, action = null) => {
+    const params = action ? { action } : {};
+    return apiClient.get(`/schedules/${jobId}`, { params });
 };
 
-export const pauseSchedule = async (jobId) => {
-    return apiClient.post(`/schedules/${jobId}/pause`);
+export const pauseSchedule = async (jobId, action = null) => {
+    const params = action ? { action } : {};
+    return apiClient.post(`/schedules/${jobId}/pause`, null, { params });
 };
 
-export const resumeSchedule = async (jobId) => {
-    return apiClient.post(`/schedules/${jobId}/resume`);
+export const resumeSchedule = async (jobId, action = null) => {
+    const params = action ? { action } : {};
+    return apiClient.post(`/schedules/${jobId}/resume`, null, { params });
 };
 
-export const deleteSchedule = async (jobId) => {
-    return apiClient.delete(`/schedules/${jobId}`);
+export const deleteSchedule = async (jobId, action = null) => {
+    const params = action ? { action } : {};
+    return apiClient.delete(`/schedules/${jobId}`, { params });
 };
 
 export const deleteJob = async (jobId) => {
@@ -187,6 +191,16 @@ export const replaceTableFileUpload = async (jobId, tableId, file, sourcePath = 
 // Note: DB Connection and Download endpoints will require specific backend logic
 export const connectToDb = async (credentials) => {
     return apiClient.post(`/db/connect`, credentials);
+};
+
+/** Register job + table metadata without loading rows (Data Owner save & close). */
+export const registerDbDatasetSource = async (payload) => {
+    return apiClient.post(`/db/register-dataset`, payload);
+};
+
+/** Background import from Postgres using stored db_source_config. */
+export const importJobFromDb = async (jobId, body = {}) => {
+    return apiClient.post(`/jobs/${jobId}/import-from-db`, body);
 };
 
 /** Re-pull all tables for a job created via /db/connect (uses stored db_source_config). */

@@ -96,7 +96,7 @@ export default function AdminAccessRequestsPage() {
               </tr>
             ) : (
               requests.map((r) => (
-                <tr key={r.id} className="align-top hover:bg-gray-50/80">
+                <tr key={r.id} className="align-top">
                   <td className="min-w-0 px-3 py-2.5 align-top font-medium break-words text-gray-900">{r.full_name}</td>
                   <td className="min-w-0 px-3 py-2.5 align-top text-gray-700" title={r.username || ""}>
                     <span className="block truncate">{r.username || "—"}</span>

@@ -1,8 +1,5 @@
 import { Navigate, Route, Routes } from "react-router-dom";
-import Sidebar from "./components/Sidebar";
-import AlertsBell from "./components/AlertsBell";
-import ProfileDropdown from "./components/ProfileDropdown";
-import { normalizeRole, ROLES } from "./auth/rolePermissions";
+import AppLayout from "@/components/layout/AppLayout";
 import ValidationRules from "./pages/ValidationRules";
 import JobList from "./pages/JobList";
 import QuarantineSection from "./components/QuarantineSection";
@@ -16,101 +13,109 @@ import AdminDashboardLayout from "./pages/admin/AdminDashboardLayout";
 import AdminAccessRequestsPage from "./pages/admin/AdminAccessRequestsPage";
 import AuditLogsPage from "./pages/AuditLogsPage";
 import ProtectedRoute from "./auth/ProtectedRoute";
-import { useAuth } from "./auth/AuthContext";
 import PermissionGuard from "./auth/PermissionGuard";
 import { PERMISSIONS } from "./auth/permissions";
 import GovernanceRoute from "./pages/GovernanceRoute";
+import { Card, CardContent } from "@/components/ui/card";
 
 function PlaceholderPage({ title, description }) {
   return (
-    <div className="p-8">
-      <h1 className="text-2xl text-slate-800">{title}</h1>
-      <p className="text-slate-500 mt-2">{description}</p>
-    </div>
+    <Card>
+      <CardContent className="p-8">
+        <h1 className="text-2xl font-semibold tracking-tight text-foreground">{title}</h1>
+        <p className="mt-2 text-muted-foreground">{description}</p>
+      </CardContent>
+    </Card>
   );
 }
 
 function AppShell() {
-  const { user } = useAuth();
-
   return (
-    <div className="flex h-screen bg-[#FBFBFB]">
-      <Sidebar />
-
-      <div className="flex-1 overflow-hidden flex flex-col">
-        <div className="h-12 border-b border-gray-200 bg-white px-5 flex items-center justify-between gap-3">
-          <div className="text-xs uppercase tracking-widest text-gray-500 truncate min-w-0">
-            {user?.full_name} ({user?.role})
-          </div>
-          <div className="flex items-center gap-3 shrink-0">
-            {normalizeRole(user?.role) === ROLES.BUSINESS_USER ? <AlertsBell /> : null}
-            <ProfileDropdown />
-          </div>
-        </div>
-        <div className="flex-1 overflow-y-auto">
-          <Routes>
-            <Route path="/dashboard" element={<DashboardRouter />} />
-            <Route path="/profile" element={<ProfilePage />} />
-            <Route
-              path="/jobs"
-              element={
-                <PermissionGuard require={PERMISSIONS.JOBS_VIEW}>
-                  <JobList />
-                </PermissionGuard>
-              }
+    <AppLayout>
+      <Routes>
+        <Route path="/dashboard" element={<DashboardRouter />} />
+        <Route path="/profile" element={<ProfilePage />} />
+        <Route
+          path="/jobs"
+          element={
+            <PermissionGuard require={PERMISSIONS.JOBS_VIEW}>
+              <JobList />
+            </PermissionGuard>
+          }
+        />
+        <Route
+          path="/rules"
+          element={
+            <PermissionGuard require={PERMISSIONS.RULES_VIEW}>
+              <ValidationRules />
+            </PermissionGuard>
+          }
+        />
+        <Route
+          path="/quarantine"
+          element={
+            <PermissionGuard require={PERMISSIONS.QUARANTINE_VIEW}>
+              <QuarantineSection />
+            </PermissionGuard>
+          }
+        />
+        <Route
+          path="/governance"
+          element={
+            <PermissionGuard require={PERMISSIONS.GOVERNANCE_VIEW}>
+              <GovernanceRoute />
+            </PermissionGuard>
+          }
+        />
+        <Route
+          path="/compliance"
+          element={
+            <PlaceholderPage
+              title="Compliance"
+              description="Compliance posture, policy attestations, and violations."
             />
-            <Route
-              path="/rules"
-              element={
-                <PermissionGuard require={PERMISSIONS.RULES_VIEW}>
-                  <ValidationRules />
-                </PermissionGuard>
-              }
-            />
-            <Route
-              path="/quarantine"
-              element={
-                <PermissionGuard require={PERMISSIONS.QUARANTINE_VIEW}>
-                  <QuarantineSection />
-                </PermissionGuard>
-              }
-            />
-            <Route
-              path="/governance"
-              element={
-                <PermissionGuard require={PERMISSIONS.GOVERNANCE_VIEW}>
-                  <GovernanceRoute />
-                </PermissionGuard>
-              }
-            />
-            <Route path="/compliance" element={<PlaceholderPage title="Compliance" description="Compliance posture, policy attestations, and violations." />} />
-            <Route path="/reports" element={<PlaceholderPage title="Reports" description="Role-based enterprise reporting and exports." />} />
-            <Route path="/lineage" element={<PlaceholderPage title="Lineage" description="Data lineage graph and impact analysis." />} />
-            <Route path="/stewardship" element={<PlaceholderPage title="Stewardship" description="Steward tasks and remediation assignments." />} />
-            <Route
-              path="/audit"
-              element={
-                <PermissionGuard require={PERMISSIONS.AUDIT_VIEW}>
-                  <AuditLogsPage />
-                </PermissionGuard>
-              }
-            />
-            <Route
-              path="/admin"
-              element={
-                <PermissionGuard require={PERMISSIONS.ADMIN_VIEW}>
-                  <AdminDashboardLayout />
-                </PermissionGuard>
-              }
-            >
-              <Route index element={<AdminPanel />} />
-              <Route path="access-requests" element={<AdminAccessRequestsPage />} />
-            </Route>
-            <Route path="*" element={<Navigate to="/dashboard" replace />} />
-          </Routes>
-        </div>
-      </div>
-    </div>
+          }
+        />
+        <Route
+          path="/reports"
+          element={
+            <PlaceholderPage title="Reports" description="Role-based enterprise reporting and exports." />
+          }
+        />
+        <Route
+          path="/lineage"
+          element={
+            <PlaceholderPage title="Lineage" description="Data lineage graph and impact analysis." />
+          }
+        />
+        <Route
+          path="/stewardship"
+          element={
+            <PlaceholderPage title="Stewardship" description="Steward tasks and remediation assignments." />
+          }
+        />
+        <Route
+          path="/audit"
+          element={
+            <PermissionGuard require={PERMISSIONS.AUDIT_VIEW}>
+              <AuditLogsPage />
+            </PermissionGuard>
+          }
+        />
+        <Route
+          path="/admin"
+          element={
+            <PermissionGuard require={PERMISSIONS.ADMIN_VIEW}>
+              <AdminDashboardLayout />
+            </PermissionGuard>
+          }
+        >
+          <Route index element={<AdminPanel />} />
+          <Route path="access-requests" element={<AdminAccessRequestsPage />} />
+        </Route>
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      </Routes>
+    </AppLayout>
   );
 }
 

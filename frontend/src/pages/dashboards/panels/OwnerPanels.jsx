@@ -1,15 +1,18 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { formatAccessType } from "../../../utils/formatRelativeTime";
-import EnterpriseDataPanel, { StatusBadge } from "../../../components/enterprise/EnterpriseDataPanel";
+import EnterpriseDataPanel, { StatusBadge, TableCellText } from "../../../components/enterprise/EnterpriseDataPanel";
 import ScoreRing from "../../../components/business/ScoreRing";
 import CreateDatasetLightModal from "./CreateDatasetLightModal";
 import DatasetPreviewModal from "./DatasetPreviewModal";
+import DatasetRefreshScheduleModal from "./DatasetRefreshScheduleModal";
+import { getAllSchedules, importJobFromDb, refreshJobFromDb } from "../../../api";
 import {
   enterpriseGovernanceAccessRequests,
   enterpriseGovernanceAccessRequestApprove,
   enterpriseGovernanceAccessRequestReject,
   enterpriseGovernanceDatasets,
+  openGovernanceDatasetEdaReport,
   enterpriseGovernanceGlossary,
   enterpriseGovernanceGlossaryCreate,
   enterpriseGovernancePolicies,
@@ -45,7 +48,9 @@ const accessBaseCols = [
   {
     key: "reason",
     label: "Purpose",
-    render: (v) => <span className="line-clamp-2 text-xs text-[#9ab0d1] max-w-[200px]">{v || "—"}</span>,
+    render: (v) => (
+      <TableCellText className="line-clamp-2 max-w-[200px] text-foreground">{v || "—"}</TableCellText>
+    ),
   },
 ];
 
@@ -57,6 +62,7 @@ function AccessRequestActions({ row }) {
     try {
       await enterpriseGovernanceAccessRequestApprove(row.id);
       window.dispatchEvent(new CustomEvent("mdqm-owner-access-refresh"));
+      window.dispatchEvent(new CustomEvent("mdqm-notifications-refresh"));
     } catch (e) {
       alert(e?.response?.data?.detail || "Approve failed");
     } finally {
@@ -70,6 +76,7 @@ function AccessRequestActions({ row }) {
     try {
       await enterpriseGovernanceAccessRequestReject(row.id);
       window.dispatchEvent(new CustomEvent("mdqm-owner-access-refresh"));
+      window.dispatchEvent(new CustomEvent("mdqm-notifications-refresh"));
     } catch (e) {
       alert(e?.response?.data?.detail || "Deny failed");
     } finally {
@@ -123,7 +130,7 @@ const accessHistoryCols = [
   {
     key: "approver_name",
     label: "Reviewer",
-    render: (v) => <span className="text-xs text-[#9ab0d1]">{v || "—"}</span>,
+    render: (v) => <TableCellText>{v || "—"}</TableCellText>,
   },
   { key: "requested_at", label: "Requested" },
 ];
@@ -139,7 +146,7 @@ function OwnerAccessRequestsSection() {
 
   return (
     <div className="space-y-8">
-      <p className="text-sm text-[#9ab0d1]">
+      <p className="text-sm text-muted-foreground">
         Review business-user dataset access requests. Approve or deny pending items; past decisions appear in history.
       </p>
 
@@ -227,17 +234,134 @@ function scoreCell(value, source, pendingLabel) {
   return <ScoreRing score={value} size={36} />;
 }
 
+function formatRegisteredAt(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+function sourceKindLabel(kind) {
+  if (kind === "table") return "Table";
+  if (kind === "file") return "File";
+  return "—";
+}
+
 function GovernanceDatasetSection() {
   const [createOpen, setCreateOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [previewDatasetId, setPreviewDatasetId] = useState(null);
+  const [scheduleRow, setScheduleRow] = useState(null);
+  const [refreshSchedules, setRefreshSchedules] = useState({});
+  const [actionBusy, setActionBusy] = useState(null);
+
+  const bump = () => setRefreshKey((k) => k + 1);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await getAllSchedules();
+        const items = res?.data?.items ?? [];
+        const map = {};
+        for (const s of items) {
+          if (s?.job_id && s?.action === "refresh") {
+            map[s.job_id] = s;
+          }
+        }
+        if (!cancelled) setRefreshSchedules(map);
+      } catch {
+        if (!cancelled) setRefreshSchedules({});
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey]);
+
+  const handleRunImport = async (row) => {
+    if (!row.job_id) return;
+    setActionBusy(`run-${row.id}`);
+    try {
+      await importJobFromDb(row.job_id);
+      bump();
+    } catch (e) {
+      alert(e?.response?.data?.detail || e?.message || "Import failed to start.");
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
+  const handleRefresh = async (row) => {
+    if (!row.job_id) return;
+    setActionBusy(`refresh-${row.id}`);
+    try {
+      await refreshJobFromDb(row.job_id, {});
+      bump();
+    } catch (e) {
+      alert(e?.response?.data?.detail || e?.message || "Refresh failed.");
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
+  const handleEdaReport = async (row) => {
+    if (!row.eda_report_ready) {
+      alert("Load data first (Run), then open the EDA report.");
+      return;
+    }
+    setActionBusy(`eda-${row.id}`);
+    try {
+      await openGovernanceDatasetEdaReport(row.id);
+    } catch (e) {
+      alert(e?.response?.data?.detail || e?.message || "EDA report failed.");
+    } finally {
+      setActionBusy(null);
+    }
+  };
 
   const dsCols = [
     { key: "name", label: "Dataset" },
     {
+      key: "source_details",
+      label: "Source",
+      render: (v, row) => (
+        <div className="max-w-[240px]">
+          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            {sourceKindLabel(row.source_kind)}
+          </span>
+          <p className="text-xs text-muted-foreground line-clamp-2" title={v || ""}>
+            {v || "—"}
+          </p>
+        </div>
+      ),
+    },
+    {
+      key: "column_count",
+      label: "Columns",
+      render: (v) => (
+        <span className="text-xs font-mono text-foreground">{v != null ? v : "—"}</span>
+      ),
+    },
+    {
+      key: "eda_report",
+      label: "EDA report",
+      render: (_, row) => (
+        <button
+          type="button"
+          disabled={!row.eda_report_ready || actionBusy === `eda-${row.id}`}
+          className="text-xs font-semibold text-primary hover:underline disabled:opacity-40 whitespace-nowrap"
+          title={row.eda_report_ready ? "Open ydata-profiling report" : "Load data first (Run)"}
+          onClick={() => handleEdaReport(row)}
+        >
+          {actionBusy === `eda-${row.id}` ? "Opening…" : "EDA report"}
+        </button>
+      ),
+    },
+    {
       key: "eda_score",
       label: "EDA score",
-      render: (v, row) => scoreCell(v, row.eda_score_source, "Profile pending"),
+      render: (v, row) => scoreCell(v, row.eda_score_source, "Load data"),
     },
     {
       key: "dq_score",
@@ -245,29 +369,64 @@ function GovernanceDatasetSection() {
       render: (v, row) => scoreCell(v, row.dq_score_source, "Run validation"),
     },
     {
-      key: "job_id",
-      label: "DQ job",
-      render: (v) =>
-        v != null ? (
-          <span className="font-mono text-[#9ab0d1]">#{v}</span>
-        ) : (
-          <span className="text-[#5c6b84]">—</span>
-        ),
-    },
-    { key: "classification", label: "Class", render: (v) => <StatusBadge status={v || "standard"} /> },
-    { key: "created_at", label: "Registered" },
-    {
-      key: "view",
-      label: "",
-      render: (_, row) => (
-        <button
-          type="button"
-          className="text-xs font-semibold text-[#4f8cff] hover:underline whitespace-nowrap"
-          onClick={() => setPreviewDatasetId(row.id)}
-        >
-          View
-        </button>
+      key: "created_at",
+      label: "Registered",
+      render: (v) => (
+        <span className="text-xs text-muted-foreground whitespace-nowrap">{formatRegisteredAt(v)}</span>
       ),
+    },
+    {
+      key: "actions",
+      label: "",
+      render: (_, row) => {
+        const sched = row.job_id ? refreshSchedules[row.job_id] : null;
+        const isTableSource = row.source_kind === "table";
+        return (
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="text-xs font-semibold text-primary hover:underline whitespace-nowrap"
+              onClick={() => setPreviewDatasetId(row.id)}
+            >
+              View
+            </button>
+            {row.job_id && !row.data_loaded ? (
+              <button
+                type="button"
+                disabled={actionBusy === `run-${row.id}` || row.import_status === "Importing"}
+                className="text-xs font-semibold text-primary hover:underline disabled:opacity-40 whitespace-nowrap"
+                onClick={() => handleRunImport(row)}
+              >
+                {actionBusy === `run-${row.id}` || row.import_status === "Importing" ? "Starting…" : "Run"}
+              </button>
+            ) : null}
+            {row.job_id && row.data_loaded ? (
+              <button
+                type="button"
+                disabled={actionBusy === `refresh-${row.id}`}
+                className="text-xs font-semibold text-primary hover:underline disabled:opacity-40 whitespace-nowrap"
+                onClick={() => handleRefresh(row)}
+              >
+                {actionBusy === `refresh-${row.id}` ? "…" : "Refresh now"}
+              </button>
+            ) : null}
+            {row.job_id && isTableSource ? (
+              <button
+                type="button"
+                className="text-xs font-semibold text-primary hover:underline whitespace-nowrap"
+                title={
+                  sched?.next_run_time
+                    ? `Scheduled: ${new Date(sched.next_run_time).toLocaleString()}`
+                    : "Set automatic refresh from database"
+                }
+                onClick={() => setScheduleRow(row)}
+              >
+                {sched?.next_run_time ? "Scheduled" : "Schedule"}
+              </button>
+            ) : null}
+          </div>
+        );
+      },
     },
   ];
 
@@ -278,19 +437,26 @@ function GovernanceDatasetSection() {
         open={previewDatasetId != null}
         onClose={() => setPreviewDatasetId(null)}
       />
+      <DatasetRefreshScheduleModal
+        open={scheduleRow != null}
+        jobId={scheduleRow?.job_id}
+        datasetName={scheduleRow?.name}
+        onClose={() => setScheduleRow(null)}
+        onSaved={bump}
+      />
       <CreateDatasetLightModal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        onCreated={() => setRefreshKey((k) => k + 1)}
+        onCreated={bump}
       />
       <div className="enterprise-card p-5 text-sm">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <h3 className="enterprise-title text-sm">Create dataset</h3>
-            <p className="text-xs text-[#7f95b6] mt-2 max-w-2xl">
-              Name the dataset, attach a CSV file (or a server path), or connect to a database and pick table(s).{" "}
-              <strong className="text-[#9ab0d1] font-normal">EDA score</strong> profiles loaded CSV completeness;{" "}
-              <strong className="text-[#9ab0d1] font-normal">DQ score</strong> reflects the latest validation run on the linked job.
+            <p className="text-xs text-muted-foreground mt-2 max-w-2xl">
+              Register a CSV or a single database table, then close the dialog. Use <strong className="font-normal text-foreground">Run</strong> to load
+              data, <strong className="font-normal text-foreground">Schedule</strong> for automatic DB refresh (table sources), and{" "}
+              <strong className="font-normal text-foreground">EDA report</strong> after data is loaded.
             </p>
           </div>
           <button

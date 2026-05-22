@@ -96,6 +96,18 @@ export async function enterpriseGovernanceDatasetPreview(datasetId) {
   return apiClient.get(`/api/enterprise/governance/datasets/${datasetId}/preview`);
 }
 
+/** Open ydata-profiling HTML report in a new browser tab. */
+export async function openGovernanceDatasetEdaReport(datasetId) {
+  const res = await apiClient.get(`/api/enterprise/governance/datasets/${datasetId}/eda-report`, {
+    responseType: "text",
+  });
+  const html = typeof res?.data === "string" ? res.data : "";
+  const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  window.open(url, "_blank", "noopener,noreferrer");
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
 export async function enterpriseGovernanceAccessRequests(params) {
   const res = await apiClient.get("/api/enterprise/governance/access-requests", { params });
   return { data: unwrapList(res) };

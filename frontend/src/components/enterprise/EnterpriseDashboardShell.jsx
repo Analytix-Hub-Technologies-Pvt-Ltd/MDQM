@@ -1,18 +1,15 @@
 import { useMemo } from "react";
+import { motion } from "framer-motion";
 import { useSearchParams } from "react-router-dom";
 import EnterpriseTabBar from "./EnterpriseTabBar";
+import { cn } from "@/lib/utils";
 
 const accentClassMap = {
-  blue: "from-[#4f8cff] to-[#8b5cf6]",
-  violet: "from-[#8b5cf6] to-[#4f8cff]",
-  teal: "from-[#2dd4bf] to-[#4f8cff]",
+  blue: "from-primary to-accent",
+  violet: "from-accent to-primary",
+  teal: "from-secondary to-primary",
 };
 
-/**
- * Enterprise tab shell: gradient header + URL-synced tabs (?tab=overview).
- * @param {string} [overviewLabel] - Label for the first (overview) tab, e.g. "Executive Overview"
- * @param {React.ReactNode} [footer] - Optional block below tab content (e.g. classic KPI)
- */
 export default function EnterpriseDashboardShell({
   title,
   subtitle,
@@ -22,13 +19,9 @@ export default function EnterpriseDashboardShell({
   overview,
   renderTab,
   footer = null,
-  /** When true, `footer` renders only on the Overview tab (not on sidebar workspace tabs). */
   footerOnOverviewOnly = false,
-  /** When true, horizontal tabs are hidden (e.g. business user uses left sidebar links). */
   hideTabBar = false,
-  /** When false, no Overview tab — first tab in `tabs` is the default. */
   showOverview = true,
-  /** Used when showOverview is false and URL has no valid ?tab= */
   defaultTab = null,
 }) {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -50,18 +43,40 @@ export default function EnterpriseDashboardShell({
     setSearchParams(next, { replace: true });
   };
 
-  const content = activeId === "overview" ? overview : renderTab ? renderTab(activeId) : <div className="text-sm text-[#9ab0d1]">Unknown tab.</div>;
+  const content =
+    activeId === "overview"
+      ? overview
+      : renderTab
+        ? renderTab(activeId)
+        : (
+            <p className="text-sm text-muted-foreground">Unknown tab.</p>
+          );
 
   return (
-    <section className="p-4 md:p-6 space-y-4">
-      <header className={`enterprise-card p-5 border-none bg-gradient-to-r ${gradient}`}>
-        <h1 className="text-2xl text-white">{title}</h1>
-        <p className="text-sm text-blue-100 mt-1">{subtitle}</p>
-      </header>
+    <section className="space-y-6">
+      <motion.header
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        className={cn(
+          "overflow-hidden rounded-2xl border-0 bg-gradient-to-r p-6 shadow-lg",
+          gradient,
+        )}
+      >
+        <h1 className="text-2xl font-semibold tracking-tight text-white">{title}</h1>
+        <p className="mt-1 text-sm text-white/80">{subtitle}</p>
+      </motion.header>
 
       {!hideTabBar ? <EnterpriseTabBar tabs={tabDefs} activeId={activeId} onChange={setTab} /> : null}
 
-      <div className="min-h-[200px]">{content}</div>
+      <motion.div
+        key={activeId}
+        initial={{ opacity: 0, y: 6 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.2 }}
+        className="min-h-[200px]"
+      >
+        {content}
+      </motion.div>
       {footer && (!footerOnOverviewOnly || activeId === "overview") ? footer : null}
     </section>
   );

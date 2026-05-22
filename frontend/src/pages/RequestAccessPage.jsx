@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { submitAccessRequest } from "../api";
-
-const fieldClass =
-  "w-full border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-500 focus:border-[#23243B] focus:outline-none focus:ring-1 focus:ring-[#23243B]/30";
+import AuthLayout from "@/components/layout/AuthLayout";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 
 const getApiErrorMessage = (err, fallback) => {
   const detail = err?.response?.data?.detail;
@@ -50,23 +50,32 @@ export default function RequestAccessPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#FBFBFB] flex items-center justify-center p-6 text-[#23243B]">
-      <div className="auth-surface-light w-full max-w-xl bg-white border border-gray-200 p-6 shadow-sm">
-        <h1 className="text-xl uppercase tracking-widest text-[#23243B] mb-5">Request Access</h1>
-        <form className="space-y-3" onSubmit={onSubmit}>
-          <input className={fieldClass} placeholder="Full name" value={form.full_name} onChange={(e) => onChange("full_name", e.target.value)} required />
-          <input className={fieldClass} placeholder="Username" value={form.username} onChange={(e) => onChange("username", e.target.value)} required autoComplete="username" />
-          <input className={fieldClass} placeholder="Company email" type="email" value={form.email} onChange={(e) => onChange("email", e.target.value)} required />
-          <input className={fieldClass} placeholder="Department" value={form.department} onChange={(e) => onChange("department", e.target.value)} />
-          <textarea className={`${fieldClass} min-h-[110px] resize-y`} placeholder="Reason for access" value={form.reason} onChange={(e) => onChange("reason", e.target.value)} required />
-          {status && <div className="text-sm text-green-700">{status}</div>}
-          {error && <div className="text-sm text-red-600">{error}</div>}
-          <div className="flex gap-2">
-            <button className="bg-[#23243B] text-white px-4 py-2 uppercase text-xs tracking-widest">Submit</button>
-            <button type="button" onClick={() => navigate("/login")} className="border border-gray-300 px-4 py-2 uppercase text-xs tracking-widest text-gray-700">Back to Login</button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <AuthLayout title="Request access" subtitle="Submit a request for MDQM platform access">
+      <form className="space-y-4" onSubmit={onSubmit}>
+        <Input placeholder="Full name" value={form.full_name} onChange={(e) => onChange("full_name", e.target.value)} required />
+        <Input placeholder="Username" value={form.username} onChange={(e) => onChange("username", e.target.value)} required autoComplete="username" />
+        <Input placeholder="Company email" type="email" value={form.email} onChange={(e) => onChange("email", e.target.value)} required />
+        <Input placeholder="Department" value={form.department} onChange={(e) => onChange("department", e.target.value)} />
+        <textarea
+          className="flex min-h-[110px] w-full resize-y rounded-lg border px-3 py-2 text-sm font-medium shadow-sm transition-colors border-[var(--input-border)] bg-[var(--input-bg)] text-[var(--input-foreground)] placeholder:font-normal placeholder:text-[var(--placeholder)] focus-visible:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+          placeholder="Reason for access"
+          value={form.reason}
+          onChange={(e) => onChange("reason", e.target.value)}
+          required
+        />
+        {status ? (
+          <div className="rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-sm text-success">{status}</div>
+        ) : null}
+        {error ? (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>
+        ) : null}
+        <div className="flex flex-wrap gap-2">
+          <Button type="submit">Submit request</Button>
+          <Button type="button" variant="outline" asChild>
+            <Link to="/login">Back to login</Link>
+          </Button>
+        </div>
+      </form>
+    </AuthLayout>
   );
 }

@@ -3101,7 +3101,7 @@ export default function JobList() {
                             {pagedPreview.map((item, localIdx) => {
                               const idx = (previewPage - 1) * previewPageSize + localIdx;
                               return (
-                              <tr key={`${item.originalName}-${idx}`} className="odd:bg-white even:bg-[#FAFAFA] align-top hover:bg-[#F8FAFC]">
+                              <tr key={`${item.originalName}-${idx}`} className="odd:bg-white even:bg-[#FAFAFA] align-top">
                                 <td className="p-2 border-b border-[#F1F5F9] whitespace-nowrap font-semibold">
                                   <input
                                     value={item.name}

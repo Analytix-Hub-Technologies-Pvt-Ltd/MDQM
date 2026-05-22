@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { motion } from "framer-motion";
 import { getRoleDashboard } from "../../api";
 import KPIWidget from "../../components/widgets/KPIWidget";
 import TrendChart from "../../components/widgets/TrendChart";
@@ -8,6 +9,14 @@ import GovernanceScoreWidget from "../../components/widgets/GovernanceScoreWidge
 import DataQualityWidget from "../../components/widgets/DataQualityWidget";
 import AuditWidget from "../../components/widgets/AuditWidget";
 import ClassicKpiSection from "./ClassicKpiSection";
+import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
+
+const accentClassMap = {
+  blue: "from-primary to-accent",
+  violet: "from-accent to-primary",
+  teal: "from-secondary to-primary",
+};
 
 export default function BaseRoleDashboard({ endpoint, title, subtitle, accent = "blue", children = null }) {
   const [data, setData] = useState(null);
@@ -31,41 +40,64 @@ export default function BaseRoleDashboard({ endpoint, title, subtitle, accent = 
     };
   }, [endpoint]);
 
-  if (loading) return <div className="p-8 text-sm text-slate-300">Loading role dashboard...</div>;
+  if (loading) {
+    return (
+      <div className="space-y-4 p-2">
+        <Skeleton className="h-24 rounded-2xl" />
+        <div className="grid grid-cols-4 gap-4">
+          {[1, 2, 3, 4].map((i) => (
+            <Skeleton key={i} className="h-28 rounded-2xl" />
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   const kpis = Array.isArray(data?.kpis) ? data.kpis : [];
   const trends = Array.isArray(data?.trends) ? data.trends : [];
-
-  const accentClass = accent === "violet" ? "from-[#8b5cf6] to-[#4f8cff]" : accent === "teal" ? "from-[#2dd4bf] to-[#4f8cff]" : "from-[#4f8cff] to-[#8b5cf6]";
+  const gradient = accentClassMap[accent] || accentClassMap.blue;
 
   return (
-    <section className="p-6 space-y-6">
-      <header className={`enterprise-card p-5 border-none bg-gradient-to-r ${accentClass}`}>
-        <h1 className="text-2xl text-white">{title}</h1>
-        <p className="text-sm text-blue-100 mt-1">{subtitle}</p>
-      </header>
+    <section className="space-y-6">
+      <motion.header
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        className={cn("overflow-hidden rounded-2xl bg-gradient-to-r p-6 shadow-lg", gradient)}
+      >
+        <h1 className="text-2xl font-semibold text-white">{title}</h1>
+        <p className="mt-1 text-sm text-white/80">{subtitle}</p>
+      </motion.header>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
         {kpis.map((kpi, idx) => (
-          <KPIWidget key={`${kpi.title || "kpi"}-${idx}`} title={kpi.title} value={kpi.value} subtitle={kpi.subtitle} tone={kpi.tone} />
+          <KPIWidget
+            key={`${kpi.title || "kpi"}-${idx}`}
+            title={kpi.title}
+            value={kpi.value}
+            subtitle={kpi.subtitle}
+            tone={kpi.tone}
+          />
         ))}
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <TrendChart title="Performance Trend" data={trends} />
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <TrendChart title="Performance trend" data={trends} />
         <PipelineWidget pipelines={data?.pipelines || []} />
       </div>
 
-      {children ? <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">{children}</div> : null}
+      {children ? <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">{children}</div> : null}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <StatusCard label="System Health" status={data?.system_health || "Healthy"} description="Current platform operating state." />
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        <StatusCard
+          label="System health"
+          status={data?.system_health || "Healthy"}
+          description="Current platform operating state."
+        />
         <GovernanceScoreWidget score={data?.governance_score || 0} />
         <DataQualityWidget metrics={data?.data_quality || {}} />
       </div>
 
       <AuditWidget entries={data?.audit_events || []} />
-
       <ClassicKpiSection defaultOpen />
     </section>
   );

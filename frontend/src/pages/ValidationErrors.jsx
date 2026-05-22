@@ -132,7 +132,7 @@ export default function ValidationErrors({ jobId, tableId, onBack }) {
               {data.errors.map((err) => (
                 <tr
                   key={err.log_id}
-                  className="border-b border-gray-100 hover:bg-gray-50"
+                  className="border-b border-gray-100"
                 >
                   {/* Render all the dynamic columns */}
                   {data.all_columns.map((col) => {

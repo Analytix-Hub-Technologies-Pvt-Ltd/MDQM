@@ -153,11 +153,11 @@ export default function AdminPanel() {
   const isAdminRole = (role) => String(role || "").trim().toUpperCase() === "ADMIN";
 
   return (
-    <div className="flex-1 overflow-y-auto p-8 bg-[#FBFBFB] text-[#23243B]">
-      <h1 className="text-2xl uppercase tracking-widest text-[#23243B] mb-2">Admin overview</h1>
-      <p className="mb-6 text-sm text-gray-600">
+    <div className="flex-1 overflow-y-auto text-foreground">
+      <h1 className="text-2xl font-semibold tracking-tight text-foreground mb-2">Admin overview</h1>
+      <p className="mb-6 text-sm text-muted-foreground">
         Pending signup and data-access requests are under{" "}
-        <Link to="/admin/access-requests" className="font-medium text-[#23243B] underline underline-offset-2 hover:no-underline">
+        <Link to="/admin/access-requests" className="font-medium text-primary underline underline-offset-2 hover:no-underline">
           Access requests
         </Link>{" "}
         in the admin menu.
@@ -166,31 +166,31 @@ export default function AdminPanel() {
       {err && <div className="mb-4 text-sm text-red-600">{err}</div>}
 
       <div className="grid grid-cols-1 gap-6 lg:max-w-xl">
-        <div className="bg-white border border-gray-200 p-4 text-[#23243B]">
-          <h2 className="text-sm uppercase tracking-widest text-gray-600 mb-3">Create User</h2>
+        <div className="rounded-2xl border border-border bg-card p-4 shadow-sm">
+          <h2 className="text-sm font-bold uppercase tracking-wider text-foreground mb-3">Create User</h2>
           <form className="space-y-2" onSubmit={createUser}>
-            <input className="w-full border border-gray-300 px-3 py-2 text-sm text-gray-900" placeholder="Full name" value={form.full_name} onChange={(e) => setForm((p) => ({ ...p, full_name: e.target.value }))} required />
-            <input className="w-full border border-gray-300 px-3 py-2 text-sm text-gray-900" placeholder="Username" value={form.username} onChange={(e) => setForm((p) => ({ ...p, username: e.target.value }))} />
-            <input className="w-full border border-gray-300 px-3 py-2 text-sm text-gray-900" placeholder="Email" value={form.email} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} required />
-            <select className="w-full border border-gray-300 px-3 py-2 text-sm text-gray-900" value={form.role} onChange={(e) => setForm((p) => ({ ...p, role: e.target.value }))}>
+            <input className="w-full rounded-lg border px-3 py-2 text-sm" placeholder="Full name" value={form.full_name} onChange={(e) => setForm((p) => ({ ...p, full_name: e.target.value }))} required />
+            <input className="w-full rounded-lg border px-3 py-2 text-sm" placeholder="Username" value={form.username} onChange={(e) => setForm((p) => ({ ...p, username: e.target.value }))} />
+            <input className="w-full rounded-lg border px-3 py-2 text-sm" placeholder="Email" value={form.email} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} required />
+            <select className="w-full rounded-lg border px-3 py-2 text-sm" value={form.role} onChange={(e) => setForm((p) => ({ ...p, role: e.target.value }))}>
               {(roles.length ? roles : ["ADMIN", "CDO", "DATA_STEWARD", "DATA_OWNER", "DEVELOPER", "AUDITOR", "ANALYST", "BUSINESS_USER"]).map((r) => (
                 <option key={r} value={r}>
                   {r}
                 </option>
               ))}
             </select>
-            <input className="w-full border border-gray-300 px-3 py-2 text-sm text-gray-900" placeholder="Password (optional)" value={form.password} onChange={(e) => setForm((p) => ({ ...p, password: e.target.value }))} />
-            <button className="w-full bg-[#23243B] text-white py-2 text-xs uppercase tracking-widest">Create User</button>
+            <input className="w-full rounded-lg border px-3 py-2 text-sm" placeholder="Password (optional)" value={form.password} onChange={(e) => setForm((p) => ({ ...p, password: e.target.value }))} />
+            <button className="w-full rounded-lg bg-primary text-primary-foreground py-2 text-xs font-semibold uppercase tracking-widest hover:opacity-90">Create User</button>
           </form>
         </div>
       </div>
 
-      <div className="bg-white border border-gray-200 p-4 mt-6 text-[#23243B]">
-        <h2 className="text-sm uppercase tracking-widest text-gray-600 mb-3">Users</h2>
-        <div className="overflow-auto">
-          <table className="w-full text-sm text-gray-800">
+      <div className="rounded-2xl border border-border bg-card p-4 mt-6 shadow-sm">
+        <h2 className="text-sm font-bold uppercase tracking-wider text-foreground mb-3">Users</h2>
+        <div className="overflow-auto rounded-xl border border-border">
+          <table className="w-full text-sm">
             <thead>
-              <tr className="text-left text-gray-500">
+              <tr className="text-left">
                 <th>Name</th>
                 <th>Username</th>
                 <th>Email</th>
@@ -201,7 +201,7 @@ export default function AdminPanel() {
             </thead>
             <tbody>
               {users.map((u) => (
-                <tr key={u.id} className="border-t border-gray-100">
+                <tr key={u.id} className="border-t border-border">
                   <td className="py-2">{u.full_name}</td>
                   <td>{u.username || "—"}</td>
                   <td>{u.email}</td>
@@ -210,7 +210,7 @@ export default function AdminPanel() {
                   <td className="py-2 text-right">
                     <button
                       type="button"
-                      className="px-2 py-1 border border-gray-300 text-gray-800 uppercase text-xs tracking-wider"
+                      className="px-2 py-1 rounded-md border border-border text-foreground uppercase text-xs font-semibold tracking-wider hover:bg-muted"
                       onClick={() => setEditUser(u)}
                     >
                       Edit

@@ -1,3 +1,6 @@
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+
 export default function PipelineWidget({ pipelines = [] }) {
   const rows = pipelines.length
     ? pipelines
@@ -7,16 +10,22 @@ export default function PipelineWidget({ pipelines = [] }) {
       ];
 
   return (
-    <article className="enterprise-card p-4">
-      <h3 className="enterprise-title mb-3">Pipeline Status</h3>
-      <div className="space-y-2">
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+          Pipeline status
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3 pt-0">
         {rows.map((item, idx) => (
-          <div key={`${item.name}-${idx}`} className="flex justify-between text-sm">
-            <span className="text-[#d7e3f7]">{item.name}</span>
-            <span className="uppercase text-xs tracking-wider text-[#7f95b6]">{item.status}</span>
+          <div key={`${item.name}-${idx}`} className="flex items-center justify-between text-sm">
+            <span className="font-medium text-foreground">{item.name}</span>
+            <Badge variant="outline" className="uppercase text-[10px]">
+              {item.status}
+            </Badge>
           </div>
         ))}
-      </div>
-    </article>
+      </CardContent>
+    </Card>
   );
 }

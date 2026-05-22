@@ -249,7 +249,7 @@ export default function FuzzyErrors({ jobId, tableId, onBack }) {
               {rows.map((row) => (
                 <tr
                   key={row.row_id}
-                  className="border-b border-gray-100 hover:bg-gray-50"
+                  className="border-b border-gray-100"
                 >
                   {/* Dynamic Columns */}
                   {meta.all_columns.map((col) => {

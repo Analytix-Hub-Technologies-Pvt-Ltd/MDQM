@@ -1,25 +1,26 @@
 import { useState } from "react";
 import LegacyKpiDashboard from "../Dashboard";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 
-/**
- * @param {boolean} [defaultOpen] - Start expanded on the Overview tab.
- */
 export default function ClassicKpiSection({ defaultOpen = false }) {
   const [show, setShow] = useState(defaultOpen);
 
   return (
-    <section className="enterprise-card mt-6">
-      <div className="px-4 py-3 border-b border-[#22324f] flex items-center justify-between">
-        <h2 className="enterprise-title">Classic KPI Analytics (All Jobs)</h2>
-        <button
-          type="button"
-          onClick={() => setShow((s) => !s)}
-          className="text-xs border border-[#2a3f63] px-3 py-1 text-[#9ab0d1] uppercase tracking-wider rounded-sm"
-        >
+    <Card className="mt-6">
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+          Classic KPI analytics (all jobs)
+        </CardTitle>
+        <Button variant="outline" size="sm" type="button" onClick={() => setShow((s) => !s)}>
           {show ? "Hide" : "Show"}
-        </button>
-      </div>
-      {show ? <LegacyKpiDashboard embedded /> : null}
-    </section>
+        </Button>
+      </CardHeader>
+      {show ? (
+        <CardContent className="pt-0">
+          <LegacyKpiDashboard embedded />
+        </CardContent>
+      ) : null}
+    </Card>
   );
 }

@@ -32,12 +32,12 @@ export default function TableRulesEditor({ jobId, tableId, tableName, variant = 
   const [masterInput, setMasterInput] = useState("");
 
   const inputCls = ent
-    ? "bg-[#0f1b31] border-b border-[#2a3f63] p-2 text-sm outline-none focus:border-[#4f8cff] text-[#d7e3f7] w-full"
+    ? "w-full rounded-lg border border-[var(--input-border)] bg-[var(--input-bg)] p-2 text-sm font-medium text-[var(--input-foreground)] outline-none focus:border-primary focus:ring-2 focus:ring-ring/40"
     : "bg-transparent border-b border-[#A1A3AF] p-2 text-sm outline-none focus:border-[#23243B] w-full";
   const labelCls = ent
-    ? "text-[10px] uppercase tracking-wider text-[#7f95b6] font-bold"
+    ? "text-[10px] uppercase tracking-wider text-muted-foreground font-bold"
     : "text-[10px] uppercase tracking-wider text-gray-500 font-bold";
-  const rowHover = ent ? "hover:bg-[#132542]" : "hover:bg-[#FBFBFB]";
+  const rowHover = "mdqm-row-hover";
 
   const load = useCallback(async () => {
     if (!jobId || !tableId) return;
@@ -218,7 +218,7 @@ export default function TableRulesEditor({ jobId, tableId, tableName, variant = 
         </div>
       ) : (
         <>
-          <div className={`grid grid-cols-12 gap-2 text-[10px] uppercase tracking-widest mb-2 pb-2 border-b ${ent ? "text-[#7f95b6] border-[#22324f]" : "text-[#A1A3AF] border-gray-100"}`}>
+          <div className={`grid grid-cols-12 gap-2 text-[10px] uppercase tracking-widest mb-2 pb-2 border-b ${ent ? "text-muted-foreground border-border" : "text-[#A1A3AF] border-gray-100"}`}>
             <div className="col-span-1">#</div>
             <div className="col-span-3">Column</div>
             <div className="col-span-2">Type</div>
@@ -230,7 +230,7 @@ export default function TableRulesEditor({ jobId, tableId, tableName, variant = 
           {rules.map((rule, idx) => (
             <div
               key={rule.rule_id}
-              className={`grid grid-cols-12 gap-2 text-sm py-3 border-b items-center ${rowHover} ${ent ? "border-[#22324f]/50 text-[#d7e3f7]" : "border-gray-50"}`}
+              className={`grid grid-cols-12 gap-2 text-sm py-3 border-b items-center ${rowHover} ${ent ? "border-border text-foreground" : "border-gray-50"}`}
             >
               <div className="col-span-1 text-[#7f95b6]">{String(idx + 1).padStart(2, "0")}</div>
               <div className="col-span-3 font-medium">{rule.column_name}</div>
@@ -271,7 +271,7 @@ export default function TableRulesEditor({ jobId, tableId, tableName, variant = 
               <Plus size={16} /> Add rule
             </button>
           ) : (
-            <div className={`p-4 border rounded-lg space-y-4 ${ent ? "bg-[#0a1424] border-[#2a3f63]" : "bg-[#F8F8F8] border-[#A1A3AF]/20"}`}>
+            <div className={`p-4 border rounded-lg space-y-4 ${ent ? "bg-muted/40 border-border" : "bg-[#F8F8F8] border-[#A1A3AF]/20"}`}>
               <div className="flex justify-between items-center">
                 <span className="text-xs font-bold uppercase tracking-widest text-[#d7e3f7]">
                   {editingRuleId ? "Edit rule" : "New rule"}

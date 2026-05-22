@@ -2,84 +2,74 @@ import { useState, useRef, useEffect } from "react";
 import { ChevronDown, User, LogOut } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
-const ProfileDropdown = () => {
+export default function ProfileDropdown() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef(null);
 
-  // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
         setIsOpen(false);
       }
     };
-
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const handleViewProfile = () => {
-    navigate("/profile");
-    setIsOpen(false);
-  };
-
-  const handleLogout = () => {
-    logout();
-    setIsOpen(false);
-  };
-
   return (
     <div className="relative" ref={dropdownRef}>
-      <button
+      <Button
+        variant="outline"
+        size="sm"
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 px-3 py-1 text-xs uppercase tracking-widest border border-gray-300 text-gray-600 hover:bg-gray-50 rounded transition-colors"
+        className="gap-2 max-w-[160px]"
         title={user?.full_name}
       >
-        <User size={14} />
-        <span className="hidden sm:inline truncate max-w-[100px]">{user?.username || "Profile"}</span>
-        <ChevronDown size={14} className={`transition-transform ${isOpen ? "rotate-180" : ""}`} />
-      </button>
+        <User className="h-4 w-4 shrink-0" />
+        <span className="hidden truncate sm:inline">{user?.username || "Profile"}</span>
+        <ChevronDown className={cn("h-4 w-4 shrink-0 transition-transform", isOpen && "rotate-180")} />
+      </Button>
 
-      {isOpen && (
-        <div className="absolute right-0 mt-2 w-48 bg-white border border-gray-200 rounded-lg shadow-lg z-50 overflow-hidden">
-          {/* User Info */}
-          <div className="px-4 py-3 border-b border-gray-100">
-            <p className="text-sm font-semibold text-gray-900">{user?.full_name}</p>
-            <p className="text-xs text-gray-500">{user?.email}</p>
-            <p className="text-xs text-gray-400 mt-1 capitalize">Role: {user?.role}</p>
+      {isOpen ? (
+        <div className="absolute right-0 mt-2 w-56 overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-lg z-50">
+          <div className="border-b border-border px-4 py-3">
+            <p className="text-sm font-semibold">{user?.full_name}</p>
+            <p className="text-xs text-muted-foreground truncate">{user?.email}</p>
+            <p className="mt-1 text-xs capitalize text-muted-foreground">Role: {user?.role}</p>
           </div>
-
-          {/* Menu Items */}
           <div className="py-1">
             <button
-              onClick={handleViewProfile}
-              className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 transition-colors"
+              type="button"
+              onClick={() => {
+                navigate("/profile");
+                setIsOpen(false);
+              }}
+              className="flex w-full items-center gap-2 px-4 py-2 text-sm hover:bg-muted transition-colors"
             >
-              <User size={16} />
-              Edit Profile
+              <User className="h-4 w-4" />
+              Edit profile
             </button>
           </div>
-
-          {/* Divider */}
-          <div className="border-t border-gray-100"></div>
-
-          {/* Logout */}
-          <div className="py-1">
+          <div className="border-t border-border py-1">
             <button
-              onClick={handleLogout}
-              className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2 transition-colors"
+              type="button"
+              onClick={() => {
+                logout();
+                setIsOpen(false);
+              }}
+              className="flex w-full items-center gap-2 px-4 py-2 text-sm text-destructive hover:bg-destructive/10 transition-colors"
             >
-              <LogOut size={16} />
+              <LogOut className="h-4 w-4" />
               Logout
             </button>
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   );
-};
-
-export default ProfileDropdown;
+}

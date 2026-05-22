@@ -1,46 +1,247 @@
 @import "tailwindcss";
 
-:root {
-  --mdqm-bg: #060b16;
-  --mdqm-panel: #0e1728;
-  --mdqm-panel-soft: #111e34;
-  --mdqm-border: #22324f;
-  --mdqm-text: #d7e3f7;
-  --mdqm-muted: #7f95b6;
-  --mdqm-accent: #4f8cff;
-  --mdqm-accent-2: #8b5cf6;
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --radius-lg: 1rem;
+  --radius-md: 0.75rem;
+  --radius-sm: 0.5rem;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+}
+
+/* Light mode */
+:root,
+.light {
+  --background: #f1f5f9;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --primary: #4f46e5;
+  --primary-foreground: #ffffff;
+  --secondary: #06b6d4;
+  --secondary-foreground: #0f172a;
+  /* Secondary labels — darker for readability */
+  --muted: #e2e8f0;
+  --muted-foreground: #334155;
+  --accent: #7c3aed;
+  --accent-foreground: #ffffff;
+  --destructive: #dc2626;
+  --border: #cbd5e1;
+  --input: #94a3b8;
+  --ring: #4f46e5;
+  /* Crisp form fields */
+  --input-bg: #ffffff;
+  --input-border: #cbd5e1;
+  --input-foreground: #0f172a;
+  --placeholder: #64748b;
+  /* Light sidebar — clean panel (not dark navy) */
+  --sidebar: #ffffff;
+  --sidebar-foreground: #1e293b;
+  --sidebar-muted: #64748b;
+  --sidebar-border: #e2e8f0;
+  --sidebar-hover: #f1f5f9;
+  --sidebar-active-bg: #eef2ff;
+  --sidebar-active-fg: #4338ca;
+  --sidebar-accent: #4f46e5;
+  /* Table column headers */
+  --table-header-bg: #f1f5f9;
+  --table-header-fg: #0f172a;
+  --table-header-border: #cbd5e1;
+  /* Subtle row hover — keeps column text readable */
+  --table-row-hover: color-mix(in srgb, var(--primary) 6%, var(--card));
+  --success: #059669;
+  --warning: #d97706;
+  --info: #2563eb;
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.05), 0 4px 16px rgba(15, 23, 42, 0.06);
+  --glass: rgba(255, 255, 255, 0.85);
+}
+
+.dark {
+  --background: #020617;
+  --foreground: #f8fafc;
+  --card: #111827;
+  --card-foreground: #f8fafc;
+  --popover: #111827;
+  --popover-foreground: #f8fafc;
+  --primary: #6366f1;
+  --primary-foreground: #ffffff;
+  --secondary: #22d3ee;
+  --secondary-foreground: #020617;
+  --muted: #1e293b;
+  --muted-foreground: #cbd5e1;
+  --accent: #a78bfa;
+  --accent-foreground: #ffffff;
+  --destructive: #ef4444;
+  --border: #334155;
+  --input: #475569;
+  --ring: #6366f1;
+  --input-bg: #0f172a;
+  --input-border: #475569;
+  --input-foreground: #f8fafc;
+  --placeholder: #94a3b8;
+  --sidebar: #0f172a;
+  --sidebar-foreground: #f1f5f9;
+  --sidebar-muted: #94a3b8;
+  --sidebar-border: #1e293b;
+  --sidebar-hover: #1e293b;
+  --sidebar-active-bg: rgba(99, 102, 241, 0.22);
+  --sidebar-active-fg: #ffffff;
+  --sidebar-accent: #818cf8;
+  --table-header-bg: #1e293b;
+  --table-header-fg: #f1f5f9;
+  --table-header-border: #334155;
+  --table-row-hover: color-mix(in srgb, var(--primary) 14%, var(--card));
+  --success: #10b981;
+  --warning: #f59e0b;
+  --info: #3b82f6;
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.35), 0 12px 32px rgba(0, 0, 0, 0.28);
+  --glass: rgba(17, 24, 39, 0.65);
+}
+
+* {
+  border-color: var(--border);
+}
+
+html {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 body {
   margin: 0;
-  background: radial-gradient(1100px 520px at 8% -10%, #1a2f55 0%, transparent 60%),
-    radial-gradient(900px 500px at 98% 0%, #2b1f4f 0%, transparent 58%),
-    var(--mdqm-bg);
-  color: var(--mdqm-text);
+  background-color: var(--background);
+  color: var(--foreground);
+  transition: background-color 0.25s ease, color 0.25s ease;
 }
 
 #root {
   min-height: 100vh;
 }
 
+/* Legacy / native form controls — consistent in light mode */
+.light input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+.light textarea,
+.light select {
+  color: var(--input-foreground);
+  background-color: var(--input-bg);
+  border-color: var(--input-border);
+}
+
+.light input::placeholder,
+.light textarea::placeholder {
+  color: var(--placeholder);
+  opacity: 1;
+}
+
+.light select option {
+  color: var(--input-foreground);
+  background-color: var(--input-bg);
+}
+
+/* Legacy table headers (Admin, Jobs, Audit, etc.) */
+.light table thead th,
+.light table thead td,
+.light table thead tr {
+  background-color: var(--table-header-bg);
+  color: var(--table-header-fg);
+  border-color: var(--table-header-border);
+  font-weight: 600;
+}
+
+.light table thead th {
+  padding: 0.75rem 1rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.light table tbody td,
+.light table tbody th {
+  color: var(--foreground);
+}
+
+.dark table tbody td,
+.dark table tbody th {
+  color: var(--foreground);
+}
+
+/* Unified table row hover — all tables app-wide */
+table tbody tr {
+  transition: background-color 0.12s ease;
+}
+
+table tbody tr:hover > td,
+table tbody tr:hover > th {
+  background-color: var(--table-row-hover) !important;
+}
+
+/* Grid/list rows that behave like table rows (rules editor, quality panel) */
+.mdqm-row-hover {
+  transition: background-color 0.12s ease;
+}
+
+.mdqm-row-hover:hover {
+  background-color: var(--table-row-hover) !important;
+  color: var(--foreground) !important;
+}
+
+.dark table thead th,
+.dark table thead td {
+  background-color: var(--table-header-bg);
+  color: var(--table-header-fg);
+  border-color: var(--table-header-border);
+}
+
 .enterprise-card {
-  background: linear-gradient(180deg, rgba(15, 26, 46, 0.95), rgba(10, 18, 33, 0.95));
-  border: 1px solid var(--mdqm-border);
-  border-radius: 12px;
-  box-shadow: 0 10px 30px rgba(3, 8, 18, 0.35);
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
 }
 
 .enterprise-title {
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--mdqm-muted);
+  color: var(--muted-foreground);
   font-size: 11px;
+  font-weight: 600;
 }
 
-/* Horizontal scroll regions (audit tables, wide panels) — thin, theme-aligned bar */
+.light .enterprise-title {
+  color: #334155;
+}
+
 .mdqm-scroll-x {
   scrollbar-width: thin;
-  scrollbar-color: rgba(79, 140, 255, 0.4) rgba(12, 20, 36, 0.95);
+  scrollbar-color: color-mix(in srgb, var(--primary) 40%, transparent) var(--muted);
 }
 
 .mdqm-scroll-x::-webkit-scrollbar {
@@ -49,28 +250,26 @@ body {
 }
 
 .mdqm-scroll-x::-webkit-scrollbar-track {
-  background: rgba(12, 20, 36, 0.9);
+  background: var(--muted);
   border-radius: 999px;
 }
 
 .mdqm-scroll-x::-webkit-scrollbar-thumb {
-  background: rgba(79, 140, 255, 0.35);
+  background: color-mix(in srgb, var(--primary) 45%, transparent);
   border-radius: 999px;
 }
 
-.mdqm-scroll-x::-webkit-scrollbar-thumb:hover {
-  background: rgba(79, 140, 255, 0.55);
+.page-enter {
+  animation: page-enter 0.35s ease-out forwards;
 }
 
-/* Light auth cards (login, request access) — do not inherit dark dashboard text */
-.auth-surface-light,
-.auth-surface-light input,
-.auth-surface-light textarea {
-  color: #111827;
-}
-
-.auth-surface-light input::placeholder,
-.auth-surface-light textarea::placeholder {
-  color: #6b7280;
-  opacity: 1;
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
