@@ -4,9 +4,28 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="#" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
     <title>Master Data Quality Management System | MDQMS</title>
-    <script type="module" crossorigin src="/MDQM/assets/index-DQ8Yn572.js"></script>
-    <link rel="stylesheet" crossorigin href="/MDQM/assets/index-DScL8yFo.css">
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("mdqm-theme") || "system";
+          var dark =
+            t === "dark" ||
+            (t === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.classList.add(dark ? "dark" : "light");
+        } catch (e) {
+          document.documentElement.classList.add("light");
+        }
+      })();
+    </script>
+    <script type="module" crossorigin src="/MDQM/assets/index--idwZH7Y.js"></script>
+    <link rel="stylesheet" crossorigin href="/MDQM/assets/index-wyxaa_rD.css">
   </head>
   <body>
     <div id="root"></div>
