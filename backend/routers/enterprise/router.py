@@ -981,7 +981,7 @@ def business_quality_scores(
     q: str | None = None,
 ):
     require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
-    return busvc.list_quality_scores(db, page, page_size, q, user_email=user.email)
+    return busvc.list_quality_scores(db, page, page_size, q, username=user.username)
 
 
 @router.get("/business/glossary")
