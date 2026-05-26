@@ -191,6 +191,19 @@ def log_database_target() -> None:
     )
 
 
+def demo_users_seed_enabled() -> bool:
+    """
+    When true, upsert Analytix Hub test users (auth/demo_users.py) on every startup.
+    Default: on for local dev, off for production unless MDQM_SEED_DEMO_USERS=1.
+    """
+    raw = (os.getenv("MDQM_SEED_DEMO_USERS") or "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return not is_production()
+
+
 def get_cors_origins() -> list[str]:
     raw = (os.getenv("CORS_ORIGINS") or "").strip()
     if raw:

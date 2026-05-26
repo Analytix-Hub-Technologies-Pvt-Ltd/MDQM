@@ -59,6 +59,9 @@ services:
         sync: false
       - key: ACCESS_REQUEST_NOTIFY_EMAIL
         sync: false
+      # Enable to sync passwords for existing users in auth/demo_users.py (by email; no new users):
+      - key: MDQM_SEED_DEMO_USERS
+        sync: false
 
 databases:
   - name: mdqm-db

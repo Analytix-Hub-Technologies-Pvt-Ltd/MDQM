@@ -14,7 +14,7 @@ export default function ScoreRing({ score, size = 40 }) {
   const offset = circ - (s / 100) * circ;
   return (
     <svg width={size} height={size} className="shrink-0">
-      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#1e2d47" strokeWidth={4} />
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--muted)" strokeWidth={4} />
       <circle
         cx={size / 2}
         cy={size / 2}

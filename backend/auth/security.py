@@ -2,20 +2,25 @@ import hashlib
 import secrets
 from datetime import datetime, timedelta
 
+import bcrypt
 import jwt
-from passlib.context import CryptContext
 
 from auth.config import JWT_ALGORITHM, JWT_EXPIRE_MINUTES, JWT_SECRET
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    digest = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
+    return digest.decode("utf-8")
 
 
 def verify_password(password: str, password_hash: str) -> bool:
-    return pwd_context.verify(password, password_hash)
+    try:
+        return bcrypt.checkpw(
+            password.encode("utf-8"),
+            password_hash.encode("utf-8"),
+        )
+    except (ValueError, TypeError):
+        return False
 
 
 def create_access_token(user_id: int, role: str) -> str:

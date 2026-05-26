@@ -7,6 +7,15 @@ import { formatRelativeTime } from "../../../../utils/formatRelativeTime";
 import DataAccessRequestModal from "./DataAccessRequestModal";
 import CatalogDatasetDetailModal from "./CatalogDatasetDetailModal";
 
+const inputClass =
+  "w-full max-w-md rounded-lg border border-[var(--input-border)] bg-[var(--input-bg)] px-3 py-2 text-sm text-foreground placeholder:text-[var(--placeholder)] focus-visible:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40";
+
+const btnOutline =
+  "rounded border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted transition-colors";
+
+const btnPrimaryOutline =
+  "rounded border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary hover:bg-primary/15 dark:border-[#4f8cff]/50 dark:bg-[#1a2844] dark:text-[#d7e3f7] dark:hover:border-[#4f8cff]";
+
 export default function CatalogPanel() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -43,7 +52,6 @@ export default function CatalogPanel() {
     load();
   }, [load]);
 
-  /** Open request modal when redirected from legacy ?tab=requests or ?openRequest=name */
   useEffect(() => {
     const ds = searchParams.get("openRequest") || "";
     if (!ds) return;
@@ -80,28 +88,30 @@ export default function CatalogPanel() {
   return (
     <div className="space-y-4">
       <input
-        className="w-full max-w-md rounded border border-slate-200 dark:border-[#2a3f63] bg-white dark:bg-[#0a1220] px-3 py-2 text-sm text-slate-900 dark:text-[#d7e3f7] placeholder:text-slate-400 dark:placeholder:text-[#5c6d8a] focus:outline-none focus:ring-2 focus:ring-sky-500/50"
+        className={inputClass}
         placeholder="Search datasets by name or domain…"
         value={q}
         onChange={(e) => setQ(e.target.value)}
       />
-      {err ? <p className="text-xs text-amber-400">{err}</p> : null}
-      {loading ? <p className="text-sm text-slate-500 dark:text-[#7f95b6]">Loading catalog…</p> : null}
+      {err ? <p className="text-xs text-amber-700 dark:text-amber-400">{err}</p> : null}
+      {loading ? <p className="text-sm text-muted-foreground">Loading catalog…</p> : null}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {items.map((d) => (
           <div key={d.id ?? d.name} className="enterprise-card p-4">
             <div className="flex gap-3 items-start mb-3">
               <ScoreRing score={d.dq_job_linked || d.score_source === "manual" ? d.score : null} size={52} />
               <div className="min-w-0 flex-1">
-                <h4 className="font-semibold text-slate-900 dark:text-[#d7e3f7]">{d.name}</h4>
-                <p className="text-xs text-slate-500 dark:text-[#5c6d8a]">
+                <h4 className="font-semibold text-foreground">{d.name}</h4>
+                <p className="text-xs text-muted-foreground">
                   Domain: {d.domain || "—"} · {d.record_count} · Owner: {d.owner}
                   {d.steward && d.steward !== "—" ? ` · Steward: ${d.steward}` : ""}
                 </p>
                 {!d.dq_job_linked && d.score_source !== "manual" ? (
-                  <p className="text-xs text-amber-500/90 mt-1">No DQ job linked — scores unavailable until owner links a job.</p>
+                  <p className="text-xs text-amber-700 dark:text-amber-400/90 mt-1">
+                    No DQ job linked — scores unavailable until owner links a job.
+                  </p>
                 ) : null}
-                {d.description ? <p className="text-xs text-slate-600 dark:text-[#7f95b6] mt-1 line-clamp-2">{d.description}</p> : null}
+                {d.description ? <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{d.description}</p> : null}
                 <div className="flex flex-wrap gap-1.5 mt-2">
                   <StatusBadge status={d.certification} />
                   <StatusBadge status={d.tier} />
@@ -117,21 +127,21 @@ export default function CatalogPanel() {
                 { l: "Valid", v: d.validity },
                 { l: "Unique", v: d.uniqueness },
               ].map((m) => (
-                <div key={m.l} className="rounded bg-slate-50 dark:bg-[#141d2e] border border-slate-200/50 dark:border-transparent px-2 py-1.5 transition-colors">
-                  <div className="text-[10px] font-medium text-slate-500 dark:text-[#5c6d8a] uppercase tracking-wider">{m.l}</div>
-                  <div className="text-sm font-bold text-slate-800 dark:text-[#d7e3f7]">
+                <div key={m.l} className="rounded bg-slate-100 px-2 py-1.5 dark:bg-[#141d2e]">
+                  <div className="text-[10px] text-muted-foreground">{m.l}</div>
+                  <div className="text-sm font-bold text-foreground">
                     {d.dq_job_linked || d.score_source === "manual" ? `${m.v}%` : "—"}
                   </div>
                 </div>
               ))}
             </div>
             {d.last_run ? (
-              <p className="text-[10px] text-slate-500 dark:text-[#5c6d8a] mb-2">Last DQ run: {formatRelativeTime(d.last_run)}</p>
+              <p className="text-[10px] text-muted-foreground mb-2">Last DQ run: {formatRelativeTime(d.last_run)}</p>
             ) : null}
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                className="rounded border border-sky-600/30 dark:border-[#4f8cff]/50 bg-sky-50 dark:bg-[#1a2844] px-3 py-1.5 text-xs font-semibold text-sky-700 dark:text-[#9ab0d1] hover:bg-sky-100 dark:hover:bg-[#1a2844] hover:border-sky-600 dark:hover:border-[#4f8cff] hover:text-sky-800 dark:hover:text-[#d7e3f7] disabled:opacity-40 disabled:hover:bg-sky-50 disabled:hover:text-sky-700 disabled:hover:border-sky-600/30 disabled:cursor-not-allowed transition-colors"
+                className={`${btnPrimaryOutline} disabled:opacity-40 disabled:cursor-not-allowed`}
                 onClick={() => openDetailModal(d)}
                 disabled={!d.id || !canAccess(d)}
                 title={canAccess(d) ? "View validation rules and DQ run results" : "Access required to view details"}
@@ -141,25 +151,21 @@ export default function CatalogPanel() {
               {!canAccess(d) ? (
                 <button
                   type="button"
-                  className="rounded border border-slate-200 dark:border-[#2a3f63] px-3 py-1.5 text-xs text-slate-400 dark:text-[#5c6d8a]"
+                  className={`${btnOutline} text-muted-foreground cursor-not-allowed opacity-70`}
                   disabled
-                  title="Request access or link DQ job"
+                  title="Request access to use this dataset"
                 >
                   Restricted
                 </button>
               ) : null}
               {!canAccess(d) ? (
-                <button
-                  type="button"
-                  className="rounded border border-slate-300 dark:border-[#2a3f63] px-3 py-1.5 text-xs text-slate-700 dark:text-[#d7e3f7] bg-white dark:bg-transparent hover:border-sky-500 dark:hover:border-[#4f8cff] hover:text-sky-600 dark:hover:text-[#4f8cff] transition-colors"
-                  onClick={() => openRequestModal(d.name)}
-                >
+                <button type="button" className={btnOutline} onClick={() => openRequestModal(d.name)}>
                   Request access
                 </button>
               ) : null}
               <button
                 type="button"
-                className="rounded border border-slate-300 dark:border-[#2a3f63] px-3 py-1.5 text-xs text-slate-700 dark:text-[#d7e3f7] bg-white dark:bg-transparent hover:border-sky-500 dark:hover:border-[#4f8cff] hover:text-sky-600 dark:hover:text-[#4f8cff] disabled:opacity-30 disabled:hover:border-slate-300 disabled:hover:text-slate-700 disabled:cursor-not-allowed transition-colors"
+                className={`${btnOutline} disabled:opacity-30 disabled:cursor-not-allowed`}
                 onClick={() => goLineage(d.name)}
                 disabled={!canAccess(d)}
                 title={canAccess(d) ? "View lineage flow" : "Access required to view lineage"}
@@ -170,7 +176,7 @@ export default function CatalogPanel() {
           </div>
         ))}
       </div>
-      {!loading && !items.length ? <p className="text-sm text-slate-500 dark:text-[#7f95b6]">No datasets match your search.</p> : null}
+      {!loading && !items.length ? <p className="text-sm text-muted-foreground">No datasets match your search.</p> : null}
 
       {requestModalOpen ? (
         <DataAccessRequestModal

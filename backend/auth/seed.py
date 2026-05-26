@@ -1,4 +1,4 @@
-"""First-run database seeding (default admin user)."""
+"""Database seeding: default admin (empty DB) or Analytix Hub demo test accounts."""
 
 from __future__ import annotations
 
@@ -8,9 +8,10 @@ import sys
 from sqlalchemy.orm import Session
 
 import models
+from auth.demo_users import DEMO_USERS
 from auth.security import hash_password
 from auth.username_utils import build_unique_username
-from settings import is_production
+from settings import demo_users_seed_enabled, is_production
 
 
 def ensure_default_admin(db: Session) -> None:
@@ -61,3 +62,46 @@ def ensure_default_admin(db: Session) -> None:
             file=sys.stderr,
             flush=True,
         )
+
+
+def sync_demo_user_passwords(db: Session) -> None:
+    """
+    Update passwords (bcrypt) for existing users matched by email only.
+    Does not create users or change username / full_name.
+    """
+    updated = 0
+    skipped = 0
+    for spec in DEMO_USERS:
+        email = spec["email"].strip().lower()
+        user = db.query(models.User).filter(models.User.email == email).first()
+        if not user:
+            skipped += 1
+            print(
+                f"[mdqm] Demo password sync skipped (no user for {email}).",
+                file=sys.stderr,
+                flush=True,
+            )
+            continue
+        user.password_hash = hash_password(spec["password"])
+        user.is_active = True
+        user.password_configured = True
+        updated += 1
+    db.commit()
+    print(
+        f"[mdqm] Demo passwords updated for {updated} existing user(s) "
+        f"(skipped {skipped} missing email(s)). Stored as bcrypt in auth.users.",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+# Backwards-compatible alias for scripts
+ensure_demo_users = sync_demo_user_passwords
+
+
+def seed_users_on_startup(db: Session) -> None:
+    """Sync demo passwords when enabled; otherwise legacy single-admin seed on empty DB."""
+    if demo_users_seed_enabled():
+        sync_demo_user_passwords(db)
+        return
+    ensure_default_admin(db)

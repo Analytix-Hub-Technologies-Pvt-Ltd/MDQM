@@ -36,6 +36,9 @@ function resolveBadgeVariant(status) {
   if (s.includes("queue") || s.includes("pending") || s === "draft" || s.includes("warn") || s === "stale") {
     return "warning";
   }
+  if (s.includes("low") || s.includes("restricted")) {
+    return "danger";
+  }
   return "neutral";
 }
 

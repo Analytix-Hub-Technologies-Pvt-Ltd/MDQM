@@ -45,7 +45,6 @@ export default function ReportsPanel() {
       const filename = businessReportCsvFilename(r.title);
       downloadTextFile(buildBusinessReportCsv(r), filename);
       setExportHint(`Saved ${filename} — check your Downloads folder (report summary, not full dataset rows).`);
-      // Optional: log export on server (do not block download if API fails)
       enterpriseReportsExportDownload({
         report_type: r.report_type,
         format: "csv",
@@ -78,23 +77,27 @@ export default function ReportsPanel() {
         <StatCard label="Certified" value={s.certified ?? 0} sub="Data quality verified" icon={CheckCircle2} tone="success" />
         <StatCard label="Stale / outdated" value={s.stale ?? 0} sub="Need refresh" icon={TriangleAlert} tone="warning" />
       </div>
-      {loading ? <p className="text-sm text-slate-500 dark:text-[#7f95b6]">Loading reports…</p> : null}
+      {loading ? <p className="text-sm text-muted-foreground">Loading reports…</p> : null}
       {openHint ? (
-        <p className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">{openHint}</p>
+        <p className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+          {openHint}
+        </p>
       ) : null}
       {exportHint ? (
-        <p className="rounded border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs text-sky-100">{exportHint}</p>
+        <p className="rounded border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900 dark:border-sky-500/40 dark:bg-sky-500/10 dark:text-sky-100">
+          {exportHint}
+        </p>
       ) : null}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {data.items.map((r) => (
           <div key={r.id} className="enterprise-card p-4">
             <div className="flex justify-between gap-3 mb-3">
               <div>
-                <h4 className="font-semibold text-slate-900 dark:text-[#d7e3f7]">{r.title}</h4>
-                <p className="text-xs text-slate-500 dark:text-[#5c6d8a]">
+                <h4 className="font-semibold text-foreground">{r.title}</h4>
+                <p className="text-xs text-muted-foreground">
                   {r.report_type} · Source: {r.dataset_name || "—"}
                 </p>
-                <p className="text-xs text-slate-500 dark:text-[#5c6d8a]">Last refresh: {r.last_refreshed || "—"}</p>
+                <p className="text-xs text-muted-foreground">Last refresh: {r.last_refreshed || "—"}</p>
               </div>
               {r.quality_score != null ? <ScoreRing score={r.quality_score} size={36} /> : null}
             </div>
@@ -116,7 +119,7 @@ export default function ReportsPanel() {
                 </button>
                 <button
                   type="button"
-                  className="rounded border border-slate-300 dark:border-[#2a3f63] bg-white dark:bg-transparent px-3 py-1.5 text-xs text-slate-700 dark:text-[#d7e3f7] hover:border-sky-500 dark:hover:border-[#4f8cff] hover:text-sky-600 dark:hover:text-[#4f8cff] transition-colors"
+                  className="rounded border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted"
                   disabled={exporting === r.id}
                   onClick={() => onExport(r)}
                 >

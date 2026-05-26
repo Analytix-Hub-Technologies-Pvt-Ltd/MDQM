@@ -100,18 +100,18 @@ if True:
             )
         print("[mdqm] Database schema ready.", file=sys.stderr, flush=True)
 
-    def _seed_default_admin():
-        from auth.seed import ensure_default_admin
+    def _seed_users():
+        from auth.seed import seed_users_on_startup
 
         db = SessionLocal()
         try:
-            ensure_default_admin(db)
+            seed_users_on_startup(db)
         finally:
             db.close()
 
     try:
         _init_database_schema()
-        _seed_default_admin()
+        _seed_users()
     except Exception as exc:
         print(f"[mdqm] FATAL: Database startup failed: {exc}", file=sys.stderr, flush=True)
         raise

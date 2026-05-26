@@ -3,6 +3,7 @@ import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import AuthLayout from "@/components/layout/AuthLayout";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Button } from "@/components/ui/button";
 
 const getApiErrorMessage = (err, fallback) => {
@@ -60,11 +61,11 @@ export default function LoginPage() {
           <label htmlFor="password" className="text-sm font-medium text-foreground">
             Password
           </label>
-          <Input
+          <PasswordInput
             id="password"
             placeholder="••••••••"
-            type="password"
             required
+            autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />

@@ -1,5 +1,4 @@
-passlib[bcrypt]
-bcrypt
+bcrypt>=4.0,<6
 PyJWT
 email-validator
 APScheduler

@@ -10,6 +10,15 @@ import {
   enterpriseValidationRun,
 } from "../enterpriseApi";
 
+const btnOutline =
+  "inline-flex items-center rounded border border-border bg-card px-3 py-2 text-xs font-medium uppercase tracking-wider text-foreground hover:bg-muted";
+
+const btnLink =
+  "inline-flex items-center rounded border border-primary/40 bg-primary/10 px-3 py-2 text-xs font-medium uppercase tracking-wider text-primary hover:bg-primary/15";
+
+const fieldSelect =
+  "min-w-[200px] rounded-lg border border-[var(--input-border)] bg-[var(--input-bg)] px-2 py-2 text-sm text-foreground";
+
 const qCols = [
   { key: "table_name", label: "Table" },
   { key: "job_id", label: "Job" },
@@ -67,13 +76,16 @@ function ValidationRunPanel() {
   };
 
   return (
-    <div className="enterprise-card p-4 space-y-3 text-sm text-[#d7e3f7] mb-4">
+    <div className="enterprise-card p-4 space-y-3 text-sm text-foreground mb-4">
       <h3 className="enterprise-title">Run validation engine</h3>
-      <p className="text-xs text-[#7f95b6]">Executes the same pipeline as <code className="text-[#9ec5ff]">/jobs/&#123;id&#125;/run</code> and persists a row in <code className="text-[#9ec5ff]">enterprise.validation_results</code> plus run history.</p>
+      <p className="text-xs text-muted-foreground">
+        Executes the same pipeline as <code className="text-primary">/jobs/&#123;id&#125;/run</code> and persists a row in{" "}
+        <code className="text-primary">enterprise.validation_results</code> plus run history.
+      </p>
       <div className="flex flex-wrap gap-2 items-end">
         <label className="flex flex-col gap-1">
-          <span className="text-xs text-[#7f95b6]">Job</span>
-          <select className="border border-[#2a3f63] bg-[#0f1b31] rounded px-2 py-2 min-w-[200px]" value={jobId} onChange={(e) => setJobId(e.target.value)}>
+          <span className="text-xs text-muted-foreground">Job</span>
+          <select className={fieldSelect} value={jobId} onChange={(e) => setJobId(e.target.value)}>
             <option value="">Select…</option>
             {jobs.map((j) => (
               <option key={j.job_id} value={j.job_id}>
@@ -86,13 +98,13 @@ function ValidationRunPanel() {
           type="button"
           disabled={busy}
           onClick={run}
-          className="bg-[#2a4a7a] hover:bg-[#355a8f] disabled:opacity-50 text-white text-xs px-4 py-2 rounded uppercase tracking-wide"
+          className="rounded bg-primary px-4 py-2 text-xs font-medium uppercase tracking-wide text-primary-foreground hover:opacity-90 disabled:opacity-50"
         >
           {busy ? "Running…" : "Run now"}
         </button>
       </div>
-      {err ? <p className="text-xs text-red-400">{err}</p> : null}
-      {msg ? <p className="text-xs text-emerald-300">{msg}</p> : null}
+      {err ? <p className="text-xs text-destructive">{err}</p> : null}
+      {msg ? <p className="text-xs text-emerald-700 dark:text-emerald-300">{msg}</p> : null}
     </div>
   );
 }
@@ -101,10 +113,10 @@ export function renderStewardTab(tabId) {
   switch (tabId) {
     case "rules":
       return (
-        <div className="enterprise-card p-5 text-sm text-[#9ab0d1]">
+        <div className="enterprise-card p-5 text-sm text-muted-foreground">
           <h3 className="enterprise-title mb-2">Rules</h3>
           <p className="mb-3">Manage column rules per table from the Rules workspace.</p>
-          <Link to="/rules" className="text-[#4f8cff] hover:underline">
+          <Link to="/rules" className="text-primary font-medium hover:underline">
             Open Rules →
           </Link>
         </div>
@@ -133,7 +145,7 @@ export function renderStewardTab(tabId) {
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              className="text-xs border border-[#2a3f63] px-3 py-2 rounded text-[#d7e3f7] uppercase tracking-wider"
+              className={btnOutline}
               onClick={async () => {
                 try {
                   const r = await enterpriseRefreshQuarantine();
@@ -147,7 +159,7 @@ export function renderStewardTab(tabId) {
             >
               Refresh summaries
             </button>
-            <Link to="/quarantine" className="text-xs border border-[#2a3f63] px-3 py-2 rounded text-[#4f8cff] uppercase tracking-wider inline-flex items-center">
+            <Link to="/quarantine" className={btnLink}>
               Open Quarantine
             </Link>
           </div>
@@ -182,29 +194,29 @@ export function renderStewardTab(tabId) {
       );
     case "matching":
       return (
-        <div className="enterprise-card p-5 text-sm text-[#9ab0d1]">
+        <div className="enterprise-card p-5 text-sm text-muted-foreground">
           <h3 className="enterprise-title mb-2">Fuzzy matching</h3>
           <p>Review fuzzy match candidates from the Quarantine workspace.</p>
-          <Link to="/quarantine" className="text-[#4f8cff] hover:underline mt-2 inline-block">
+          <Link to="/quarantine" className="text-primary font-medium hover:underline mt-2 inline-block">
             Go to Quarantine →
           </Link>
         </div>
       );
     case "tasks":
       return (
-        <div className="enterprise-card p-5 text-sm text-[#9ab0d1]">
+        <div className="enterprise-card p-5 text-sm text-muted-foreground">
           <h3 className="enterprise-title mb-2">Tasks</h3>
           <p>Stewardship task queue is listed under Issues; detailed board lives under Stewardship.</p>
-          <Link to="/stewardship" className="text-[#4f8cff] hover:underline">
+          <Link to="/stewardship" className="text-primary font-medium hover:underline">
             Stewardship →
           </Link>
         </div>
       );
     case "reports":
       return (
-        <div className="enterprise-card p-5 text-sm text-[#9ab0d1]">
+        <div className="enterprise-card p-5 text-sm text-muted-foreground">
           <h3 className="enterprise-title mb-2">Reports</h3>
-          <Link to="/reports" className="text-[#4f8cff] hover:underline">
+          <Link to="/reports" className="text-primary font-medium hover:underline">
             Open Reports →
           </Link>
         </div>

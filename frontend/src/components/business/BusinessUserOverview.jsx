@@ -41,7 +41,7 @@ export default function BusinessUserOverview() {
   }, []);
 
   if (loading) {
-    return <div className="enterprise-card p-8 text-center text-sm text-[#9ab0d1] animate-pulse">Loading workspace overview…</div>;
+    return <div className="enterprise-card p-8 text-center text-sm text-muted-foreground animate-pulse">Loading workspace overview…</div>;
   }
   if (err) return <p className="text-sm text-amber-400">{err}</p>;
 
@@ -73,17 +73,17 @@ export default function BusinessUserOverview() {
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <div className="enterprise-card p-4">
           <h3 className="enterprise-title mb-1">Data quality at a glance</h3>
-          <p className="text-xs text-[#7f95b6] mb-4">Datasets available for your use</p>
+          <p className="text-xs text-muted-foreground mb-4">Datasets available for your use</p>
           {!top.length ? (
-            <p className="text-xs text-[#7f95b6]">No datasets in catalog yet.</p>
+            <p className="text-xs text-muted-foreground">No datasets in catalog yet.</p>
           ) : (
-            <ul className="divide-y divide-[#22324f]/60">
+            <ul className="divide-y divide-border">
               {top.map((d) => (
                 <li key={d.id ?? d.name} className="flex items-center gap-3 py-3">
                   <ScoreRing score={d.score} size={36} />
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-[#d7e3f7] truncate">{d.name}</p>
-                    <p className="text-xs text-[#5c6d8a]">
+                    <p className="text-sm font-semibold text-foreground truncate">{d.name}</p>
+                    <p className="text-xs text-muted-foreground">
                       {d.domain} · {d.record_count}
                     </p>
                   </div>
@@ -96,20 +96,22 @@ export default function BusinessUserOverview() {
 
         <div className="enterprise-card p-4">
           <h3 className="enterprise-title mb-1">Business glossary highlights</h3>
-          <p className="text-xs text-[#7f95b6] mb-4">Recently approved terms</p>
+          <p className="text-xs text-muted-foreground mb-4">Recently approved terms</p>
           {!glossary.length ? (
-            <p className="text-xs text-[#7f95b6]">No approved glossary terms yet.</p>
+            <p className="text-xs text-muted-foreground">No approved glossary terms yet.</p>
           ) : (
-            <ul className="divide-y divide-[#22324f]/60">
+            <ul className="divide-y divide-border">
               {glossary.map((g) => (
                 <li key={g.id} className="py-3">
                   <div className="flex items-center justify-between gap-2 mb-1">
-                    <span className="text-sm font-bold text-sky-400">{g.term}</span>
+                    <span className="text-sm font-bold text-sky-700 dark:text-sky-400">{g.term}</span>
                     {g.domain ? (
-                      <span className="text-[10px] px-2 py-0.5 rounded bg-indigo-950/50 text-indigo-300 border border-indigo-600/30">{g.domain}</span>
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-indigo-100 text-indigo-800 border border-indigo-200 dark:bg-indigo-950/50 dark:text-indigo-300 dark:border-indigo-600/30">
+                        {g.domain}
+                      </span>
                     ) : null}
                   </div>
-                  <p className="text-xs text-[#9ab0d1] line-clamp-2">{g.definition}</p>
+                  <p className="text-xs text-muted-foreground line-clamp-2">{g.definition}</p>
                 </li>
               ))}
             </ul>
