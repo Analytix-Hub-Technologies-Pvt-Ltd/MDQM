@@ -145,11 +145,11 @@ export default function AlertsPanel() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="enterprise-title">Quality alert subscriptions</h3>
-            <p className="text-xs text-[#7f95b6]">Default threshold: Gold 85 · Silver/Bronze 75 (editable per watch)</p>
+            <p className="text-xs text-slate-500 dark:text-[#7f95b6]">Default threshold: Gold 85 · Silver/Bronze 75 (editable per watch)</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <select
-              className="rounded border border-[#2a3f63] bg-[#0a1220] px-3 py-2 text-xs text-[#d7e3f7] min-w-[180px]"
+              className="rounded border border-slate-200 dark:border-[#2a3f63] bg-white dark:bg-[#0a1220] px-3 py-2 text-xs text-slate-900 dark:text-[#d7e3f7] min-w-[180px]"
               value={pick}
               onChange={(e) => {
                 setPick(e.target.value);
@@ -166,7 +166,7 @@ export default function AlertsPanel() {
             </select>
             <button
               type="button"
-              className="rounded bg-sky-600 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+              className="rounded bg-sky-600 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50 hover:bg-sky-500 transition-colors"
               onClick={addWatch}
               disabled={adding || !datasets.length}
             >
@@ -176,13 +176,13 @@ export default function AlertsPanel() {
         </div>
         {err ? <p className="text-xs text-amber-400">{err}</p> : null}
         {successMsg ? <p className="text-xs text-emerald-400">{successMsg}</p> : null}
-        <ul className="divide-y divide-[#22324f]/60">
+        <ul className="divide-y divide-slate-100 dark:divide-[#22324f]/60">
           {(subs.items || []).map((s) => (
             <li key={s.id} className="flex flex-wrap items-center gap-3 py-3">
               <span className="text-lg">{s.state === "Triggered" ? "🔴" : s.state === "Warning" ? "🟡" : "🟢"}</span>
               <div className="flex-1 min-w-[200px]">
-                <p className="text-sm font-semibold text-[#d7e3f7]">{s.dataset_name}</p>
-                <p className="text-xs text-[#5c6d8a]">
+                <p className="text-sm font-semibold text-slate-900 dark:text-[#d7e3f7]">{s.dataset_name}</p>
+                <p className="text-xs text-slate-500 dark:text-[#5c6d8a]">
                   Alert when score drops below {s.threshold} · Currently: {s.current_score} · {s.domain}
                 </p>
               </div>
@@ -193,14 +193,14 @@ export default function AlertsPanel() {
                     type="number"
                     min={50}
                     max={100}
-                    className="w-16 rounded border border-[#2a3f63] bg-[#0a1220] px-2 py-1 text-xs text-[#d7e3f7]"
+                    className="w-16 rounded border border-slate-200 dark:border-[#2a3f63] bg-white dark:bg-[#0a1220] px-2 py-1 text-xs text-slate-900 dark:text-[#d7e3f7]"
                     value={editThreshold}
                     onChange={(e) => setEditThreshold(e.target.value)}
                   />
                   <button type="button" className="text-xs text-sky-400 underline" onClick={() => saveThreshold(s.id)}>
                     Save
                   </button>
-                  <button type="button" className="text-xs text-[#7f95b6]" onClick={() => setEditingId(null)}>
+                  <button type="button" className="text-xs text-slate-500 dark:text-[#7f95b6]" onClick={() => setEditingId(null)}>
                     Cancel
                   </button>
                 </div>
@@ -222,7 +222,7 @@ export default function AlertsPanel() {
             </li>
           ))}
         </ul>
-        {!subs.items?.length ? <p className="text-xs text-[#7f95b6]">No watches yet. Add a dataset above.</p> : null}
+        {!subs.items?.length ? <p className="text-xs text-slate-500 dark:text-[#7f95b6]">No watches yet. Add a dataset above.</p> : null}
       </div>
 
       <EnterpriseDataPanel

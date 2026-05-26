@@ -96,16 +96,71 @@ export async function enterpriseGovernanceDatasetPreview(datasetId) {
   return apiClient.get(`/api/enterprise/governance/datasets/${datasetId}/preview`);
 }
 
-/** Open ydata-profiling HTML report in a new browser tab. */
+/** Open ydata-profiling HTML report in a new browser tab with premium load screen. */
 export async function openGovernanceDatasetEdaReport(datasetId) {
-  const res = await apiClient.get(`/api/enterprise/governance/datasets/${datasetId}/eda-report`, {
-    responseType: "text",
-  });
-  const html = typeof res?.data === "string" ? res.data : "";
-  const blob = new Blob([html], { type: "text/html;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  window.open(url, "_blank", "noopener,noreferrer");
-  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  const newWindow = window.open("about:blank", "_blank");
+  if (newWindow) {
+    newWindow.document.title = "Generating EDA Report...";
+    newWindow.document.body.innerHTML = `
+      <div style="font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background-color: #0f172a; color: #f8fafc; margin: 0;">
+        <div style="font-size: 1.25rem; font-weight: 600; margin-bottom: 0.5rem;">Generating EDA Profiling Report...</div>
+        <div style="color: #94a3b8; font-size: 0.875rem;">This might take 10-30 seconds depending on dataset size. Please keep this tab open.</div>
+        <div style="margin-top: 1.5rem; border: 4px solid #334155; border-top: 4px solid #3b82f6; border-radius: 50%; width: 36px; height: 36px; animation: spin 1s linear infinite;"></div>
+        <style>
+          @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+          }
+        </style>
+      </div>
+    `;
+  }
+
+  try {
+    const res = await apiClient.get(`/api/enterprise/governance/datasets/${datasetId}/eda-report`, {
+      responseType: "text",
+    });
+    const html = typeof res?.data === "string" ? res.data : "";
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    
+    if (newWindow && !newWindow.closed) {
+      newWindow.location.href = url;
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } else {
+      URL.revokeObjectURL(url);
+    }
+  } catch (err) {
+    let errorDetail = "";
+    if (err?.response?.data) {
+      if (typeof err.response.data === "string") {
+        try {
+          const parsed = JSON.parse(err.response.data);
+          errorDetail = parsed.detail || parsed.message;
+        } catch {
+          errorDetail = err.response.data;
+        }
+      } else {
+        errorDetail = err.response.data.detail || err.response.data.message;
+      }
+    }
+    if (!errorDetail) {
+      errorDetail = err.message || "An unexpected error occurred.";
+    }
+
+    if (newWindow && !newWindow.closed) {
+      newWindow.document.body.innerHTML = `
+        <div style="font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background-color: #0f172a; color: #f8fafc; padding: 20px; text-align: center; margin: 0;">
+          <div style="font-size: 1.25rem; font-weight: 600; margin-bottom: 0.5rem; color: #f87171;">Failed to generate EDA Report</div>
+          <div style="color: #94a3b8; font-size: 0.875rem; max-width: 500px; margin-bottom: 1.5rem;">
+            ${errorDetail}
+          </div>
+          <button onclick="window.close()" style="background-color: #3b82f6; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 500; font-size: 0.875rem; hover: opacity-95">Close Tab</button>
+        </div>
+      `;
+    }
+    throw err;
+  }
 }
 
 export async function enterpriseGovernanceAccessRequests(params) {

@@ -852,7 +852,7 @@ def business_data_requests_summary(
     user: models.User = Depends(get_current_user),
 ):
     require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
-    return esvc.count_my_auth_access_requests_by_status(db, user.email)
+    return esvc.count_my_auth_access_requests_by_status(db, user.username)
 
 
 @router.get("/business/data-requests")
@@ -865,7 +865,7 @@ def business_list_my_data_requests(
     q: str | None = None,
 ):
     require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
-    return esvc.list_my_auth_access_requests(db, user.email, page, page_size, q)
+    return esvc.list_my_auth_access_requests(db, user.username, page, page_size, q)
 
 
 @router.post("/business/data-requests")
@@ -954,7 +954,7 @@ def business_catalog(
     q: str | None = None,
 ):
     require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
-    return busvc.list_catalog(db, page, page_size, q, user_email=user.email)
+    return busvc.list_catalog(db, page, page_size, q, username=user.username)
 
 
 @router.get("/business/catalog/{dataset_id}/detail")
@@ -965,7 +965,7 @@ def business_catalog_dataset_detail(
     user: models.User = Depends(get_current_user),
 ):
     require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
-    detail = busvc.build_business_catalog_dataset_detail(db, dataset_id, user_email=user.email)
+    detail = busvc.build_business_catalog_dataset_detail(db, dataset_id, username=user.username)
     if not detail:
         raise HTTPException(status_code=404, detail="Dataset not found")
     return detail
@@ -1100,7 +1100,7 @@ def business_cancel_data_request(
     user: models.User = Depends(get_current_user),
 ):
     require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
-    if not busvc.cancel_data_request(db, user.email, request_id):
+    if not busvc.cancel_data_request(db, user.username, request_id):
         raise HTTPException(status_code=404, detail="Pending request not found")
     try:
         esvc.create_notification(

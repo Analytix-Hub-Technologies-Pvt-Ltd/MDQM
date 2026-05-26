@@ -51,6 +51,7 @@ backend/saved_connections.json
 backend/MDQM/
 
 # Ignore local test data and results
+backend/uploads/
 backend/uploads/*.csv
 
 # Node modules (if you haven't already)

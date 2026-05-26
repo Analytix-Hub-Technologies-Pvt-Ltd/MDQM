@@ -4,7 +4,7 @@ if True:
     from fastapi.middleware.cors import CORSMiddleware
     from sqlalchemy.orm import Session
     from sqlalchemy.exc import IntegrityError
-    from sqlalchemy import func, distinct, inspect, update, create_engine, text
+    from sqlalchemy import func, distinct, inspect, update, create_engine, text, or_, and_, exists
     from pydantic import BaseModel
     from typing import List, Optional
     import shutil
@@ -61,6 +61,7 @@ if True:
     from routers.reports.router import router as reports_router
     from routers.stewardship.router import router as stewardship_router
     from routers.enterprise.router import router as enterprise_router
+    from auth.deps import get_current_user
     app = FastAPI(title="Data Quality Engine")
 
 
@@ -85,6 +86,16 @@ if True:
             conn.execute(
                 text(
                     "ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS db_source_config JSONB"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE metadata.db_connections ADD COLUMN IF NOT EXISTS user_id INTEGER"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE metadata.db_connections ADD COLUMN IF NOT EXISTS db_type VARCHAR(32) DEFAULT 'postgres'"
                 )
             )
         print("[mdqm] Database schema ready.", file=sys.stderr, flush=True)
@@ -609,10 +620,25 @@ if True:
 
 
     @app.get("/db/connections")
-    def list_db_connections(db: Session = Depends(get_db)):
+    def list_db_connections(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
         _migrate_saved_connections_json_to_db(db)
+        shared_exists = (
+            db.query(models.DbConnectionShare)
+            .filter(
+                models.DbConnectionShare.connection_id == models.DbConnection.connection_id,
+                models.DbConnectionShare.shared_user_id == user.id,
+            )
+            .exists()
+        )
         rows = (
             db.query(models.DbConnection)
+            .filter(
+                or_(
+                    models.DbConnection.user_id == user.id,
+                    models.DbConnection.user_id.is_(None),
+                    shared_exists,
+                )
+            )
             .order_by(models.DbConnection.connection_id.asc())
             .all()
         )
@@ -623,21 +649,42 @@ if True:
                 "host": r.host or "",
                 "port": r.port or "5432",
                 "user": r.username or "",
+                "db_type": r.db_type or "postgres",
+                "owned": bool(r.user_id == user.id),
             }
             for r in rows
         ]
 
 
     @app.get("/db/connections/{connection_id}/credentials")
-    def get_saved_connection_credentials(connection_id: int, db: Session = Depends(get_db)):
+    def get_saved_connection_credentials(
+        connection_id: int,
+        db: Session = Depends(get_db),
+        user: models.User = Depends(get_current_user),
+    ):
         """
         Return decrypted credentials for a saved profile so the UI can pre-fill host/port/user/password.
         Requires authentication (same as other /db routes). Password is at rest encrypted in metadata.db_connections.
         """
         _migrate_saved_connections_json_to_db(db)
+        shared_exists = (
+            db.query(models.DbConnectionShare)
+            .filter(
+                models.DbConnectionShare.connection_id == models.DbConnection.connection_id,
+                models.DbConnectionShare.shared_user_id == user.id,
+            )
+            .exists()
+        )
         row = (
             db.query(models.DbConnection)
             .filter(models.DbConnection.connection_id == connection_id)
+            .filter(
+                or_(
+                    models.DbConnection.user_id == user.id,
+                    models.DbConnection.user_id.is_(None),
+                    shared_exists,
+                )
+            )
             .first()
         )
         if not row:
@@ -649,11 +696,16 @@ if True:
             "port": row.port or "5432",
             "user": row.username or "",
             "password": _stored_connection_password_plain(row),
+            "db_type": row.db_type or "postgres",
         }
 
 
     @app.post("/db/connections")
-    def save_db_connection(payload: dict = Body(...), db: Session = Depends(get_db)):
+    def save_db_connection(
+        payload: dict = Body(...),
+        db: Session = Depends(get_db),
+        user: models.User = Depends(get_current_user),
+    ):
         _migrate_saved_connections_json_to_db(db)
         resolved_user = payload.get("user", payload.get("username", ""))
         resolved_pass = payload.get("pass", payload.get("password", ""))
@@ -690,6 +742,8 @@ if True:
             port=str(payload.get("port") or "5432"),
             username=str(resolved_user or "").strip(),
             password=stored_pw,
+            user_id=user.id,
+            db_type=str(payload.get("db_type") or "postgres").strip().lower(),
         )
         db.add(row)
         try:
@@ -704,7 +758,203 @@ if True:
         return {"message": "Connection saved", "connection_id": row.connection_id}
 
 
-    def _resolve_connection_payload(payload: dict):
+    @app.put("/db/connections/{connection_id}")
+    def update_db_connection(
+        connection_id: int,
+        payload: dict = Body(...),
+        db: Session = Depends(get_db),
+        user: models.User = Depends(get_current_user),
+    ):
+        _migrate_saved_connections_json_to_db(db)
+        row = (
+            db.query(models.DbConnection)
+            .filter(models.DbConnection.connection_id == connection_id)
+            .filter(models.DbConnection.user_id == user.id)
+            .first()
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Saved connection not found")
+
+        name = str(payload.get("connection_name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="connection_name is required.")
+
+        row.connection_name = name
+        row.host = str(payload.get("host") or "")
+        row.port = str(payload.get("port") or "5432")
+        row.username = str(payload.get("user") or "").strip()
+        row.db_type = str(payload.get("db_type") or "postgres").strip().lower()
+
+        if payload.get("pass") is not None:
+            plain_pw = str(payload.get("pass") or "").strip()
+            if plain_pw:
+                from utils.source_secret_crypto import encrypt_db_password_optional, encryption_available
+                if not encryption_available():
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Set MDQM_DB_SOURCE_MASTER_SECRET in the backend .env (see .env.example). "
+                            "It is required so saved connection passwords are encrypted in the database."
+                        ),
+                    )
+                enc = encrypt_db_password_optional(plain_pw)
+                if not enc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Password encryption failed. Install the cryptography package in the backend "
+                            "(e.g. pip install cryptography), then restart the API."
+                        ),
+                    )
+                row.password = enc
+            else:
+                row.password = None
+
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="A saved connection with this name already exists.")
+
+        return {"message": "Connection updated", "connection_id": row.connection_id}
+
+
+    @app.delete("/db/connections/{connection_id}")
+    def delete_db_connection(
+        connection_id: int,
+        db: Session = Depends(get_db),
+        user: models.User = Depends(get_current_user),
+    ):
+        row = (
+            db.query(models.DbConnection)
+            .filter(models.DbConnection.connection_id == connection_id)
+            .filter(models.DbConnection.user_id == user.id)
+            .first()
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Saved connection not found")
+        db.delete(row)
+        db.commit()
+        return {"message": "Connection deleted"}
+
+
+    @app.get("/db/connections/{connection_id}/shares")
+    def list_connection_shares(
+        connection_id: int,
+        db: Session = Depends(get_db),
+        user: models.User = Depends(get_current_user),
+    ):
+        _migrate_saved_connections_json_to_db(db)
+        row = (
+            db.query(models.DbConnection)
+            .filter(models.DbConnection.connection_id == connection_id)
+            .filter(models.DbConnection.user_id == user.id)
+            .first()
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Saved connection not found")
+
+        shares = (
+            db.query(models.DbConnectionShare, models.User)
+            .join(models.User, models.DbConnectionShare.shared_user_id == models.User.id)
+            .filter(models.DbConnectionShare.connection_id == connection_id)
+            .all()
+        )
+        return [
+            {
+                "share_id": share.share_id,
+                "shared_user_id": user.id,
+                "shared_username": user.username,
+                "shared_email": user.email,
+            }
+            for share, user in shares
+        ]
+
+
+    @app.post("/db/connections/{connection_id}/share")
+    def share_db_connection(
+        connection_id: int,
+        payload: dict = Body(...),
+        db: Session = Depends(get_db),
+        user: models.User = Depends(get_current_user),
+    ):
+        _migrate_saved_connections_json_to_db(db)
+        row = (
+            db.query(models.DbConnection)
+            .filter(models.DbConnection.connection_id == connection_id)
+            .filter(models.DbConnection.user_id == user.id)
+            .first()
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Saved connection not found")
+
+        share_with = str(payload.get("share_with") or "").strip()
+        if not share_with:
+            raise HTTPException(status_code=400, detail="share_with is required.")
+
+        target_user = (
+            db.query(models.User)
+            .filter(
+                or_(models.User.username == share_with, models.User.email == share_with)
+            )
+            .first()
+        )
+        if not target_user:
+            raise HTTPException(status_code=404, detail="Target user not found.")
+        if target_user.id == user.id:
+            raise HTTPException(status_code=400, detail="Cannot share with yourself.")
+
+        existing_share = (
+            db.query(models.DbConnectionShare)
+            .filter(
+                models.DbConnectionShare.connection_id == connection_id,
+                models.DbConnectionShare.shared_user_id == target_user.id,
+            )
+            .first()
+        )
+        if existing_share:
+            return {"message": "Connection already shared with this user."}
+
+        share_row = models.DbConnectionShare(
+            connection_id=connection_id,
+            shared_user_id=target_user.id,
+        )
+        db.add(share_row)
+        db.commit()
+        return {"message": f"Connection shared with {target_user.username or target_user.email}."}
+
+
+    @app.delete("/db/connections/{connection_id}/share/{target_user_id}")
+    def unshare_db_connection(
+        connection_id: int,
+        target_user_id: int,
+        db: Session = Depends(get_db),
+        user: models.User = Depends(get_current_user),
+    ):
+        row = (
+            db.query(models.DbConnection)
+            .filter(models.DbConnection.connection_id == connection_id)
+            .filter(models.DbConnection.user_id == user.id)
+            .first()
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Saved connection not found")
+
+        share_row = (
+            db.query(models.DbConnectionShare)
+            .filter(models.DbConnectionShare.connection_id == connection_id)
+            .filter(models.DbConnectionShare.shared_user_id == target_user_id)
+            .first()
+        )
+        if not share_row:
+            raise HTTPException(status_code=404, detail="Share not found")
+
+        db.delete(share_row)
+        db.commit()
+        return {"message": "Connection access revoked."}
+
+
+    def _resolve_connection_payload(payload: dict, current_user_id: int | None = None):
         """Resolve credentials from direct fields or saved connection id."""
         connection_id = payload.get("connection_id")
         if connection_id is not None:
@@ -715,32 +965,63 @@ if True:
                     cid = int(float(connection_id))
                 except (TypeError, ValueError):
                     raise HTTPException(status_code=404, detail="Saved connection not found")
-                row = (
-                    db.query(models.DbConnection)
-                    .filter(models.DbConnection.connection_id == cid)
-                    .first()
-                )
+
+                query = db.query(models.DbConnection).filter(models.DbConnection.connection_id == cid)
+                if current_user_id is not None:
+                    shared_exists = (
+                        db.query(models.DbConnectionShare)
+                        .filter(
+                            models.DbConnectionShare.connection_id == models.DbConnection.connection_id,
+                            models.DbConnectionShare.shared_user_id == current_user_id,
+                        )
+                        .exists()
+                    )
+                    query = query.filter(
+                        or_(models.DbConnection.user_id == current_user_id, models.DbConnection.user_id.is_(None), shared_exists)
+                    )
+                row = query.first()
                 if not row:
                     raise HTTPException(status_code=404, detail="Saved connection not found")
+                db_type = row.db_type or "postgres"
+                port_str = str(row.port or "").strip()
+                # Defensive auto-detection for older/unmodified connection profiles
+                if db_type == "postgres":
+                    if port_str == "1433" or "sql server" in (row.connection_name or "").lower() or "mssql" in (row.connection_name or "").lower():
+                        db_type = "sqlserver"
+                    elif port_str == "3306" or "mysql" in (row.connection_name or "").lower():
+                        db_type = "mysql"
+
                 creds = {
                     "host": row.host,
                     "port": str(row.port or "5432"),
                     "user": row.username,
                     "pass": _stored_connection_password_plain(row),
                     "dbname": payload.get("dbname"),
+                    "db_type": db_type,
                 }
             finally:
                 db.close()
+
             if str(payload.get("host") or "").strip():
                 creds["host"] = str(payload["host"]).strip()
             if str(payload.get("port") or "").strip():
                 creds["port"] = str(payload["port"]).strip()
             if str(payload.get("user") or "").strip():
-                creds["user"] = str(payload["user"]).strip()
+                creds["user"] = str(payload.get("user")).strip()
             pw = payload.get("pass")
             if pw is not None and str(pw):
                 creds["pass"] = str(pw)
+            if payload.get("db_type"):
+                creds["db_type"] = str(payload["db_type"]).strip().lower()
             return creds
+
+        db_type = payload.get("db_type") or "postgres"
+        port_str = str(payload.get("port") or "").strip()
+        if db_type == "postgres":
+            if port_str == "1433":
+                db_type = "sqlserver"
+            elif port_str == "3306":
+                db_type = "mysql"
 
         return {
             "host": payload.get("host"),
@@ -748,6 +1029,7 @@ if True:
             "user": payload.get("user"),
             "pass": payload.get("pass", ""),
             "dbname": payload.get("dbname"),
+            "db_type": db_type,
         }
 
 
@@ -766,6 +1048,83 @@ if True:
             dbname=creds["dbname"],
             connect_timeout=8,
         )
+
+    def _connect_db(creds: dict):
+        db_type = str(creds.get("db_type") or "postgres").lower().strip()
+        if db_type in ("mssql", "sqlserver", "sql_server"):
+            import pyodbc
+            drivers = [
+                "ODBC Driver 18 for SQL Server",
+                "ODBC Driver 17 for SQL Server",
+                "ODBC Driver 13 for SQL Server",
+                "SQL Server Native Client 11.0",
+                "SQL Server",
+            ]
+            last_err = None
+            for driver in drivers:
+                try:
+                    host = creds["host"]
+                    port = str(creds.get("port") or "").strip()
+                    host_port = f"{host},{port}" if port and port not in ("0", "5432") else host
+                    conn_str = (
+                        f"Driver={{{driver}}};Server={host_port};"
+                        f"Database={creds['dbname']};Uid={creds['user']};Pwd={creds['pass']};"
+                        "TrustServerCertificate=yes;Connection Timeout=8;"
+                    )
+                    return pyodbc.connect(conn_str)
+                except Exception as e:
+                    last_err = e
+            raise Exception(f"SQL Server connection failed: {last_err}")
+        elif db_type == "mysql":
+            import pymysql
+            port = int(creds.get("port") or 3306)
+            return pymysql.connect(
+                host=creds["host"],
+                port=port,
+                user=creds["user"],
+                password=creds["pass"],
+                database=creds["dbname"],
+                connect_timeout=8,
+            )
+        elif db_type == "oracle":
+            import oracledb
+            return oracledb.connect(
+                user=creds["user"],
+                password=creds["pass"],
+                host=creds["host"],
+                port=int(creds.get("port") or 1521),
+                service_name=creds["dbname"],
+            )
+        elif db_type == "snowflake":
+            import snowflake.connector
+            return snowflake.connector.connect(
+                user=creds["user"],
+                password=creds["pass"],
+                account=creds["host"],
+                database=creds["dbname"],
+            )
+        elif db_type == "databricks":
+            from databricks import sql
+            server_hostname = creds["host"]
+            http_path = creds["dbname"]
+            if "/" in server_hostname:
+                parts = server_hostname.split("/", 1)
+                server_hostname = parts[0]
+                http_path = "/" + parts[1]
+            return sql.connect(
+                server_hostname=server_hostname,
+                http_path=http_path,
+                access_token=creds["pass"],
+            )
+        else:
+            return psycopg2.connect(
+                host=creds["host"],
+                port=creds["port"],
+                user=creds["user"],
+                password=creds["pass"],
+                dbname=creds["dbname"],
+                connect_timeout=8,
+            )
 
     def _pandas_dtype_to_mdqm(str_type_raw: str) -> str:
         """Align with /jobs/*/upload column type labels."""
@@ -834,7 +1193,7 @@ if True:
         if not cfg or not isinstance(cfg, dict) or cfg.get("kind") != "postgres_tables":
             raise HTTPException(
                 status_code=400,
-                detail="Import is only available for datasets registered from Postgres tables.",
+                detail="Import is only available for database-backed datasets.",
             )
         schema_name = str(cfg.get("schema_name") or "").strip()
         table_names = cfg.get("table_names") or []
@@ -855,6 +1214,7 @@ if True:
             "host": cfg.get("host"),
             "port": str(cfg.get("port") or "5432"),
             "user": cfg.get("user"),
+            "db_type": cfg.get("db_type") or "postgres",
         }
         from utils.source_secret_crypto import decrypt_db_password_optional
 
@@ -892,6 +1252,7 @@ if True:
                 "user": cfg.get("user"),
                 "pass": "",
                 "dbname": cfg.get("dbname"),
+                "db_type": cfg.get("db_type") or "postgres",
             }
             if body.get("pass"):
                 creds["pass"] = str(body["pass"])
@@ -900,6 +1261,7 @@ if True:
         creds["user"] = str(creds.get("user") or cfg.get("user") or "").strip()
         creds["dbname"] = str(creds.get("dbname") or cfg.get("dbname") or "").strip()
         creds["port"] = str(creds.get("port") or cfg.get("port") or "5432")
+        creds["db_type"] = str(creds.get("db_type") or cfg.get("db_type") or "postgres").strip().lower()
         if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
             raise HTTPException(status_code=400, detail="Cannot resolve database credentials for import.")
 
@@ -922,7 +1284,7 @@ if True:
                 return
             job.status = "Importing"
             db.commit()
-            external_conn = _connect_postgres_with_fallback(creds)
+            external_conn = _connect_db(creds)
             import_tables_into_job(
                 db,
                 job_id=job_id,
@@ -930,6 +1292,7 @@ if True:
                 schema_name=schema_name,
                 table_names=table_names,
                 snapshot_fn=_snapshot_dataframe_to_job_table,
+                db_type=creds.get("db_type") or "postgres",
             )
             job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
             if job:
@@ -949,7 +1312,7 @@ if True:
             db.close()
 
     @app.post("/db/register-dataset")
-    def register_dataset_source(payload: dict = Body(...), db: Session = Depends(get_db)):
+    def register_dataset_source(request: Request, payload: dict = Body(...), db: Session = Depends(get_db)):
         """
         Register a dataset job + single table without pulling rows yet.
         Data Owner uses /jobs/{id}/import-from-db to load data in the background.
@@ -971,7 +1334,7 @@ if True:
         if not table_name:
             raise HTTPException(status_code=400, detail="table_names[0] must be a non-empty string.")
 
-        creds = _resolve_connection_payload(payload)
+        creds = _resolve_connection_payload(payload, getattr(request.state, "user_id", None))
         if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
             raise HTTPException(
                 status_code=400,
@@ -1023,7 +1386,7 @@ if True:
         if not cfg or not isinstance(cfg, dict) or cfg.get("kind") != "postgres_tables":
             raise HTTPException(
                 status_code=400,
-                detail="Import is only available for Postgres table datasets.",
+                detail="Import is only available for database-backed datasets.",
             )
 
         job.status = "Importing"
@@ -1036,7 +1399,7 @@ if True:
         }
 
     @app.post("/db/connect")
-    def connect_db_create_job(payload: dict = Body(...), db: Session = Depends(get_db)):
+    def connect_db_create_job(request: Request, payload: dict = Body(...), db: Session = Depends(get_db)):
         """
         Create one job and register one or more tables by snapshotting rows from an external Postgres DB into CSV uploads.
         Response shape matches the frontend (created_jobs[].job_id).
@@ -1067,7 +1430,7 @@ if True:
                 table_names_unique.append(t)
         table_names = table_names_unique
 
-        creds = _resolve_connection_payload(payload)
+        creds = _resolve_connection_payload(payload, getattr(request.state, "user_id", None), getattr(request.state, "user_id", None))
         if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
             raise HTTPException(
                 status_code=400,
@@ -1107,7 +1470,7 @@ if True:
             db.refresh(new_job)
             job_id = new_job.job_id
 
-            external_conn = _connect_postgres_with_fallback(creds)
+            external_conn = _connect_db(creds)
             max_id = (
                 db.query(func.max(models.TableMetadata.table_id))
                 .filter(models.TableMetadata.job_id == job_id)
@@ -1115,12 +1478,21 @@ if True:
             )
             next_table_id = 1 if max_id is None else int(max_id) + 1
 
+            db_type = str(creds.get("db_type") or "postgres").lower().strip()
             for table_name in table_names:
-                query = psql.SQL("SELECT * FROM {}.{}").format(
-                    psql.Identifier(schema_name),
-                    psql.Identifier(table_name),
-                )
-                q_str = query.as_string(external_conn)
+                if db_type in ("mssql", "sqlserver", "sql_server"):
+                    q_str = f"SELECT * FROM [{schema_name}].[{table_name}]"
+                elif db_type == "mysql":
+                    if schema_name:
+                        q_str = f"SELECT * FROM `{schema_name}`.`{table_name}`"
+                    else:
+                        q_str = f"SELECT * FROM `{table_name}`"
+                else:
+                    query = psql.SQL("SELECT * FROM {}.{}").format(
+                        psql.Identifier(schema_name),
+                        psql.Identifier(table_name),
+                    )
+                    q_str = query.as_string(external_conn)
                 df = pd.read_sql_query(q_str, external_conn)
                 df = _normalize_import_dataframe_dates(df)
 
@@ -1145,6 +1517,7 @@ if True:
                     "kind": "postgres_tables",
                     "connection_id": payload.get("connection_id"),
                     "dbname": creds["dbname"],
+                    "db_type": creds.get("db_type") or "postgres",
                     "schema_name": schema_name,
                     "table_names": list(table_names),
                     "host": creds.get("host"),
@@ -1189,7 +1562,7 @@ if True:
         db: Session = Depends(get_db),
     ):
         """
-        Re-query Postgres using the connection info stored on the job (from /db/connect) and
+        Re-query the external database using the connection info stored on the job and
         rewrite uploads/*.csv plus column metadata for each registered table.
         """
         body = body or {}
@@ -1200,7 +1573,7 @@ if True:
         if not cfg or not isinstance(cfg, dict) or cfg.get("kind") != "postgres_tables":
             raise HTTPException(
                 status_code=400,
-                detail="Refresh is only available for jobs created from Postgres tables (Data Owner → Table).",
+                detail="Refresh is only available for database-backed datasets (Data Owner → Table).",
             )
         schema_name = str(cfg.get("schema_name") or "").strip()
         table_names = cfg.get("table_names") or []
@@ -1217,11 +1590,15 @@ if True:
                 cid_norm = None
         has_saved = cid_norm is not None
 
+        db_type = str(cfg.get("db_type") or "postgres").lower().strip()
+        default_port = "1433" if db_type in ("mssql", "sqlserver", "sql_server") else ("3306" if db_type == "mysql" else "5432")
+
         resolve_pl: dict = {
             "dbname": cfg.get("dbname"),
             "host": cfg.get("host"),
-            "port": str(cfg.get("port") or "5432"),
+            "port": str(cfg.get("port") or default_port),
             "user": cfg.get("user"),
+            "db_type": db_type,
         }
 
         from utils.source_secret_crypto import decrypt_db_password_optional
@@ -1261,10 +1638,11 @@ if True:
                 raise
             creds = {
                 "host": cfg.get("host"),
-                "port": str(cfg.get("port") or "5432"),
+                "port": str(cfg.get("port") or default_port),
                 "user": cfg.get("user"),
                 "pass": "",
                 "dbname": cfg.get("dbname"),
+                "db_type": db_type,
             }
             pb = body.get("pass")
             if pb is not None and str(pb) != "":
@@ -1280,7 +1658,8 @@ if True:
         creds["host"] = _pick(creds.get("host"), cfg.get("host"))
         creds["user"] = _pick(creds.get("user"), cfg.get("user"))
         creds["dbname"] = _pick(creds.get("dbname"), cfg.get("dbname"))
-        creds["port"] = str(creds.get("port") or cfg.get("port") or "5432")
+        creds["port"] = str(creds.get("port") or cfg.get("port") or default_port)
+        creds["db_type"] = _pick(creds.get("db_type"), cfg.get("db_type"), db_type)
         pb = body.get("pass")
         if pb is not None and str(pb) != "":
             creds["pass"] = str(pb)
@@ -1299,7 +1678,9 @@ if True:
         external_conn = None
         summaries = []
         try:
-            external_conn = _connect_postgres_with_fallback(creds)
+            from services.dataset_db_import import import_tables_into_job
+
+            # Verify that all tables in configuration are registered
             for table_name in table_names:
                 tn = str(table_name).strip()
                 tm = name_to_tm.get(tn)
@@ -1308,15 +1689,17 @@ if True:
                         status_code=400,
                         detail=f"Table '{tn}' is not registered on this job; cannot refresh.",
                     )
-                query = psql.SQL("SELECT * FROM {}.{}").format(
-                    psql.Identifier(schema_name),
-                    psql.Identifier(tn),
-                )
-                q_str = query.as_string(external_conn)
-                df = pd.read_sql_query(q_str, external_conn)
-                df = _normalize_import_dataframe_dates(df)
-                _snapshot_dataframe_to_job_table(db, job_id, tm.table_id, tn, df)
-                summaries.append({"table_name": tn, "row_count": int(len(df))})
+
+            external_conn = _connect_db(creds)
+            summaries = import_tables_into_job(
+                db,
+                job_id=job_id,
+                external_conn=external_conn,
+                schema_name=schema_name,
+                table_names=table_names,
+                snapshot_fn=_snapshot_dataframe_to_job_table,
+                db_type=creds.get("db_type") or "postgres",
+            )
         except HTTPException:
             raise
         except Exception as e:
@@ -1335,8 +1718,8 @@ if True:
         }
 
     @app.post("/db/list-schemas-tables")
-    def list_schemas_tables(payload: dict = Body(...)):
-        creds = _resolve_connection_payload(payload)
+    def list_schemas_tables(request: Request, payload: dict = Body(...)):
+        creds = _resolve_connection_payload(payload, getattr(request.state, "user_id", None))
         if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
             raise HTTPException(
                 status_code=400,
@@ -1345,31 +1728,129 @@ if True:
 
         conn = None
         try:
-            conn = _connect_postgres_with_fallback(creds)
+            conn = _connect_db(creds)
             cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT schema_name
-                FROM information_schema.schemata
-                WHERE schema_name NOT IN ('pg_catalog', 'information_schema')
-                ORDER BY schema_name
-                """
-            )
-            schemas = [row[0] for row in cur.fetchall()]
+            db_type = str(creds.get("db_type") or "postgres").lower().strip()
 
-            tables_by_schema = {}
-            for schema in schemas:
+            if db_type in ("mssql", "sqlserver", "sql_server"):
                 cur.execute(
                     """
-                    SELECT table_name
-                    FROM information_schema.tables
-                    WHERE table_schema = %s
+                    SELECT name 
+                    FROM sys.schemas 
+                    WHERE name NOT IN ('sys', 'db_owner', 'db_accessadmin', 'db_securityadmin', 'db_ddladmin', 'db_backupoperator', 'db_datareader', 'db_datawriter', 'db_denydatareader', 'db_denydatawriter', 'guest', 'INFORMATION_SCHEMA') 
+                    ORDER BY name
+                    """
+                )
+                schemas = [row[0] for row in cur.fetchall()]
+
+                tables_by_schema = {}
+                for schema in schemas:
+                    cur.execute(
+                        """
+                        SELECT name 
+                        FROM sys.tables 
+                        WHERE schema_id = SCHEMA_ID(?)
+                        ORDER BY name
+                        """,
+                        (schema,),
+                    )
+                    tables_by_schema[schema] = [row[0] for row in cur.fetchall()]
+            elif db_type == "mysql":
+                dbname = creds.get("dbname")
+                schemas = [dbname]
+                tables_by_schema = {}
+                cur.execute(
+                    """
+                    SELECT table_name 
+                    FROM information_schema.tables 
+                    WHERE table_schema = %s 
                     AND table_type = 'BASE TABLE'
                     ORDER BY table_name
                     """,
-                    (schema,),
+                    (dbname,),
                 )
-                tables_by_schema[schema] = [row[0] for row in cur.fetchall()]
+                tables_by_schema[dbname] = [row[0] for row in cur.fetchall()]
+            elif db_type == "oracle":
+                cur.execute(
+                    """
+                    SELECT username 
+                    FROM all_users 
+                    WHERE oracle_maintained = 'N' 
+                    ORDER BY username
+                    """
+                )
+                schemas = [row[0] for row in cur.fetchall()]
+                user_schema = str(creds["user"]).upper()
+                if user_schema not in schemas:
+                    schemas.insert(0, user_schema)
+                
+                tables_by_schema = {}
+                for schema in schemas:
+                    cur.execute(
+                        """
+                        SELECT table_name 
+                        FROM all_tables 
+                        WHERE owner = :1 
+                        ORDER BY table_name
+                        """,
+                        (schema,),
+                    )
+                    tables_by_schema[schema] = [row[0] for row in cur.fetchall()]
+            elif db_type == "snowflake":
+                cur.execute(
+                    """
+                    SELECT schema_name
+                    FROM information_schema.schemata
+                    WHERE schema_name NOT IN ('INFORMATION_SCHEMA')
+                    ORDER BY schema_name
+                    """
+                )
+                schemas = [row[0] for row in cur.fetchall()]
+
+                tables_by_schema = {}
+                for schema in schemas:
+                    cur.execute(
+                        """
+                        SELECT table_name
+                        FROM information_schema.tables
+                        WHERE table_schema = %s
+                        AND table_type = 'BASE TABLE'
+                        ORDER BY table_name
+                        """,
+                        (schema,),
+                    )
+                    tables_by_schema[schema] = [row[0] for row in cur.fetchall()]
+            elif db_type == "databricks":
+                cur.execute("SHOW SCHEMAS")
+                schemas = [row[0] for row in cur.fetchall() if row[0] != "information_schema"]
+                tables_by_schema = {}
+                for schema in schemas:
+                    cur.execute(f"SHOW TABLES IN `{schema}`")
+                    tables_by_schema[schema] = [row[1] for row in cur.fetchall()]
+            else:
+                cur.execute(
+                    """
+                    SELECT schema_name
+                    FROM information_schema.schemata
+                    WHERE schema_name NOT IN ('pg_catalog', 'information_schema')
+                    ORDER BY schema_name
+                    """
+                )
+                schemas = [row[0] for row in cur.fetchall()]
+
+                tables_by_schema = {}
+                for schema in schemas:
+                    cur.execute(
+                        """
+                        SELECT table_name
+                        FROM information_schema.tables
+                        WHERE table_schema = %s
+                        AND table_type = 'BASE TABLE'
+                        ORDER BY table_name
+                        """,
+                        (schema,),
+                    )
+                    tables_by_schema[schema] = [row[0] for row in cur.fetchall()]
 
             cur.close()
             return {"schemas": schemas, "tables_by_schema": tables_by_schema}
@@ -1381,8 +1862,8 @@ if True:
 
 
     @app.post("/db/table-columns")
-    def db_table_columns(payload: dict = Body(...)):
-        creds = _resolve_connection_payload(payload)
+    def db_table_columns(request: Request, payload: dict = Body(...)):
+        creds = _resolve_connection_payload(payload, getattr(request.state, "user_id", None))
         schema_name = payload.get("schema_name")
         table_name = payload.get("table_name")
 
@@ -1396,19 +1877,49 @@ if True:
 
         conn = None
         try:
-            conn = _connect_postgres_with_fallback(creds)
+            conn = _connect_db(creds)
             cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = %s
-                AND table_name = %s
-                ORDER BY ordinal_position
-                """,
-                (schema_name, table_name),
-            )
-            columns = [row[0] for row in cur.fetchall()]
+            db_type = str(creds.get("db_type") or "postgres").lower().strip()
+
+            if db_type in ("mssql", "sqlserver", "sql_server"):
+                cur.execute(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = ?
+                    AND table_name = ?
+                    ORDER BY ordinal_position
+                    """,
+                    (schema_name, table_name),
+                )
+            elif db_type == "oracle":
+                cur.execute(
+                    """
+                    SELECT column_name
+                    FROM all_tab_columns
+                    WHERE owner = :1
+                    AND table_name = :2
+                    ORDER BY column_id
+                    """,
+                    (schema_name.upper(), table_name.upper()),
+                )
+            elif db_type == "databricks":
+                cur.execute(f"DESCRIBE TABLE `{schema_name}`.`{table_name}`")
+            else:
+                cur.execute(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = %s
+                    AND table_name = %s
+                    ORDER BY ordinal_position
+                    """,
+                    (schema_name, table_name),
+                )
+            if db_type == "databricks":
+                columns = [row[0] for row in cur.fetchall() if row[0] and not row[0].startswith("#") and row[0].strip()]
+            else:
+                columns = [row[0] for row in cur.fetchall()]
             cur.close()
             return {"columns": columns}
         except Exception as e:
@@ -1419,8 +1930,8 @@ if True:
 
 
     @app.post("/db/lookup-values")
-    def db_lookup_values(payload: dict = Body(...)):
-        creds = _resolve_connection_payload(payload)
+    def db_lookup_values(request: Request, payload: dict = Body(...)):
+        creds = _resolve_connection_payload(payload, getattr(request.state, "user_id", None))
         schema_name = payload.get("schema_name")
         table_name = payload.get("table_name")
         column_name = payload.get("column_name")
@@ -1438,21 +1949,81 @@ if True:
 
         conn = None
         try:
-            conn = _connect_postgres_with_fallback(creds)
+            conn = _connect_db(creds)
             cur = conn.cursor()
-            query = psql.SQL(
+            db_type = str(creds.get("db_type") or "postgres").lower().strip()
+
+            if db_type in ("mssql", "sqlserver", "sql_server"):
+                c = column_name.replace(']', ']]')
+                s = schema_name.replace(']', ']]')
+                t = table_name.replace(']', ']]')
+                query = f"""
+                    SELECT DISTINCT CAST([{c}] AS NVARCHAR(MAX)) AS value
+                    FROM [{s}].[{t}]
+                    WHERE [{c}] IS NOT NULL
+                    ORDER BY value
                 """
-                SELECT DISTINCT CAST({col} AS TEXT) AS value
-                FROM {schema}.{table}
-                WHERE {col} IS NOT NULL
-                ORDER BY value
-                """
-            ).format(
-                col=psql.Identifier(column_name),
-                schema=psql.Identifier(schema_name),
-                table=psql.Identifier(table_name),
-            )
-            cur.execute(query)
+                cur.execute(query)
+            elif db_type == "mysql":
+                c = column_name.replace('`', '``')
+                s = schema_name.replace('`', '``')
+                t = table_name.replace('`', '``')
+                if s:
+                    query = f"""
+                        SELECT DISTINCT CAST(`{c}` AS CHAR) AS value
+                        FROM `{s}`.`{t}`
+                        WHERE `{c}` IS NOT NULL
+                        ORDER BY value
+                    """
+                else:
+                    query = f"""
+                        SELECT DISTINCT CAST(`{c}` AS CHAR) AS value
+                        FROM `{t}`
+                        WHERE `{c}` IS NOT NULL
+                        ORDER BY value
+                    """
+                cur.execute(query)
+            elif db_type == "oracle":
+                c = column_name.replace('"', '""')
+                s = schema_name.replace('"', '""')
+                t = table_name.replace('"', '""')
+                if s:
+                    query = f'SELECT DISTINCT CAST("{c}" AS VARCHAR2(4000)) AS value FROM "{s}"."{t}" WHERE "{c}" IS NOT NULL ORDER BY value'
+                else:
+                    query = f'SELECT DISTINCT CAST("{c}" AS VARCHAR2(4000)) AS value FROM "{t}" WHERE "{c}" IS NOT NULL ORDER BY value'
+                cur.execute(query)
+            elif db_type == "snowflake":
+                c = column_name.replace('"', '""')
+                s = schema_name.replace('"', '""')
+                t = table_name.replace('"', '""')
+                if s:
+                    query = f'SELECT DISTINCT CAST("{c}" AS VARCHAR) AS value FROM "{s}"."{t}" WHERE "{c}" IS NOT NULL ORDER BY value'
+                else:
+                    query = f'SELECT DISTINCT CAST("{c}" AS VARCHAR) AS value FROM "{t}" WHERE "{c}" IS NOT NULL ORDER BY value'
+                cur.execute(query)
+            elif db_type == "databricks":
+                c = column_name.replace('`', '``')
+                s = schema_name.replace('`', '``')
+                t = table_name.replace('`', '``')
+                if s:
+                    query = f'SELECT DISTINCT CAST(`{c}` AS STRING) AS value FROM `{s}`.`{t}` WHERE `{c}` IS NOT NULL ORDER BY value'
+                else:
+                    query = f'SELECT DISTINCT CAST(`{c}` AS STRING) AS value FROM `{t}` WHERE `{c}` IS NOT NULL ORDER BY value'
+                cur.execute(query)
+            else:
+                query = psql.SQL(
+                    """
+                    SELECT DISTINCT CAST({col} AS TEXT) AS value
+                    FROM {schema}.{table}
+                    WHERE {col} IS NOT NULL
+                    ORDER BY value
+                    """
+                ).format(
+                    col=psql.Identifier(column_name),
+                    schema=psql.Identifier(schema_name),
+                    table=psql.Identifier(table_name),
+                )
+                cur.execute(query)
             values = [str(row[0]).strip() for row in cur.fetchall() if str(row[0]).strip()]
             cur.close()
             return {"values": values}
@@ -1464,7 +2035,7 @@ if True:
 
 
     @app.post("/db/export-results")
-    def export_results_to_external_db(payload: dict = Body(...), db: Session = Depends(get_db)):
+    def export_results_to_external_db(request: Request, payload: dict = Body(...), db: Session = Depends(get_db)):
         """
         Export combined result rows (clean + error) into an external Postgres table.
         Supports either connection_id + dbname OR direct host/port/user/pass/dbname.
@@ -1513,7 +2084,7 @@ if True:
         if not src_table:
             raise HTTPException(status_code=404, detail="Source table not found")
 
-        creds = _resolve_connection_payload(payload)
+        creds = _resolve_connection_payload(payload, getattr(request.state, "user_id", None), getattr(request.state, "user_id", None))
         if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
             raise HTTPException(
                 status_code=400,
@@ -1536,7 +2107,7 @@ if True:
         # Keep the same resilience pattern used by other DB helper endpoints.
         conn = None
         try:
-            conn = _connect_postgres_with_fallback(creds)
+            conn = _connect_db(creds)
             conn.close()
         except Exception as e:
             if conn is not None:
@@ -1554,11 +2125,14 @@ if True:
                 if not source_csv_path:
                     raise e
                 df = pd.read_csv(source_csv_path)
-            ext_url = (
-                f"postgresql+psycopg2://{quote_plus(str(creds['user']))}:{quote_plus(str(creds.get('pass', '')))}"
-                f"@{creds['host']}:{creds['port']}/{creds['dbname']}"
-            )
-            ext_engine = create_engine(ext_url)
+
+            db_type = str(creds.get("db_type") or "postgres").lower().strip()
+            if db_type in ("mssql", "sqlserver", "sql_server"):
+                ext_engine = create_engine("mssql+pyodbc://", creator=lambda: _connect_db(creds))
+            elif db_type == "mysql":
+                ext_engine = create_engine("mysql+pymysql://", creator=lambda: _connect_db(creds))
+            else:
+                ext_engine = create_engine("postgresql+psycopg2://", creator=lambda: _connect_db(creds))
 
             # Client-friendly guard for append mode:
             # If target table exists but schema differs, return a clear message

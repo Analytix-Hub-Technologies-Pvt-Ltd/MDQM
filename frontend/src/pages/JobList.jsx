@@ -1639,12 +1639,12 @@ export default function JobList() {
     total > 0 ? ((good / total) * 100).toFixed(1) : "0.0";
 
   return (
-    <div className="flex-1 bg-[#FBFBFB] text-[#23243B] h-screen overflow-y-auto relative">
+    <div className="joblist-theme-root bg-background text-foreground relative">
       {showSchedule && (
         <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/50 px-4">
-          <div className="w-full max-w-xl rounded-xl bg-white shadow-xl border border-[#D6D9E0]">
-            <div className="flex items-center justify-between border-b border-[#E5E7EB] px-5 py-4">
-              <h4 className="text-sm font-bold uppercase tracking-widest text-[#23243B]">
+          <div className="w-full max-w-xl rounded-xl bg-card shadow-xl border border-border">
+            <div className="flex items-center justify-between border-b border-border px-5 py-4">
+              <h4 className="text-sm font-bold uppercase tracking-widest text-foreground">
                 Schedule Job
                 {scheduleContextJobId != null ? ` #${scheduleContextJobId}` : ""}
               </h4>
@@ -1659,11 +1659,11 @@ export default function JobList() {
             </div>
             <div className="p-5 space-y-4 text-xs">
               <div>
-                <label className="text-[11px] uppercase tracking-widest text-gray-500 mb-2 block">Schedule Type</label>
+                <label className="text-[11px] uppercase tracking-widest text-muted-foreground mb-2 block">Schedule Type</label>
                 <select
                   value={scheduleType}
                   onChange={(e) => setScheduleType(e.target.value)}
-                  className="w-full border border-[#A1A3AF] p-2 rounded"
+                  className="w-full border border-border bg-input text-input-foreground p-2 rounded"
                 >
                   <option value="once">once</option>
                   <option value="hourly">hourly</option>
@@ -1686,7 +1686,7 @@ export default function JobList() {
                   min={1}
                   value={hourInterval}
                   onChange={(e) => setHourInterval(Number(e.target.value) || 1)}
-                  className="w-full border border-[#A1A3AF] p-2 rounded"
+                  className="w-full border border-border bg-input text-input-foreground p-2 rounded"
                   placeholder="Every X hours"
                 />
               )}
@@ -1695,7 +1695,7 @@ export default function JobList() {
               )}
               {scheduleType === "weekly" && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <select value={scheduleDay} onChange={(e) => setScheduleDay(e.target.value)} className="border border-[#A1A3AF] p-2 rounded">
+                  <select value={scheduleDay} onChange={(e) => setScheduleDay(e.target.value)} className="border border-border bg-input text-input-foreground p-2 rounded">
                     <option value="0">0 (Monday)</option>
                     <option value="1">1 (Tuesday)</option>
                     <option value="2">2 (Wednesday)</option>
@@ -1715,7 +1715,7 @@ export default function JobList() {
                     max={31}
                     value={scheduleDate}
                     onChange={(e) => setScheduleDate(e.target.value)}
-                    className="border border-[#A1A3AF] p-2 rounded"
+                    className="border border-border bg-input text-input-foreground p-2 rounded"
                     placeholder="1-31"
                   />
                   <input type="time" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="border border-[#A1A3AF] p-2 rounded" />
@@ -1735,14 +1735,14 @@ export default function JobList() {
                 <button
                   type="button"
                   onClick={closeScheduleModal}
-                  className="px-4 py-2 border border-[#A1A3AF] rounded font-bold uppercase text-xs text-[#23243B]"
+                  className="px-4 py-2 border border-border rounded font-bold uppercase text-xs text-foreground"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={handleSaveSchedule}
-                  className="px-4 py-2 bg-[#23243B] text-white rounded font-bold uppercase text-xs hover:bg-black"
+                  className="px-4 py-2 bg-primary text-white rounded font-bold uppercase text-xs hover:bg-primary/90"
                 >
                   Save Schedule
                 </button>
@@ -1756,7 +1756,7 @@ export default function JobList() {
         {schedulerToasts.map((toast) => (
           <div
             key={toast.id}
-            className={`rounded-md border px-3 py-2 shadow-md bg-white transition-all duration-300 ${
+            className={`rounded-md border px-3 py-2 shadow-md bg-card transition-all duration-300 ${
               toast.status === "running"
                 ? "border-blue-200"
                 : toast.status === "completed"
@@ -1806,7 +1806,7 @@ export default function JobList() {
         ))}
       </div>
       {/* HEADER */}
-      <div className="p-4 h-24 border-b border-[#A1A3AF] border-opacity-20 flex justify-between items-center pr-8">
+      <div className="p-4 h-24 border-b border-border flex justify-between items-center pr-8 bg-background">
         <h1 className="text-4xl pl-4 font-thin tracking-tighter uppercase">
           Job List
         </h1>
@@ -1823,7 +1823,7 @@ export default function JobList() {
         {jobs.map((job) => (
           <div
             key={job.job_id}
-            className="border border-[#A1A3AF] border-opacity-20 bg-white shadow-sm relative"
+            className="border border-border bg-card shadow-sm relative"
           >
             {/* JOB CARD */}
             <div
@@ -1921,14 +1921,14 @@ export default function JobList() {
                         e.stopPropagation();
                         setActionMenu({ type: "job", id: job.job_id });
                       }}
-                      className="p-2 hover:bg-gray-200 rounded-full"
+                      className="p-2 hover:bg-muted rounded-full"
                     >
                       <MoreVertical size={18} className="text-gray-500" />
                     </button>
                     {actionMenu.type === "job" &&
                       actionMenu.id === job.job_id && (
                         <div
-                          className="absolute right-0 mt-2 w-48 bg-white border border-gray-200 shadow-lg z-10 py-1"
+                          className="absolute right-0 mt-2 w-48 bg-card border border-border shadow-lg z-10 py-1"
                           onMouseLeave={() =>
                             setActionMenu({ type: null, id: null })
                           }
@@ -1939,7 +1939,7 @@ export default function JobList() {
                               setActionMenu({ type: null, id: null });
                               handleOpenEditFlow(job);
                             }}
-                            className="px-4 py-2 text-xs uppercase tracking-wider hover:bg-gray-100 cursor-pointer flex items-center gap-2"
+                            className="px-4 py-2 text-xs uppercase tracking-wider hover:bg-muted cursor-pointer flex items-center gap-2"
                           >
                             <Edit2 size={12} /> Edit Job
                           </div>
@@ -1955,7 +1955,7 @@ export default function JobList() {
                               });
                               setActionMenu({ type: null, id: null });
                             }}
-                            className="px-4 py-2 text-xs uppercase tracking-wider hover:bg-gray-100 cursor-pointer flex items-center gap-2"
+                            className="px-4 py-2 text-xs uppercase tracking-wider hover:bg-muted cursor-pointer flex items-center gap-2"
                           >
                             <Edit2 size={12} /> Rename Job
                           </div>
@@ -1973,8 +1973,8 @@ export default function JobList() {
                             }}
                             className={`px-4 py-2 text-xs uppercase tracking-wider flex items-center gap-2 ${
                               (job.total_tables || 0) === 0
-                                ? "text-gray-400 cursor-not-allowed bg-gray-50"
-                                : "hover:bg-gray-100 cursor-pointer"
+                                ? "text-gray-400 cursor-not-allowed bg-muted"
+                                : "hover:bg-muted cursor-pointer"
                             }`}
                           >
                             <Clock3 size={12} /> Schedule
@@ -2000,7 +2000,7 @@ export default function JobList() {
                               }
                               setActionMenu({ type: null, id: null });
                             }}
-                            className={`px-4 py-2 text-xs uppercase tracking-wider flex items-center gap-2 ${(job.total_tables || 0) === 0 ? "text-gray-400 cursor-not-allowed bg-gray-50" : "hover:bg-gray-100 cursor-pointer"}`}
+                            className={`px-4 py-2 text-xs uppercase tracking-wider flex items-center gap-2 ${(job.total_tables || 0) === 0 ? "text-gray-400 cursor-not-allowed bg-muted" : "hover:bg-muted cursor-pointer"}`}
                           >
                             <Download size={12} /> Download Zip
                           </div>
@@ -2046,7 +2046,7 @@ export default function JobList() {
                               e.stopPropagation();
                               handleDelete("job", job.job_id);
                             }}
-                            className="px-4 py-2 text-xs uppercase tracking-wider text-red-600 hover:bg-red-50 cursor-pointer flex items-center gap-2 border-t border-gray-100"
+                            className="px-4 py-2 text-xs uppercase tracking-wider text-red-600 hover:bg-red-50 cursor-pointer flex items-center gap-2 border-t border-border"
                           >
                             <Trash2 size={12} /> Delete Job
                           </div>
@@ -2057,7 +2057,7 @@ export default function JobList() {
               </div>
 
               {/* JOB STATS GRID */}
-              <div className="grid grid-cols-6 gap-4 border-t border-gray-100 pt-4 text-sm">
+              <div className="grid grid-cols-6 gap-4 border-t border-border pt-4 text-sm">
                 <div>
                   <span className="block text-gray-400 uppercase text-[12px] mb-1">
                     Time & Duration
@@ -2120,7 +2120,7 @@ export default function JobList() {
 
             {/* EXPANDED TABLES LIST */}
             {expandedJob === job.job_id && (
-              <div className="bg-[#F8F8F8] border-t border-[#A1A3AF] border-opacity-20 p-6">
+              <div className="bg-background border-t border-border p-6">
                 <h3 className="text-sm font-medium uppercase tracking-widest text-gray-400 mb-4">
                   Tables
                 </h3>
@@ -2133,7 +2133,7 @@ export default function JobList() {
                       {/* THE TABLE ROW */}
                       <div
                         onClick={() => toggleTableExpansion(table.table_id)}
-                        className="bg-white border border-gray-200 p-4 flex items-center justify-between hover:border-[#23243B] transition-colors cursor-pointer"
+                        className="bg-card border border-border p-4 flex items-center justify-between hover:border-[var(--sidebar-border)] transition-colors cursor-pointer"
                       >
                         <div className="flex items-center gap-3 w-1/4">
                           {/* Toggle Icon */}
@@ -2194,14 +2194,14 @@ export default function JobList() {
                                 id: table.table_id,
                               })
                             }
-                            className="p-1 hover:bg-gray-200 rounded-full"
+                            className="p-1 hover:bg-muted rounded-full"
                           >
                             <MoreVertical size={20} className="text-gray-400" />
                           </button>
                           {actionMenu.type === "table" &&
                             actionMenu.id === table.table_id && (
                               <div
-                                className="absolute right-0 mt-2 w-48 bg-white border border-gray-200 shadow-lg z-10 py-1"
+                                className="absolute right-0 mt-2 w-48 bg-card border border-border shadow-lg z-10 py-1"
                                 onMouseLeave={() =>
                                   setActionMenu({ type: null, id: null })
                                 }
@@ -2246,7 +2246,7 @@ export default function JobList() {
                                   onClick={() =>
                                     handleDelete("table", table.table_id)
                                   }
-                                  className="px-4 py-2 text-xs uppercase tracking-wider text-red-600 hover:bg-red-50 cursor-pointer flex items-center gap-2 border-t border-gray-100"
+                                  className="px-4 py-2 text-xs uppercase tracking-wider text-red-600 hover:bg-red-50 cursor-pointer flex items-center gap-2 border-t border-border"
                                 >
                                   <Trash2 size={12} /> Remove Table
                                 </div>
@@ -2257,14 +2257,14 @@ export default function JobList() {
 
                       {/* THE COLUMN AUDIT (Conditional Rendering) */}
                       {expandedTables[table.table_id] && (
-                        <div className="border-x border-b border-gray-200 animate-in fade-in slide-in-from-top-2 duration-200">
+                        <div className="border-x border-b border-border animate-in fade-in slide-in-from-top-2 duration-200">
                           <ColumnAudit tableId={table.table_id} />
                         </div>
                       )}
                     </div>
                   ))}
                   {(!tables[job.job_id] || tables[job.job_id].length === 0) && (
-                    <div className="text-center py-8 text-sm text-gray-400 uppercase tracking-widest border border-dashed border-gray-300">
+                    <div className="text-center py-8 text-sm text-muted-foreground uppercase tracking-widest border border-dashed border-border">
                       No tables attached to this job.
                     </div>
                   )}
@@ -2278,12 +2278,12 @@ export default function JobList() {
       {/* --- RENAME MODAL --- */}
       {renameModal.isOpen && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white p-6 border border-[#23243B] w-96">
-            <h2 className="text-sm font-bold uppercase tracking-widest mb-4">
+          <div className="bg-card p-6 border border-border w-96">
+            <h2 className="text-sm font-bold uppercase tracking-widest mb-4 text-foreground">
               Rename {renameModal.type}
             </h2>
             <input
-              className="w-full bg-transparent border-b border-[#A1A3AF] p-2 text-sm outline-none focus:border-[#23243B] mb-6"
+              className="w-full bg-input border-b border-border p-2 text-sm text-input-foreground outline-none focus:border-primary mb-6"
               value={renameModal.newName}
               onChange={(e) =>
                 setRenameModal({ ...renameModal, newName: e.target.value })
@@ -2311,9 +2311,9 @@ export default function JobList() {
       {/* --- ADD DATA MODAL --- */}
       {showAddModal && (
         <div className="fixed inset-0 bg-black/30 backdrop-blur-[2px] flex items-center justify-center z-50 p-2 sm:p-4">
-          <div className="bg-white w-full max-w-5xl border border-[#DADDE5] rounded-xl shadow-2xl flex flex-col overflow-hidden max-h-[96vh]">
-            <div className="flex justify-between items-center p-5 border-b border-gray-200 bg-gradient-to-r from-[#FBFBFB] to-[#F3F4F8]">
-              <span className="font-bold uppercase tracking-widest text-[#23243B]">
+          <div className="bg-card w-full max-w-5xl border border-border rounded-xl shadow-2xl flex flex-col overflow-hidden max-h-[96vh]">
+            <div className="flex justify-between items-center p-5 border-b border-border bg-background">
+              <span className="font-bold uppercase tracking-widest text-foreground">
                 {editFlow.isEdit ? "Edit Job Flow" : "Add New Job"}
               </span>
               <X

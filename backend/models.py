@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Text, ForeignKeyConstraint, JSON
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Text, ForeignKeyConstraint, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -125,14 +125,32 @@ class MasterTable(Base):
 
 class DbConnection(Base):
     __tablename__ = "db_connections"
-    __table_args__ = {'schema': 'metadata'}
+    __table_args__ = (
+        UniqueConstraint("connection_name", "user_id", name="uq_db_connections_name_user"),
+        {'schema': 'metadata'},
+    )
 
     connection_id = Column(Integer, primary_key=True, index=True)
-    connection_name = Column(String, unique=True, nullable=False)
+    connection_name = Column(String, nullable=False)
     host = Column(String, nullable=False)
     port = Column(String, default="5432")
     username = Column(String, nullable=False)
     password = Column(String, nullable=True)
+    user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
+    db_type = Column(String(32), nullable=True, default="postgres")
+    created_at = Column(DateTime, default=func.now())
+
+
+class DbConnectionShare(Base):
+    __tablename__ = "db_connection_shares"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "shared_user_id", name="uq_db_connection_shares"),
+        {'schema': 'metadata'},
+    )
+
+    share_id = Column(Integer, primary_key=True, index=True)
+    connection_id = Column(Integer, ForeignKey("metadata.db_connections.connection_id"), nullable=False, index=True)
+    shared_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=False, index=True)
     created_at = Column(DateTime, default=func.now())
 
 

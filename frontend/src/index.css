@@ -239,6 +239,39 @@ table tbody tr:hover > th {
   color: #334155;
 }
 
+.dark .joblist-theme-root .bg-white {
+  background-color: var(--card) !important;
+}
+
+.dark .joblist-theme-root .bg-\[\#F8F8F8\] {
+  background-color: var(--background) !important;
+}
+
+.dark .joblist-theme-root .border-\[\#A1A3AF\],
+.dark .joblist-theme-root .border-\[\#D6D9E0\],
+.dark .joblist-theme-root .border-\[\#E5E7EB\],
+.dark .joblist-theme-root .border-gray-100,
+.dark .joblist-theme-root .border-gray-200,
+.dark .joblist-theme-root .border-dashed\.border-gray-300,
+.dark .joblist-theme-root .border-\[\#DADDE5\],
+.dark .joblist-theme-root .border-\[\#23243B\] {
+  border-color: var(--border) !important;
+}
+
+.dark .joblist-theme-root .text-\[\#23243B\] {
+  color: var(--foreground) !important;
+}
+
+.dark .joblist-theme-root .hover\:bg-gray-50:hover,
+.dark .joblist-theme-root .hover\:bg-gray-100:hover,
+.dark .joblist-theme-root .hover\:bg-amber-50:hover {
+  background-color: var(--muted) !important;
+}
+
+.dark .joblist-theme-root .text-gray-400 {
+  color: var(--muted-foreground) !important;
+}
+
 .mdqm-scroll-x {
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--primary) 40%, transparent) var(--muted);

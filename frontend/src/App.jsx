@@ -11,6 +11,8 @@ import ProfilePage from "./pages/ProfilePage";
 import AdminPanel from "./pages/AdminPanel";
 import AdminDashboardLayout from "./pages/admin/AdminDashboardLayout";
 import AdminAccessRequestsPage from "./pages/admin/AdminAccessRequestsPage";
+import DbConnectionsPage from "./pages/DbConnectionsPage";
+import LineagePage from "./pages/LineagePage";
 import AuditLogsPage from "./pages/AuditLogsPage";
 import ProtectedRoute from "./auth/ProtectedRoute";
 import PermissionGuard from "./auth/PermissionGuard";
@@ -67,6 +69,7 @@ function AppShell() {
             </PermissionGuard>
           }
         />
+        <Route path="/connections" element={<DbConnectionsPage />} />
         <Route
           path="/compliance"
           element={
@@ -85,7 +88,9 @@ function AppShell() {
         <Route
           path="/lineage"
           element={
-            <PlaceholderPage title="Lineage" description="Data lineage graph and impact analysis." />
+            <PermissionGuard require={PERMISSIONS.LINEAGE_VIEW}>
+              <LineagePage />
+            </PermissionGuard>
           }
         />
         <Route

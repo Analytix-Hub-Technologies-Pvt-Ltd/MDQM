@@ -33,6 +33,7 @@ def build_db_source_config(payload: dict, creds: dict, schema_name: str, table_n
         "kind": "postgres_tables",
         "connection_id": payload.get("connection_id"),
         "dbname": creds["dbname"],
+        "db_type": creds.get("db_type") or "postgres",
         "schema_name": schema_name,
         "table_names": list(table_names),
         "host": creds.get("host"),
@@ -53,8 +54,9 @@ def import_tables_into_job(
     schema_name: str,
     table_names: list[str],
     snapshot_fn,
+    db_type: str = "postgres",
 ) -> list[dict[str, Any]]:
-    """Pull tables from Postgres and snapshot to job CSVs. Returns per-table summaries."""
+    """Pull tables from Postgres/SQLServer/MySQL and snapshot to job CSVs. Returns per-table summaries."""
     summaries: list[dict[str, Any]] = []
     max_id = (
         db.query(func.max(models.TableMetadata.table_id))
@@ -68,12 +70,32 @@ def import_tables_into_job(
         for t in db.query(models.TableMetadata).filter(models.TableMetadata.job_id == job_id).all()
     }
 
+    db_type_lower = str(db_type or "postgres").lower().strip()
     for table_name in table_names:
-        query = psql.SQL("SELECT * FROM {}.{}").format(
-            psql.Identifier(schema_name),
-            psql.Identifier(table_name),
-        )
-        q_str = query.as_string(external_conn)
+        if db_type_lower in ("mssql", "sqlserver", "sql_server"):
+            q_str = f"SELECT * FROM [{schema_name}].[{table_name}]"
+        elif db_type_lower == "mysql":
+            if schema_name:
+                q_str = f"SELECT * FROM `{schema_name}`.`{table_name}`"
+            else:
+                q_str = f"SELECT * FROM `{table_name}`"
+        elif db_type_lower in ("oracle", "snowflake"):
+            if schema_name:
+                q_str = f'SELECT * FROM "{schema_name}"."{table_name}"'
+            else:
+                q_str = f'SELECT * FROM "{table_name}"'
+        elif db_type_lower == "databricks":
+            if schema_name:
+                q_str = f"SELECT * FROM `{schema_name}`.`{table_name}`"
+            else:
+                q_str = f"SELECT * FROM `{table_name}`"
+        else:
+            query = psql.SQL("SELECT * FROM {}.{}").format(
+                psql.Identifier(schema_name),
+                psql.Identifier(table_name),
+            )
+            q_str = query.as_string(external_conn)
+
         df = pd.read_sql_query(q_str, external_conn)
         df = _normalize_import_dataframe_dates(df)
 

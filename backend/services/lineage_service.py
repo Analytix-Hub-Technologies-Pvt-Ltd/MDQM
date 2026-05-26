@@ -61,10 +61,11 @@ def _upsert_node(db: Session, key: str, node_type: str, domain: str | None, *, l
 
 def _node_label(node: models.LineageNode) -> str:
     key = node.node_key or ""
-    if key.startswith("ds:"):
-        return key[3:]
-    if key.startswith("src:"):
-        return key[4:].replace("_", " ")
+    parts = key.split(":")
+    if len(parts) >= 3:
+        return parts[-1]
+    if len(parts) == 2:
+        return parts[1]
     return key.replace("_", " ")
 
 
@@ -101,34 +102,75 @@ def seed_lineage_from_datasets(db: Session, *, force: bool = False) -> dict[str,
     edges_added = 0
 
     if datasets:
-        reports = _upsert_node(db, "derived:report_layer", "derived", "Analytics")
-        nodes_added += 1
         for ds in datasets:
             ds_key = f"ds:{ds.name}"
             _upsert_node(db, ds_key, "dataset", ds.domain)
             nodes_added += 1
-            domain = (ds.domain or "").lower()
-            sources: list[str] = []
-            if "customer" in domain:
-                sources = ["Salesforce CRM", "SAP ERP"]
-            elif "product" in domain:
-                sources = ["Akeneo PIM", "SAP ERP"]
-            elif "finance" in domain or "transaction" in (ds.name or "").lower():
-                sources = ["Core Banking", "SAP ERP"]
-            elif "supplier" in domain:
-                sources = ["SAP ERP", "Manual Upload"]
-            else:
-                sources = ["SAP ERP", "File Ingest"]
-            for label in sources:
-                sk = f"src:{label}"
+
+            # Resolve real database connection sources
+            sources = []
+            if ds.job_id:
+                job_row = db.query(models.Job).filter(models.Job.job_id == ds.job_id).first()
+                if job_row and job_row.db_source_config:
+                    cfg = job_row.db_source_config
+                    conn_id = cfg.get("connection_id")
+                    conn_name = None
+                    if conn_id:
+                        conn_row = db.query(models.DbConnection).filter(models.DbConnection.connection_id == conn_id).first()
+                        if conn_row:
+                            conn_name = conn_row.connection_name
+                    
+                    if not conn_name:
+                        db_type = cfg.get("db_type") or "database"
+                        dbname = cfg.get("dbname") or "default"
+                        conn_name = f"{db_type.upper()}: {dbname}"
+                    
+                    sources.append((f"src:{conn_name}", conn_name))
+            
+            if not sources:
+                # Fallback based on domain
+                domain = (ds.domain or "").lower()
+                if "customer" in domain:
+                    label = "Salesforce CRM"
+                elif "product" in domain:
+                    label = "Akeneo PIM"
+                elif "finance" in domain or "transaction" in (ds.name or "").lower():
+                    label = "Core Banking"
+                else:
+                    label = "File Ingest"
+                sources.append((f"src:{label}", label))
+
+            # Add source nodes and edges
+            for sk, label in sources:
                 _upsert_node(db, sk, "source", ds.domain)
                 _upsert_edge(db, sk, ds_key, "feeds")
                 edges_added += 1
-            _upsert_edge(db, ds_key, reports.node_key, "loads")
-            edges_added += 1
-        bi = _upsert_node(db, "consumer:bi_tableau", "consumer", "Analytics")
-        _upsert_edge(db, reports.node_key, bi.node_key, "serves")
-        edges_added += 1
+
+            # Resolve downstream reports/consumers linking to this dataset
+            reports = db.query(models.EnterpriseBusinessReport).filter(models.EnterpriseBusinessReport.dataset_name == ds.name).all()
+            if reports:
+                for r in reports:
+                    rep_key = f"derived:{ds.name}:{r.title}"
+                    _upsert_node(db, rep_key, "derived", ds.domain)
+                    _upsert_edge(db, ds_key, rep_key, "loads")
+                    edges_added += 1
+
+                    tool = r.report_type or "BI Tool"
+                    cons_key = f"consumer:{ds.name}:{tool}"
+                    _upsert_node(db, cons_key, "consumer", ds.domain)
+                    _upsert_edge(db, rep_key, cons_key, "serves")
+                    edges_added += 1
+            else:
+                # Fallback to dataset-specific report layer & consumer
+                rep_key = f"derived:{ds.name}:Report Layer"
+                _upsert_node(db, rep_key, "derived", ds.domain)
+                _upsert_edge(db, ds_key, rep_key, "loads")
+                edges_added += 1
+
+                cons_key = f"consumer:{ds.name}:BI Tableau"
+                _upsert_node(db, cons_key, "consumer", ds.domain)
+                _upsert_edge(db, rep_key, cons_key, "serves")
+                edges_added += 1
     else:
         for key, label, ntype, domain in _DEFAULT_NODES:
             _upsert_node(db, key, ntype, domain)
@@ -153,39 +195,51 @@ def _filter_graph_subset(
     if not focus_keys:
         return nodes, edges
     id_by_key = {n.node_key: n.id for n in nodes}
-    key_by_id = {n.id: n.node_key for n in nodes}
     adj_out: dict[int, list[int]] = {}
     adj_in: dict[int, list[int]] = {}
     for e in edges:
         adj_out.setdefault(e.from_node_id, []).append(e.to_node_id)
         adj_in.setdefault(e.to_node_id, []).append(e.from_node_id)
     seed_ids = [id_by_key[k] for k in focus_keys if k in id_by_key]
+    
     keep_ids: set[int] = set()
-    for sid in seed_ids:
-        stack = [sid]
-        while stack:
-            nid = stack.pop()
-            if nid in keep_ids:
-                continue
-            keep_ids.add(nid)
-            for nxt in adj_out.get(nid, []) + adj_in.get(nid, []):
-                if nxt not in keep_ids:
-                    stack.append(nxt)
+    
+    # 1. Traverse upstream (follow adj_in)
+    stack_up = list(seed_ids)
+    while stack_up:
+        nid = stack_up.pop()
+        if nid in keep_ids:
+            continue
+        keep_ids.add(nid)
+        for prev in adj_in.get(nid, []):
+            if prev not in keep_ids:
+                stack_up.append(prev)
+                
+    # 2. Traverse downstream (follow adj_out)
+    stack_down = list(seed_ids)
+    while stack_down:
+        nid = stack_down.pop()
+        if nid in keep_ids:
+            continue
+        keep_ids.add(nid)
+        for nxt in adj_out.get(nid, []):
+            if nxt not in keep_ids:
+                stack_down.append(nxt)
+                
     sub_nodes = [n for n in nodes if n.id in keep_ids]
     sub_edges = [e for e in edges if e.from_node_id in keep_ids and e.to_node_id in keep_ids]
     return sub_nodes, sub_edges
 
 
 def lineage_graph_payload(db: Session, *, auto_seed: bool = True, dataset_name: str | None = None) -> dict[str, Any]:
-    if auto_seed and db.query(models.LineageNode).count() == 0:
-        seed_lineage_from_datasets(db)
+    if auto_seed:
+        seed_lineage_from_datasets(db, force=True)
     nodes = db.query(models.LineageNode).order_by(models.LineageNode.id).all()
     edges = db.query(models.LineageEdge).all()
     focus_label = (dataset_name or "").strip()
     focus_keys: set[str] = set()
     if focus_label:
         focus_keys.add(f"ds:{focus_label}")
-        slug = _slug(focus_label)
         for n in nodes:
             if focus_label.lower() in (n.node_key or "").lower() or focus_label.lower() in _node_label(n).lower():
                 focus_keys.add(n.node_key)

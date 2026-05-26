@@ -1027,11 +1027,11 @@ def list_stewardship_tasks(db: Session, page: int, page_size: int, q: str | None
     return paginated_response(items, total, page, page_size)
 
 
-def list_my_auth_access_requests(db: Session, email: str, page: int, page_size: int, q: str | None = None):
-    """Rows from auth.access_requests for the signed-in user's email (self-service history)."""
+def list_my_auth_access_requests(db: Session, username: str, page: int, page_size: int, q: str | None = None):
+    """Rows from auth.access_requests for the signed-in user's username (self-service history)."""
     offset, page_size = _page_bounds(page, page_size)
-    em = (email or "").strip().lower()
-    query = db.query(models.AccessRequest).filter(models.AccessRequest.email == em)
+    uname = (username or "").strip().lower()
+    query = db.query(models.AccessRequest).filter(func.lower(models.AccessRequest.username) == uname)
     if q and str(q).strip():
         term = f"%{str(q).strip()}%"
         query = query.filter(
@@ -1062,9 +1062,9 @@ def list_my_auth_access_requests(db: Session, email: str, page: int, page_size: 
     return paginated_response(items, total, page, page_size)
 
 
-def count_my_auth_access_requests_by_status(db: Session, email: str) -> dict:
-    em = (email or "").strip().lower()
-    rows = db.query(models.AccessRequest.status, func.count()).filter(models.AccessRequest.email == em).group_by(models.AccessRequest.status).all()
+def count_my_auth_access_requests_by_status(db: Session, username: str) -> dict:
+    uname = (username or "").strip().lower()
+    rows = db.query(models.AccessRequest.status, func.count()).filter(func.lower(models.AccessRequest.username) == uname).group_by(models.AccessRequest.status).all()
     counts = {str(s or "").lower(): int(n) for s, n in rows}
     pending = counts.get("pending", 0)
     approved = counts.get("approved", 0)

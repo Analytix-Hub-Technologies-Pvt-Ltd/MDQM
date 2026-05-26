@@ -138,15 +138,15 @@ def _owner_display(db: Session, owner_user_id: int | None) -> str | None:
     return (u.full_name or u.username or u.email or "").strip() or None
 
 
-def _has_approved_access(db: Session, email: str, dataset_name: str) -> bool:
-    em = (email or "").strip().lower()
+def _has_approved_access(db: Session, username: str, dataset_name: str) -> bool:
+    uname = (username or "").strip().lower()
     name = (dataset_name or "").strip()
-    if not em or not name:
+    if not uname or not name:
         return False
     row = (
         db.query(models.AccessRequest)
         .filter(
-            func.lower(models.AccessRequest.email) == em,
+            func.lower(models.AccessRequest.username) == uname,
             models.AccessRequest.dataset_name == name,
             func.lower(models.AccessRequest.status) == "approved",
         )
@@ -155,7 +155,7 @@ def _has_approved_access(db: Session, email: str, dataset_name: str) -> bool:
     return row is not None
 
 
-def enrich_dataset(db: Session, row: models.EnterpriseDataset, *, user_email: str | None = None) -> dict[str, Any]:
+def enrich_dataset(db: Session, row: models.EnterpriseDataset, *, username: str | None = None) -> dict[str, Any]:
     job_id = _resolve_job_id(db, row)
     st = _latest_stat_for_job(db, job_id)
     metrics = _metrics_from_stat(st)
@@ -189,7 +189,7 @@ def enrich_dataset(db: Session, row: models.EnterpriseDataset, *, user_email: st
         "dq_job_linked": dq_job_linked,
         "has_dq_stats": has_stats,
         "score_source": "manual" if manual_score else ("job_stats" if has_stats else "none"),
-        "access_granted": _has_approved_access(db, user_email or "", row.name) if user_email else False,
+        "access_granted": _has_approved_access(db, username or "", row.name) if username else False,
         "score": score,
         "certification": _certification_label(score) if (dq_job_linked or manual_score) else "Not assessed",
         "consistency": metrics["consistency"],
@@ -205,7 +205,7 @@ def enrich_dataset(db: Session, row: models.EnterpriseDataset, *, user_email: st
 
 
 def build_business_catalog_dataset_detail(
-    db: Session, dataset_id: int, *, user_email: str | None = None
+    db: Session, dataset_id: int, *, username: str | None = None
 ) -> dict[str, Any] | None:
     """
     Catalog dataset detail for business users: columns/samples plus validation rules and last DQ run stats.
@@ -220,7 +220,7 @@ def build_business_catalog_dataset_detail(
     if not preview:
         return None
 
-    catalog = enrich_dataset(db, row, user_email=user_email)
+    catalog = enrich_dataset(db, row, username=username)
     preview["catalog"] = catalog
 
     job_id = (preview.get("linked_job") or {}).get("job_id")
@@ -315,7 +315,7 @@ def build_business_catalog_dataset_detail(
     return preview
 
 
-def list_catalog(db: Session, page: int, page_size: int, q: str | None = None, user_email: str | None = None):
+def list_catalog(db: Session, page: int, page_size: int, q: str | None = None, username: str | None = None):
     offset, page_size = _page_bounds(page, page_size)
     query = db.query(models.EnterpriseDataset).order_by(models.EnterpriseDataset.name.asc())
     if q and str(q).strip():
@@ -325,12 +325,12 @@ def list_catalog(db: Session, page: int, page_size: int, q: str | None = None, u
         )
     total = query.count()
     rows = query.offset(offset).limit(page_size).all()
-    items = [enrich_dataset(db, r, user_email=user_email) for r in rows]
+    items = [enrich_dataset(db, r, username=username) for r in rows]
     return paginated_response(items, total, page, page_size)
 
 
-def list_quality_scores(db: Session, page: int, page_size: int, q: str | None = None, user_email: str | None = None):
-    data = list_catalog(db, page, page_size, q, user_email=user_email)
+def list_quality_scores(db: Session, page: int, page_size: int, q: str | None = None, username: str | None = None):
+    data = list_catalog(db, page, page_size, q, username=username)
     scores = [i.get("score", 0) for i in data["items"] if i.get("score")]
     certified = sum(1 for s in scores if s >= 90)
     caution = sum(1 for s in scores if s < 80)
@@ -346,14 +346,14 @@ def list_quality_scores(db: Session, page: int, page_size: int, q: str | None = 
 
 
 def business_overview(db: Session, user: models.User) -> dict[str, Any]:
-    email = (user.email or "").strip().lower()
+    uname = (user.username or "").strip().lower()
     all_ds = db.query(models.EnterpriseDataset).all()
-    enriched = [enrich_dataset(db, d, user_email=email) for d in all_ds]
+    enriched = [enrich_dataset(db, d, username=user.username) for d in all_ds]
     certified = sum(1 for d in enriched if (d.get("score") or 0) >= 80)
 
     req_counts = (
         db.query(models.AccessRequest.status, func.count())
-        .filter(models.AccessRequest.email == email)
+        .filter(func.lower(models.AccessRequest.username) == uname)
         .group_by(models.AccessRequest.status)
         .all()
     )
@@ -637,9 +637,9 @@ def delete_alert_subscription(db: Session, user_id: int, sub_id: int) -> bool:
     return True
 
 
-def cancel_data_request(db: Session, email: str, request_id: int) -> bool:
-    em = (email or "").strip().lower()
-    row = db.query(models.AccessRequest).filter(models.AccessRequest.id == request_id, models.AccessRequest.email == em).first()
+def cancel_data_request(db: Session, username: str, request_id: int) -> bool:
+    uname = (username or "").strip().lower()
+    row = db.query(models.AccessRequest).filter(models.AccessRequest.id == request_id, func.lower(models.AccessRequest.username) == uname).first()
     if not row or str(row.status or "").lower() != "pending":
         return False
     row.status = "cancelled"

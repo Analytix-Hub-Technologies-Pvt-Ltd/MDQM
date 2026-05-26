@@ -22,6 +22,8 @@ pandas
 prometheus-fastapi-instrumentator
 prometheus_client
 psycopg2-binary
+pyodbc
+pymysql
 pydantic
 pydantic_core
 python-dateutil

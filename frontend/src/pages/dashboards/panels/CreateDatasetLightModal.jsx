@@ -81,12 +81,23 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
     setSelectedConnectionId(value);
     const selected = savedConnections.find((c) => String(c.connection_id) === String(value));
     if (!selected) return;
+    const type = selected.db_type || "postgres";
+    let defaultPort = "5432";
+    let defaultDb = "postgres";
+    if (type === "sqlserver") {
+      defaultPort = "1433";
+      defaultDb = "master";
+    } else if (type === "mysql") {
+      defaultPort = "3306";
+      defaultDb = "";
+    }
     setDbCreds((prev) => ({
       ...prev,
       host: selected.host || "",
-      port: selected.port || "5432",
+      port: selected.port || defaultPort,
       user: selected.user || "",
       pass: "",
+      dbname: prev.dbname || defaultDb,
     }));
   };
 
@@ -105,7 +116,7 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
       return;
     }
     if (!dbCreds.dbname?.trim()) {
-      setError("Enter database name (the PostgreSQL database to connect into).");
+      setError("Enter database name (the database to connect into).");
       setLoadHint("");
       return;
     }

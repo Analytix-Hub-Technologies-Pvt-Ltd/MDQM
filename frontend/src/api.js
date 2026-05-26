@@ -241,6 +241,22 @@ export const saveDbConnection = async (payload) => {
     return apiClient.post(`/db/connections`, payload);
 };
 
+export const updateSavedConnection = async (connectionId, payload) => {
+    return apiClient.put(`/db/connections/${connectionId}`, payload);
+};
+
+export const deleteSavedConnection = async (connectionId) => {
+    return apiClient.delete(`/db/connections/${connectionId}`);
+};
+
+export const shareSavedConnection = async (connectionId, payload) => {
+    return apiClient.post(`/db/connections/${connectionId}/share`, payload);
+};
+
+export const unshareSavedConnection = async (connectionId, targetUserId) => {
+    return apiClient.delete(`/db/connections/${connectionId}/share/${targetUserId}`);
+};
+
 export const testDbConnection = async (payload) => {
     return apiClient.post(`/db/test-connection`, payload);
 };

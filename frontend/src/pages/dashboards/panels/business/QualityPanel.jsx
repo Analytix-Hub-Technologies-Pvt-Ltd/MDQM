@@ -52,14 +52,14 @@ export default function QualityPanel() {
       {err ? <p className="text-xs text-amber-400">{err}</p> : null}
       <div className="enterprise-card overflow-x-auto">
         <h3 className="enterprise-title p-4 pb-2">Quality score overview</h3>
-        <p className="px-4 pb-2 text-[11px] text-[#7f95b6]">
+        <p className="px-4 pb-2 text-[11px] text-slate-500 dark:text-[#7f95b6]">
           Click a dataset with a linked DQ job to configure validation rules and run checks.
         </p>
         {loading ? (
-          <p className="p-4 text-sm text-[#7f95b6]">Loading…</p>
+          <p className="p-4 text-sm text-slate-500 dark:text-[#7f95b6]">Loading…</p>
         ) : (
           <table className="w-full text-sm">
-            <thead className="text-[#9ab0d1] border-b border-[#22324f]">
+            <thead className="text-slate-600 dark:text-[#9ab0d1] border-b border-slate-200 dark:border-[#22324f]">
               <tr>
                 <th className="text-left p-3">Dataset</th>
                 <th className="text-left p-3">Overall</th>
@@ -80,19 +80,19 @@ export default function QualityPanel() {
                 return (
                   <tr
                     key={r.id ?? r.name}
-                    className={`border-b border-[#22324f]/50 ${canEditRules ? "cursor-pointer mdqm-row-hover" : ""}`}
+                    className={`border-b border-slate-100 dark:border-[#22324f]/50 ${canEditRules ? "cursor-pointer mdqm-row-hover" : ""}`}
                     onClick={() => canEditRules && openRules(r)}
                     title={canEditRules ? "Configure DQ rules and run validation" : undefined}
                   >
-                    <td className="p-3 font-medium text-[#d7e3f7]">
+                    <td className="p-3 font-medium text-slate-900 dark:text-[#d7e3f7]">
                       {r.name}
                       {canEditRules ? (
-                        <span className="block text-[10px] font-normal text-[#4f8cff]/90 mt-0.5">Click to set rules</span>
+                        <span className="block text-[10px] font-normal text-sky-600 dark:text-[#4f8cff]/90 mt-0.5">Click to set rules</span>
                       ) : !assessed ? (
-                        <span className="block text-[10px] font-normal text-amber-400/90 mt-0.5">No DQ job linked</span>
+                        <span className="block text-[10px] font-normal text-amber-500 dark:text-amber-400/90 mt-0.5">No DQ job linked</span>
                       ) : null}
                     </td>
-                    <td className="p-3">{assessed ? <ScoreRing score={r.score} size={34} /> : <span className="text-xs text-[#5c6d8a]">—</span>}</td>
+                    <td className="p-3">{assessed ? <ScoreRing score={r.score} size={34} /> : <span className="text-xs text-slate-400 dark:text-[#5c6d8a]">—</span>}</td>
                     <td className="p-3">{assessed ? <PassBar value={r.completeness} threshold={90} /> : "—"}</td>
                     <td className="p-3">{assessed ? <PassBar value={r.validity} threshold={90} /> : "—"}</td>
                     <td className="p-3">{assessed ? <PassBar value={r.uniqueness} threshold={98} /> : "—"}</td>
@@ -103,20 +103,20 @@ export default function QualityPanel() {
                       {assessed ? (
                         <>
                           <StatusBadge status={(r.issues || 0) > 50 ? "failed" : (r.issues || 0) > 10 ? "warning" : "success"} />
-                          <span className="ml-1 text-xs text-[#9ab0d1]">{r.issues ?? 0}</span>
+                          <span className="ml-1 text-xs text-slate-600 dark:text-[#9ab0d1]">{r.issues ?? 0}</span>
                         </>
                       ) : (
                         "—"
                       )}
                     </td>
-                    <td className="p-3 text-xs text-[#5c6d8a]">{r.last_run ? formatRelativeTime(r.last_run) : "—"}</td>
+                    <td className="p-3 text-xs text-slate-500 dark:text-[#5c6d8a]">{r.last_run ? formatRelativeTime(r.last_run) : "—"}</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
         )}
-        {!loading && !data.items.length ? <p className="p-4 text-xs text-[#7f95b6]">Add datasets to the enterprise catalog to see scores.</p> : null}
+        {!loading && !data.items.length ? <p className="p-4 text-xs text-slate-500 dark:text-[#7f95b6]">Add datasets to the enterprise catalog to see scores.</p> : null}
       </div>
 
       {rulesModalOpen ? (

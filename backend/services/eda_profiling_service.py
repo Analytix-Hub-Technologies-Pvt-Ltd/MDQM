@@ -52,5 +52,6 @@ def build_ydata_profiling_html(db: Session, job_id: int, *, max_rows: int = 50_0
         title=title,
         explorative=True,
         minimal=len(df) > 20_000,
+        pool_size=1,
     )
     return profile.to_html()

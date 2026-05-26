@@ -20,9 +20,9 @@ function resolveTheme(theme) {
 export function ThemeProvider({ children }) {
   const [theme, setThemeState] = useState(() => {
     try {
-      return localStorage.getItem(STORAGE_KEY) || "system";
+      return localStorage.getItem(STORAGE_KEY) || "light";
     } catch {
-      return "system";
+      return "light";
     }
   });
 

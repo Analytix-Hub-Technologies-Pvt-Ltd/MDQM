@@ -78,7 +78,7 @@ export default function ReportsPanel() {
         <StatCard label="Certified" value={s.certified ?? 0} sub="Data quality verified" icon={CheckCircle2} tone="success" />
         <StatCard label="Stale / outdated" value={s.stale ?? 0} sub="Need refresh" icon={TriangleAlert} tone="warning" />
       </div>
-      {loading ? <p className="text-sm text-[#7f95b6]">Loading reports…</p> : null}
+      {loading ? <p className="text-sm text-slate-500 dark:text-[#7f95b6]">Loading reports…</p> : null}
       {openHint ? (
         <p className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">{openHint}</p>
       ) : null}
@@ -90,11 +90,11 @@ export default function ReportsPanel() {
           <div key={r.id} className="enterprise-card p-4">
             <div className="flex justify-between gap-3 mb-3">
               <div>
-                <h4 className="font-semibold text-[#d7e3f7]">{r.title}</h4>
-                <p className="text-xs text-[#5c6d8a]">
+                <h4 className="font-semibold text-slate-900 dark:text-[#d7e3f7]">{r.title}</h4>
+                <p className="text-xs text-slate-500 dark:text-[#5c6d8a]">
                   {r.report_type} · Source: {r.dataset_name || "—"}
                 </p>
-                <p className="text-xs text-[#5c6d8a]">Last refresh: {r.last_refreshed || "—"}</p>
+                <p className="text-xs text-slate-500 dark:text-[#5c6d8a]">Last refresh: {r.last_refreshed || "—"}</p>
               </div>
               {r.quality_score != null ? <ScoreRing score={r.quality_score} size={36} /> : null}
             </div>
@@ -116,7 +116,7 @@ export default function ReportsPanel() {
                 </button>
                 <button
                   type="button"
-                  className="rounded border border-[#2a3f63] px-3 py-1.5 text-xs text-[#d7e3f7]"
+                  className="rounded border border-slate-300 dark:border-[#2a3f63] bg-white dark:bg-transparent px-3 py-1.5 text-xs text-slate-700 dark:text-[#d7e3f7] hover:border-sky-500 dark:hover:border-[#4f8cff] hover:text-sky-600 dark:hover:text-[#4f8cff] transition-colors"
                   disabled={exporting === r.id}
                   onClick={() => onExport(r)}
                 >

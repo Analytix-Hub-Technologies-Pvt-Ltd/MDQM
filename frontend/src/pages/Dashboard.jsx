@@ -269,9 +269,7 @@ export default function Dashboard({ embedded = false }) {
     return { up: delta >= 0, text: `${delta >= 0 ? "+" : ""}${delta.toFixed(1)}%` };
   };
 
-  const wrapperClass = embedded
-    ? "space-y-6 overflow-y-auto max-h-[min(75vh,820px)]"
-    : "space-y-6";
+  const wrapperClass = "space-y-6";
 
   return (
     <div className={wrapperClass}>
