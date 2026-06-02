@@ -111,7 +111,7 @@ const accessPendingCols = [
   ...accessBaseCols,
   { key: "requested_at", label: "Requested" },
   {
-    key: "id",
+    key: "_actions",
     label: "Actions",
     render: (_, row) => <AccessRequestActions row={row} />,
   },
@@ -198,7 +198,7 @@ const reportCols = [
   { key: "quality_score", label: "Score" },
   { key: "last_refreshed", label: "Refreshed" },
   {
-    key: "id",
+    key: "_actions",
     label: "",
     render: (_, row) => (
       <button

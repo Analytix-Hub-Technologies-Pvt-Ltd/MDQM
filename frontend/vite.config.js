@@ -33,4 +33,25 @@ export default defineConfig({
     },
   },
   base: "/",
+  server: {
+    port: 5173,
+    // Optional: use VITE_API_URL= in .env.development (relative) to avoid cross-origin calls
+    proxy: {
+      "/auth": { target: "http://127.0.0.1:8000", changeOrigin: true },
+      "/db": { target: "http://127.0.0.1:8000", changeOrigin: true },
+      "/jobs": { target: "http://127.0.0.1:8000", changeOrigin: true },
+      "/tables": { target: "http://127.0.0.1:8000", changeOrigin: true },
+      "/files": { target: "http://127.0.0.1:8000", changeOrigin: true },
+      "/schedules": { target: "http://127.0.0.1:8000", changeOrigin: true },
+      "/schedule-job": { target: "http://127.0.0.1:8000", changeOrigin: true },
+      "/dashboard": { target: "http://127.0.0.1:8000", changeOrigin: true },
+      "/rules": { target: "http://127.0.0.1:8000", changeOrigin: true },
+      "/quarantine": { target: "http://127.0.0.1:8000", changeOrigin: true },
+      "/master-data": { target: "http://127.0.0.1:8000", changeOrigin: true },
+      "/admin": { target: "http://127.0.0.1:8000", changeOrigin: true },
+      "/access-request": { target: "http://127.0.0.1:8000", changeOrigin: true },
+      "/api": { target: "http://127.0.0.1:8000", changeOrigin: true },
+      "/health": { target: "http://127.0.0.1:8000", changeOrigin: true },
+    },
+  },
 });

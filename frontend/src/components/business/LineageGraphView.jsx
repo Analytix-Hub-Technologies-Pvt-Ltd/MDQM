@@ -72,13 +72,13 @@ export default function LineageGraphView({ nodes = [], edges = [] }) {
             <path d="M0,0 L6,3 L0,6 Z" fill="#3b82f6" opacity={0.5} />
           </marker>
         </defs>
-        {nodes.map((n) => {
-          const id = n.id ?? n.key;
+        {nodes.map((n, ni) => {
+          const id = n.id ?? n.key ?? `node-${ni}`;
           const p = layout.positions.get(id) || { x: 0, y: 0 };
           const c = TYPE_COLORS[n.type] || TYPE_COLORS.dataset;
           const hi = n.highlight;
           return (
-            <g key={id} transform={`translate(${p.x},${p.y})`}>
+            <g key={`${String(id)}-${ni}`} transform={`translate(${p.x},${p.y})`}>
               <rect
                 width={110}
                 height={44}

@@ -11,6 +11,7 @@ const TABS = [
   { id: "glossary", label: "Glossary" },
   { id: "lineage", label: "Data flow" },
   { id: "reports", label: "My reports" },
+  { id: "alerts", label: "Alerts" },
   { id: "compliance", label: "Compliance" },
   { id: "issues", label: "Issues" },
 ];

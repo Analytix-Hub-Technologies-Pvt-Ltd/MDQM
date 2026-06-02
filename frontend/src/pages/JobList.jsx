@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import {
   getAllJobs,
   getTablesByJob,
   getTableDetails,
   runJobEngine,
   deleteJob,
+  deleteIncompleteJobs,
   deleteTable,
   renameJob,
   renameTable,
@@ -24,6 +26,7 @@ import {
   connectToDb,
   listSchemasTables,
   listSavedConnections,
+  getSavedConnectionCredentials,
   saveDbConnection,
   testDbConnection,
   exportResultsToDb,
@@ -147,6 +150,7 @@ export default function JobList() {
 
   // Modals & Menus
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showIncompleteJobs, setShowIncompleteJobs] = useState(false);
   const [actionMenu, setActionMenu] = useState({ type: null, id: null }); // type: 'job'|'table'
   const [renameModal, setRenameModal] = useState({
     isOpen: false,
@@ -183,10 +187,16 @@ export default function JobList() {
   const [tableOptions, setTableOptions] = useState([]);
   const [selectedTables, setSelectedTables] = useState([]);
   const [savedConnections, setSavedConnections] = useState([]);
-  const [selectedConnectionId, setSelectedConnectionId] = useState("");
+  /** Step 1 Table Input — separate from output so Run Job / Step 4 keep their connection. */
+  const [inputConnectionId, setInputConnectionId] = useState("");
+  /** Step 4 Table Output + Run Job auto-export */
+  const [outputConnectionId, setOutputConnectionId] = useState("");
   const [connectionName, setConnectionName] = useState("");
   const [dbDropdownOpen, setDbDropdownOpen] = useState(false);
   const dbDropdownRef = useRef(null);
+  const schemaSectionRef = useRef(null);
+  const [schemasLoadBusy, setSchemasLoadBusy] = useState(false);
+  const [schemasLoadHint, setSchemasLoadHint] = useState("");
 
   // Add this near your other useState hooks
   const [expandedTables, setExpandedTables] = useState({});
@@ -214,6 +224,8 @@ export default function JobList() {
   const [ruleDrafts, setRuleDrafts] = useState({});
   const [outputSummary, setOutputSummary] = useState(null);
   const [outputTargetMode, setOutputTargetMode] = useState("file");
+  /** Only true after Step 4 Done with a fully valid Table Output config. */
+  const [exportOnRunEnabled, setExportOnRunEnabled] = useState(false);
   const [outputDbMode, setOutputDbMode] = useState("saved");
   const [outputSaveConnection, setOutputSaveConnection] = useState(false);
   const [outputConnectionName, setOutputConnectionName] = useState("");
@@ -331,8 +343,27 @@ export default function JobList() {
       const saved = JSON.parse(raw);
       if (!saved || typeof saved !== "object") return;
 
-      if (saved.outputTargetMode === "file" || saved.outputTargetMode === "table") {
-        setOutputTargetMode(saved.outputTargetMode);
+      const savedTarget = saved.outputTargetMode;
+      const savedTargetTable = String(saved.outputDbState?.targetTable || "").trim();
+      const savedOutConnForMode =
+        typeof saved.outputConnectionId === "string"
+          ? saved.outputConnectionId
+          : typeof saved.selectedConnectionId === "string"
+            ? saved.selectedConnectionId
+            : "";
+      const savedDbname = String(saved.dbCreds?.dbname || "").trim();
+      const tableExportReady =
+        savedTarget === "table" &&
+        savedTargetTable &&
+        savedDbname &&
+        savedDbname.toLowerCase() !== INTERNAL_MDQM_DBNAME &&
+        (saved.outputDbMode === "manual"
+          ? Boolean(saved.dbCreds?.host && saved.dbCreds?.user)
+          : Boolean(savedOutConnForMode));
+      if (savedTarget === "file" || tableExportReady) {
+        setOutputTargetMode(savedTarget === "table" ? "table" : "file");
+      } else if (savedTarget === "table") {
+        setOutputTargetMode("file");
       }
       if (saved.outputDbMode === "saved" || saved.outputDbMode === "manual") {
         setOutputDbMode(saved.outputDbMode);
@@ -343,8 +374,14 @@ export default function JobList() {
       if (typeof saved.outputConnectionName === "string") {
         setOutputConnectionName(saved.outputConnectionName);
       }
-      if (typeof saved.selectedConnectionId === "string") {
-        setSelectedConnectionId(saved.selectedConnectionId);
+      const savedOutConn =
+        typeof saved.outputConnectionId === "string"
+          ? saved.outputConnectionId
+          : typeof saved.selectedConnectionId === "string"
+            ? saved.selectedConnectionId
+            : "";
+      if (savedOutConn) {
+        setOutputConnectionId(savedOutConn);
       }
       if (saved.dbCreds && typeof saved.dbCreds === "object") {
         setDbCreds((prev) => ({ ...prev, ...saved.dbCreds }));
@@ -360,18 +397,52 @@ export default function JobList() {
               : DEFAULT_IF_EXISTS_MODE,
         }));
       }
+      setExportOnRunEnabled(false);
     } catch {
       // Ignore malformed saved config.
     }
   }, []);
 
   useEffect(() => {
+    if (outputTargetMode === "table" && !isTableExportFullyConfigured()) {
+      setExportOnRunEnabled(false);
+    }
+  }, [
+    outputTargetMode,
+    outputConnectionId,
+    outputDbMode,
+    dbCreds.host,
+    dbCreds.user,
+    dbCreds.dbname,
+    outputDbState.targetTable,
+    savedConnections.length,
+  ]);
+
+  useEffect(() => {
+    const targetTable = String(outputDbState.targetTable || "").trim();
+    const dbnameOk =
+      String(dbCreds.dbname || "").trim().toLowerCase() !== INTERNAL_MDQM_DBNAME;
+    const connOk =
+      outputDbMode === "saved"
+        ? Boolean(String(outputConnectionId || "").trim())
+        : Boolean(dbCreds.host && dbCreds.user);
+    const tableExportReady =
+      outputTargetMode === "table" &&
+      targetTable &&
+      dbnameOk &&
+      connOk &&
+      Boolean(String(dbCreds.dbname || "").trim());
+    const persistTargetMode = tableExportReady
+      ? "table"
+      : outputTargetMode === "table"
+        ? "file"
+        : outputTargetMode;
     const payload = {
-      outputTargetMode,
+      outputTargetMode: persistTargetMode,
       outputDbMode,
       outputSaveConnection,
       outputConnectionName,
-      selectedConnectionId,
+      outputConnectionId,
       dbCreds,
       outputDbState: {
         targetSchema: outputDbState.targetSchema,
@@ -385,18 +456,18 @@ export default function JobList() {
     outputDbMode,
     outputSaveConnection,
     outputConnectionName,
-    selectedConnectionId,
+    outputConnectionId,
     dbCreds,
     outputDbState.targetSchema,
     outputDbState.targetTable,
     outputDbState.ifExists,
   ]);
 
-  const resetCreateFlow = () => {
-    setShowAddModal(false);
+  const resetCreateFlowState = () => {
     setNewJobName("");
     setUploadFile(null);
     setShowFilePreview(false);
+    setCreateDataMode("file");
     setPreviewColumns([]);
     setPreviewColumnTypes({});
     setPreviewRows([]);
@@ -410,12 +481,22 @@ export default function JobList() {
     setRuleColumns([]);
     setRuleDrafts({});
     setOutputSummary(null);
-    // Keep output DB config so Run Job can auto-export
+    setExportOnRunEnabled(false);
+    // Keep output DB config so Run Job can auto-export when explicitly configured in Step 4
     // even after closing/resetting this modal.
     setOutputDbState((prev) => ({ ...prev, loading: false, message: "" }));
     // Keep selected file action + email target across modal closes,
     // so Run Job uses the user's latest preference.
     setConnectionName("");
+    setInputConnectionId("");
+    setDbCreds({ host: "", port: "", user: "", pass: "", dbname: "" });
+    setSchemaOptions([]);
+    setTablesBySchema({});
+    setTableOptions([]);
+    setSelectedSchema("");
+    setSelectedTables([]);
+    setSchemasLoadHint("");
+    setSchemasLoadBusy(false);
     setUploadFilePath("");
     setUploadSourcePath("");
     setLookupModal({ open: false, columnName: null, view: "choice" });
@@ -448,6 +529,99 @@ export default function JobList() {
     });
   };
 
+  const resetCreateFlow = () => {
+    resetCreateFlowState();
+    setShowAddModal(false);
+  };
+
+  const openCreateJobModal = () => {
+    resetCreateFlowState();
+    setShowAddModal(true);
+  };
+
+  const withDbPass = (payload) => {
+    if (dbCreds.pass) payload.pass = dbCreds.pass;
+    return payload;
+  };
+
+  const hasDbConnection = (connectionId) =>
+    Boolean(connectionId) || Boolean(dbCreds.host && dbCreds.user);
+
+  const validateFileInputStep1 = () => {
+    if (!newJobName.trim()) {
+      alert("Enter a job name.");
+      return false;
+    }
+    if (!uploadFile && !uploadFilePath.trim()) {
+      alert("Choose a CSV file or paste a local file path.");
+      return false;
+    }
+    return true;
+  };
+
+  const validateTableInputStep1 = () => {
+    if (!newJobName.trim()) {
+      alert("Enter a job name.");
+      return false;
+    }
+    if (!hasDbConnection(inputConnectionId)) {
+      alert("Select a saved connection or enter host and username.");
+      return false;
+    }
+    if (!(dbCreds.dbname || "mdms").trim()) {
+      alert("Enter database name (e.g. mdms).");
+      return false;
+    }
+    if (!selectedSchema || selectedTables.length === 0) {
+      alert("Click Load tables, then choose schema and at least one table.");
+      return false;
+    }
+    return true;
+  };
+
+  const prefillOutputConnectionFromInput = () => {
+    if (outputConnectionId || !inputConnectionId) return;
+    handleOutputConnectionChange(String(inputConnectionId));
+  };
+
+  const resolveActiveOutputConnectionId = () => {
+    const id = String(outputConnectionId || "").trim();
+    if (!id) return "";
+    return savedConnections.some((c) => String(c.connection_id) === id) ? id : "";
+  };
+
+  const isTableExportFullyConfigured = () => {
+    if (outputTargetMode !== "table") return false;
+    const targetTable = String(outputDbState.targetTable || "").trim();
+    if (!targetTable) return false;
+    const dbname = String(dbCreds.dbname || "").trim().toLowerCase();
+    if (!dbname || dbname === INTERNAL_MDQM_DBNAME) return false;
+    if (outputDbMode === "saved") {
+      return Boolean(resolveActiveOutputConnectionId());
+    }
+    return Boolean(dbCreds.host && dbCreds.user);
+  };
+
+  const buildExportDbPayload = (tableId, jobId, targetTable) => {
+    const dbname = String(dbCreds.dbname || "").trim();
+    const base = {
+      dbname,
+      host: dbCreds.host,
+      port: dbCreds.port || "5432",
+      user: dbCreds.user,
+      pass: dbCreds.pass || "",
+      job_id: jobId,
+      table_id: tableId,
+      target_schema: outputDbState.targetSchema || undefined,
+      target_table: targetTable,
+      if_exists: outputDbState.ifExists,
+    };
+    const connId = resolveActiveOutputConnectionId();
+    if (outputDbMode === "saved" && connId) {
+      return { ...base, connection_id: Number(connId) };
+    }
+    return base;
+  };
 
   const toggleTableExpansion = (tableId) => {
     setExpandedTables((prev) => ({
@@ -473,6 +647,36 @@ export default function JobList() {
       fetchSavedConnections();
     }
   }, [showAddModal]);
+
+  useEffect(() => {
+    if (!showAddModal) return undefined;
+    const prevOverflow = document.body.style.overflow;
+    const prevPaddingRight = document.body.style.paddingRight;
+    const scrollbar = window.innerWidth - document.documentElement.clientWidth;
+    document.body.style.overflow = "hidden";
+    if (scrollbar > 0) {
+      document.body.style.paddingRight = `${scrollbar}px`;
+    }
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      document.body.style.paddingRight = prevPaddingRight;
+    };
+  }, [showAddModal]);
+
+  useEffect(() => {
+    if (!showSchedule) return undefined;
+    const prevOverflow = document.body.style.overflow;
+    const prevPaddingRight = document.body.style.paddingRight;
+    const scrollbar = window.innerWidth - document.documentElement.clientWidth;
+    document.body.style.overflow = "hidden";
+    if (scrollbar > 0) {
+      document.body.style.paddingRight = `${scrollbar}px`;
+    }
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      document.body.style.paddingRight = prevPaddingRight;
+    };
+  }, [showSchedule]);
 
   const fetchJobs = async () => {
     try {
@@ -552,13 +756,13 @@ export default function JobList() {
         (sum, t) => sum + Number(t?.error_rows || 0),
         0
       );
-      if (outputTargetMode === "table") {
+      if (exportOnRunEnabled && isTableExportFullyConfigured()) {
         try {
           const latestTable = [...(refreshedTables || [])].sort((a, b) => b.table_id - a.table_id)[0];
           if (!latestTable?.table_id) {
             throw new Error("Output table not found.");
           }
-          await exportOutputToDbByTableId(latestTable.table_id);
+          await exportOutputToDbByTableId(latestTable.table_id, jobId);
         } catch (exportErr) {
           const msg =
             exportErr?.response?.data?.detail ||
@@ -568,13 +772,13 @@ export default function JobList() {
           tableExportErrorMsg = msg;
           setOutputDbState((s) => ({ ...s, message: msg }));
         }
-      } else if (outputAction === "download_csv") {
+      } else if (outputTargetMode === "file" && outputAction === "download_csv") {
         await handleAutoDownloadForJob(jobId, refreshedTables, "csv");
-      } else if (outputAction === "download_excel") {
+      } else if (outputTargetMode === "file" && outputAction === "download_excel") {
         await handleAutoDownloadForJob(jobId, refreshedTables, "excel");
-      } else if (outputAction === "sharepoint") {
+      } else if (outputTargetMode === "file" && outputAction === "sharepoint") {
         await handleAutoSharePointForJob(refreshedTables);
-      } else if (outputAction === "email") {
+      } else if (outputTargetMode === "file" && outputAction === "email") {
         await handleAutoEmailForJob(refreshedTables);
       }
       if (tableExportFailed) {
@@ -605,6 +809,30 @@ export default function JobList() {
       setTimeout(() => {
         setRunStatusByJob((prev) => ({ ...prev, [jobId]: "idle" }));
       }, 4000);
+    }
+  };
+
+  const handleDeleteAllIncomplete = async () => {
+    const incompleteCount = jobs.filter((j) => (j.total_tables || 0) === 0).length;
+    if (incompleteCount === 0) {
+      alert("No incomplete jobs to delete.");
+      return;
+    }
+    if (
+      !window.confirm(
+        `Delete all ${incompleteCount} incomplete job(s) from the database? This cannot be undone.`
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await deleteIncompleteJobs();
+      const deleted = res?.data?.count ?? res?.data?.deleted_job_ids?.length ?? incompleteCount;
+      alert(`Removed ${deleted} incomplete job(s).`);
+      setShowIncompleteJobs(false);
+      await fetchJobs();
+    } catch (err) {
+      alert(err?.response?.data?.detail || "Failed to delete incomplete jobs.");
     }
   };
 
@@ -656,7 +884,7 @@ export default function JobList() {
 
   const handleOpenEditFlow = async (job) => {
     try {
-      resetCreateFlow();
+      resetCreateFlowState();
       setShowAddModal(true);
       setNewJobName(job.job_name || "");
 
@@ -742,15 +970,13 @@ export default function JobList() {
   };
 
   const handlePreviewDb = async () => {
-    if (!dbCreds.dbname || !selectedSchema || selectedTables.length === 0) {
-      alert("Please select database, schema and at least one table.");
-      return;
-    }
+    if (!validateTableInputStep1()) return;
     try {
-      const payload = selectedConnectionId
+      const dbname = (dbCreds.dbname || "mdms").trim();
+      const payload = inputConnectionId
         ? {
-            connection_id: Number(selectedConnectionId),
-            dbname: dbCreds.dbname,
+            connection_id: Number(inputConnectionId),
+            dbname,
             schema_name: selectedSchema,
             table_name: selectedTables[0],
           }
@@ -759,11 +985,11 @@ export default function JobList() {
             port: dbCreds.port || "5432",
             user: dbCreds.user,
             pass: dbCreds.pass || "",
-            dbname: dbCreds.dbname,
+            dbname,
             schema_name: selectedSchema,
             table_name: selectedTables[0],
           };
-      const res = await previewDbTable(payload);
+      const res = await previewDbTable(withDbPass(payload));
       const cols = res?.data?.columns || [];
       const types = res?.data?.column_types || {};
       const rows = res?.data?.rows || [];
@@ -817,6 +1043,8 @@ export default function JobList() {
   const openLookupModal = (columnName) => {
     const draft = ruleDrafts[columnName] || {};
     const existing = String(draft.master_data_text || "");
+    const defaultSchema =
+      selectedSchema || Object.keys(tablesBySchema || {})[0] || "";
     setTablePasteBuffer(
       existing
         .split(",")
@@ -825,12 +1053,15 @@ export default function JobList() {
         .join("\n"),
     );
     setLookupModal({ open: true, columnName, view: "choice" });
-    setLookupDbConnMode(selectedConnectionId ? "saved" : "manual");
+    setLookupDbConnMode(inputConnectionId ? "saved" : "manual");
     setLookupDbLoadMessage("");
     setLookupDbColumns([]);
+    if (!dbCreds.dbname?.trim()) {
+      setDbCreds((prev) => ({ ...prev, dbname: "mdms" }));
+    }
     setLookupDbState((prev) => ({
       ...prev,
-      schema_name: selectedSchema || Object.keys(tablesBySchema || {})[0] || "",
+      schema_name: defaultSchema,
       table_name: "",
       column_name: "",
       loading: false,
@@ -876,8 +1107,8 @@ export default function JobList() {
 
   const canUseDbLookup =
     lookupDbConnMode === "saved"
-      ? Boolean(selectedConnectionId && dbCreds.dbname)
-      : Boolean(dbCreds.host && dbCreds.user && dbCreds.dbname);
+      ? Boolean(inputConnectionId && (dbCreds.dbname || "mdms"))
+      : Boolean(dbCreds.host && dbCreds.user && (dbCreds.dbname || "mdms"));
 
   const dbLookupTables = tablesBySchema[lookupDbState.schema_name] || [];
 
@@ -894,10 +1125,11 @@ export default function JobList() {
     }
     setLookupDbState((s) => ({ ...s, loading: true }));
     try {
+      const dbname = (dbCreds.dbname || "mdms").trim();
       const payload = lookupDbConnMode === "saved"
         ? {
-            connection_id: Number(selectedConnectionId),
-            dbname: dbCreds.dbname,
+            connection_id: Number(inputConnectionId),
+            dbname,
             schema_name: lookupDbState.schema_name,
             table_name: lookupDbState.table_name,
             column_name: lookupDbState.column_name,
@@ -908,13 +1140,13 @@ export default function JobList() {
             port: dbCreds.port || "5432",
             user: dbCreds.user,
             pass: dbCreds.pass || "",
-            dbname: dbCreds.dbname,
+            dbname,
             schema_name: lookupDbState.schema_name,
             table_name: lookupDbState.table_name,
             column_name: lookupDbState.column_name,
             limit: lookupDbState.limit === "" ? undefined : Number(lookupDbState.limit),
           };
-      const res = await getDbLookupValues(payload);
+      const res = await getDbLookupValues(withDbPass(payload));
       const values = (res?.data?.values || []).map((v) => String(v).trim()).filter(Boolean);
       if (values.length === 0) {
         alert("No values found in selected DB column.");
@@ -933,10 +1165,11 @@ export default function JobList() {
     setLookupDbColumns([]);
     if (!schemaName || !tableName) return;
     try {
+      const dbname = (dbCreds.dbname || "mdms").trim();
       const payload = lookupDbConnMode === "saved"
         ? {
-            connection_id: Number(selectedConnectionId),
-            dbname: dbCreds.dbname,
+            connection_id: Number(inputConnectionId),
+            dbname,
             schema_name: schemaName,
             table_name: tableName,
           }
@@ -945,11 +1178,11 @@ export default function JobList() {
             port: dbCreds.port || "5432",
             user: dbCreds.user,
             pass: dbCreds.pass || "",
-            dbname: dbCreds.dbname,
+            dbname,
             schema_name: schemaName,
             table_name: tableName,
           };
-      const res = await getDbTableColumns(payload);
+      const res = await getDbTableColumns(withDbPass(payload));
       const cols = res?.data?.columns || [];
       setLookupDbColumns(cols);
       if (cols.length > 0) {
@@ -990,6 +1223,7 @@ export default function JobList() {
       }
     }
 
+    let createdJobIdForRollback = null;
     try {
       if (editFlow.isEdit && editFlow.jobId && editFlow.tableId) {
         if (createDataMode === "file") {
@@ -1061,10 +1295,13 @@ export default function JobList() {
         });
         setShowRuleStep(false);
         setShowOutputStep(true);
+        if (createDataMode === "db") {
+          prefillOutputConnectionFromInput();
+        }
         return;
       }
 
-      let jobId;
+      let jobId = null;
       let latestTable;
       if (createDataMode === "file") {
         if (!uploadFile && !uploadFilePath.trim()) {
@@ -1076,6 +1313,7 @@ export default function JobList() {
         const createRes = await createNewJob(newJobName);
         jobId = createRes?.data?.job_id;
         if (!jobId) throw new Error("Unable to create job");
+        createdJobIdForRollback = jobId;
         if (uploadFilePath.trim()) {
           await uploadCsvPathToJob(jobId, uploadFilePath.trim());
         } else {
@@ -1092,21 +1330,22 @@ export default function JobList() {
       } else {
         const payload = {
           job_name: newJobName,
-          dbname: dbCreds.dbname,
+          dbname: (dbCreds.dbname || "mdms").trim(),
           schema_name: selectedSchema,
           table_names: selectedTables,
         };
-        if (selectedConnectionId) {
-          payload.connection_id = Number(selectedConnectionId);
+        if (inputConnectionId) {
+          payload.connection_id = Number(inputConnectionId);
         } else {
           payload.host = dbCreds.host;
           payload.port = dbCreds.port || "5432";
           payload.user = dbCreds.user;
           payload.pass = dbCreds.pass || "";
         }
-        const dbRes = await connectToDb(payload);
+        const dbRes = await connectToDb(withDbPass(payload));
         jobId = dbRes?.data?.created_jobs?.[0]?.job_id;
         if (!jobId) throw new Error("Unable to create DB job");
+        createdJobIdForRollback = jobId;
         const tablesRes = await getTablesByJob(jobId);
         const createdTables = tablesRes?.data || [];
         latestTable = [...createdTables].sort((a, b) => b.table_id - a.table_id)[0];
@@ -1148,16 +1387,29 @@ export default function JobList() {
       });
       setShowRuleStep(false);
       setShowOutputStep(true);
+      if (createDataMode === "db") {
+        prefillOutputConnectionFromInput();
+      }
     } catch (err) {
-      alert(err?.response?.data?.detail || "Failed to complete all steps and create job.");
+      if (createdJobIdForRollback) {
+        try {
+          await deleteJob(createdJobIdForRollback);
+          await fetchJobs();
+        } catch {
+          // Best-effort cleanup if upload/rules failed after job row was created.
+        }
+      }
+      const detail = err?.response?.data?.detail;
+      alert(
+        detail ||
+          err?.message ||
+          "Failed to complete all steps and create job. Any partial job was removed."
+      );
     }
   };
 
   const handlePreviewCsv = async () => {
-    if (!uploadFile && !uploadFilePath.trim()) {
-      alert("Choose a CSV file or provide a file path first.");
-      return;
-    }
+    if (!validateFileInputStep1()) return;
     try {
       const res = uploadFilePath.trim()
         ? await previewCsvFileFromPath(uploadFilePath.trim())
@@ -1205,17 +1457,15 @@ export default function JobList() {
         schema_name: selectedSchema,
         table_names: selectedTables,
       };
-      if (selectedConnectionId) {
-        payload.connection_id = Number(selectedConnectionId);
+      if (inputConnectionId) {
+        payload.connection_id = Number(inputConnectionId);
       } else {
         payload.host = dbCreds.host;
         payload.port = dbCreds.port || "5432";
         payload.user = dbCreds.user;
         payload.pass = dbCreds.pass || "";
       }
-      await connectToDb({
-        ...payload,
-      });
+      await connectToDb(withDbPass(payload));
       alert("Job created from database successfully.");
       setShowAddModal(false);
       setNewJobName("");
@@ -1225,7 +1475,7 @@ export default function JobList() {
       setTablesBySchema({});
       setTableOptions([]);
       setSelectedTables([]);
-      setSelectedConnectionId("");
+      setInputConnectionId("");
       fetchJobs();
     } catch (err) {
       alert(
@@ -1235,48 +1485,110 @@ export default function JobList() {
     }
   };
 
-  const handleFetchTables = async () => {
-    if (!selectedConnectionId && (!dbCreds.host || !dbCreds.user)) {
-      alert("Please enter host and username first.");
+  const resolveActiveInputConnectionId = () => {
+    const id = String(inputConnectionId || "").trim();
+    if (!id) return "";
+    const exists = savedConnections.some((c) => String(c.connection_id) === id);
+    return exists ? id : "";
+  };
+
+  const buildListSchemasPayload = (connectionId = resolveActiveInputConnectionId()) => {
+    const dbname = (dbCreds.dbname || "mdms").trim();
+    const payload = connectionId
+      ? {
+          connection_id: Number(connectionId),
+          dbname,
+          host: dbCreds.host,
+          port: dbCreds.port || "5432",
+          user: dbCreds.user,
+          pass: dbCreds.pass || "",
+        }
+      : {
+          host: dbCreds.host,
+          port: dbCreds.port || "5432",
+          user: dbCreds.user,
+          pass: dbCreds.pass || "",
+          dbname,
+        };
+    if (dbCreds.pass) payload.pass = dbCreds.pass;
+    return payload;
+  };
+
+  const applySchemasResponse = (data) => {
+    const schemas = data?.schemas || [];
+    const tableMap = data?.tables_by_schema || {};
+    setSchemaOptions(schemas);
+    setTablesBySchema(tableMap);
+    const firstSchema = schemas[0] || "";
+    setSelectedSchema(firstSchema);
+    const firstTables = tableMap[firstSchema] || [];
+    setTableOptions(firstTables);
+    setSelectedTables(firstTables.length > 0 ? [firstTables[0]] : []);
+    let tableCt = 0;
+    Object.values(tableMap || {}).forEach((arr) => {
+      tableCt += (arr || []).length;
+    });
+    return { schemaCount: schemas.length, tableCount: tableCt };
+  };
+
+  const handleFetchTables = async (connectionId = resolveActiveInputConnectionId()) => {
+    const dbname = (dbCreds.dbname || "mdms").trim();
+    if (!dbname) {
+      alert("Please enter the Database field (e.g. mdms).");
       return false;
     }
-    if (!dbCreds.dbname) {
-      alert("Please enter database name first.");
+    if (!connectionId && (!dbCreds.host?.trim() || !dbCreds.user?.trim())) {
+      alert(
+        "Either pick a saved connection from the dropdown, or fill Host and Username manually, then click Load tables."
+      );
       return false;
     }
+    if (!connectionId && !dbCreds.pass?.trim()) {
+      alert("Enter the database Password, then click Load tables.");
+      return false;
+    }
+    if (!dbCreds.dbname?.trim()) {
+      setDbCreds((prev) => ({ ...prev, dbname }));
+    }
+    setSchemasLoadBusy(true);
+    setSchemasLoadHint("");
     try {
-      const payload = selectedConnectionId
-        ? {
-            connection_id: Number(selectedConnectionId),
-            dbname: dbCreds.dbname,
-          }
-        : {
-            host: dbCreds.host,
-            port: dbCreds.port || "5432",
-            user: dbCreds.user,
-            pass: dbCreds.pass || "",
-            dbname: dbCreds.dbname,
-          };
-      const res = await listSchemasTables(payload);
-      const schemas = res?.data?.schemas || [];
-      const tableMap = res?.data?.tables_by_schema || {};
-      setSchemaOptions(schemas);
-      setTablesBySchema(tableMap);
-      const firstSchema = schemas[0] || "";
-      setSelectedSchema(firstSchema);
-      const firstTables = tableMap[firstSchema] || [];
-      setTableOptions(firstTables);
-      setSelectedTables(firstTables.length > 0 ? [firstTables[0]] : []);
-      return true;
+      const res = await listSchemasTables(buildListSchemasPayload(connectionId));
+      const { schemaCount, tableCount } = applySchemasResponse(res?.data);
+      if (schemaCount === 0) {
+        setSchemasLoadHint(
+          "Connected, but no schemas were returned. Check the database name (try mdms)."
+        );
+      } else {
+        setSchemasLoadHint(
+          `Loaded ${schemaCount} schema(s) and ${tableCount} table(s). Pick schema and table(s) below.`
+        );
+        window.setTimeout(() => {
+          schemaSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }, 100);
+      }
+      return schemaCount > 0;
     } catch (err) {
-      alert(err?.response?.data?.detail || "Failed to fetch schema/table list.");
+      const detail = err?.response?.data?.detail;
+      const msg =
+        typeof detail === "string"
+          ? detail
+          : err?.response?.status === 404
+            ? "Saved connection not found. Pick another profile or save a new one."
+            : "Failed to fetch schema/table list.";
+      setSchemasLoadHint("");
+      alert(msg);
       return false;
+    } finally {
+      setSchemasLoadBusy(false);
     }
   };
 
   const handleOutputDbLoadTargets = async () => {
     setOutputDbState((s) => ({ ...s, message: "" }));
-    const ok = await handleFetchTables();
+    const connForOutput =
+      outputDbMode === "saved" ? outputConnectionId : inputConnectionId;
+    const ok = await handleFetchTables(connForOutput);
     if (ok) {
       const firstSchema = (schemaOptions && schemaOptions[0]) || Object.keys(tablesBySchema || {})[0] || "";
       setOutputDbState((s) => ({
@@ -1286,29 +1598,21 @@ export default function JobList() {
     }
   };
 
-  const exportOutputToDbByTableId = async (tableId) => {
+  const exportOutputToDbByTableId = async (tableId, jobIdOverride = null) => {
     if (!tableId) {
       throw new Error("Output table not found.");
     }
-    const resolvedTargetTable =
-      String(outputDbState.targetTable || "").trim() ||
-      String(outputSummary?.tableName || "").trim();
-    if (!resolvedTargetTable) {
-      throw new Error("Please choose target table.");
-    }
-    const usingSaved = outputDbMode === "saved";
-    if (usingSaved && !selectedConnectionId) {
-      throw new Error("Please choose a saved connection.");
-    }
-    if (!usingSaved && (!dbCreds.host || !dbCreds.user || !dbCreds.dbname)) {
-      throw new Error("Please fill host, user and database.");
-    }
-    const normalizedDbName = String(dbCreds.dbname || "").trim().toLowerCase();
-    if (normalizedDbName === INTERNAL_MDQM_DBNAME) {
+    if (!isTableExportFullyConfigured()) {
       throw new Error(
-        "For this workflow, output export DB cannot be 'mdms'. Please use a separate DB name like 'postgres'."
+        "Table export is not configured. In Step 4 choose Table Output, saved connection, target database (not mdms), and target table, then click Done."
       );
     }
+    const resolvedTargetTable = String(outputDbState.targetTable || "").trim();
+    const exportJobId = jobIdOverride ?? outputSummary?.jobId;
+    if (!exportJobId) {
+      throw new Error("Job id not found for export.");
+    }
+    const usingSaved = outputDbMode === "saved";
     if (!usingSaved && outputSaveConnection && !outputConnectionName.trim()) {
       throw new Error("Please enter a connection name.");
     }
@@ -1326,33 +1630,14 @@ export default function JobList() {
         await fetchSavedConnections();
         const newId = saveRes?.data?.connection_id;
         if (newId) {
-          setSelectedConnectionId(String(newId));
+          setOutputConnectionId(String(newId));
           setOutputDbMode("saved");
         }
       }
 
-      const payload = usingSaved
-        ? {
-            connection_id: Number(selectedConnectionId),
-            dbname: dbCreds.dbname,
-            job_id: outputSummary?.jobId,
-            table_id: tableId,
-            target_schema: outputDbState.targetSchema || undefined,
-            target_table: resolvedTargetTable,
-            if_exists: outputDbState.ifExists,
-          }
-        : {
-            host: dbCreds.host,
-            port: dbCreds.port || "5432",
-            user: dbCreds.user,
-            pass: dbCreds.pass || "",
-            dbname: dbCreds.dbname,
-            job_id: outputSummary?.jobId,
-            table_id: tableId,
-            target_schema: outputDbState.targetSchema || undefined,
-            target_table: resolvedTargetTable,
-            if_exists: outputDbState.ifExists,
-          };
+      const payload = withDbPass(
+        buildExportDbPayload(tableId, exportJobId, resolvedTargetTable)
+      );
       const res = await exportResultsToDb(payload);
       setOutputDbState((s) => ({
         ...s,
@@ -1546,8 +1831,7 @@ export default function JobList() {
     }
   };
 
-  const handleSavedConnectionChange = (value) => {
-    setSelectedConnectionId(value);
+  const applySavedConnectionToCreds = (value) => {
     const selected = savedConnections.find(
       (c) => String(c.connection_id) === String(value)
     );
@@ -1559,22 +1843,66 @@ export default function JobList() {
       port: selected.port || "5432",
       user: selected.user || "",
       pass: "",
+      dbname: prev.dbname || "mdms",
     }));
+    getSavedConnectionCredentials(Number(value))
+      .then((res) => {
+        const creds = res?.data;
+        if (!creds) return;
+        setDbCreds((prev) => ({
+          ...prev,
+          host: creds.host || prev.host,
+          port: creds.port || prev.port,
+          user: creds.user || prev.user,
+          pass: creds.password || "",
+        }));
+      })
+      .catch(() => {});
+  };
+
+  const handleInputConnectionChange = (value) => {
+    setInputConnectionId(value);
+    applySavedConnectionToCreds(value);
+  };
+
+  const handleOutputConnectionChange = (value) => {
+    setOutputConnectionId(value);
+    applySavedConnectionToCreds(value);
   };
 
   const handleTestConnection = async () => {
-    if (!dbCreds.host || !dbCreds.port || !dbCreds.user) {
-      alert("Please fill host, port and username.");
+    const connId = resolveActiveInputConnectionId();
+    const dbname = (dbCreds.dbname || "mdms").trim();
+    if (!connId && (!dbCreds.host?.trim() || !dbCreds.user?.trim())) {
+      alert("Pick a saved connection or fill Host and Username.");
+      return;
+    }
+    if (!connId && !dbCreds.pass?.trim()) {
+      alert("Enter the database Password.");
       return;
     }
     try {
-      await testDbConnection({
-        host: dbCreds.host,
-        port: dbCreds.port,
-        user: dbCreds.user,
-        pass: dbCreds.pass,
-      });
-      alert("Connection successful.");
+      const payload = connId
+        ? {
+            connection_id: Number(connId),
+            dbname,
+            host: dbCreds.host,
+            port: dbCreds.port || "5432",
+            user: dbCreds.user,
+            pass: dbCreds.pass || "",
+          }
+        : {
+            host: dbCreds.host,
+            port: dbCreds.port || "5432",
+            user: dbCreds.user,
+            pass: dbCreds.pass || "",
+            dbname,
+          };
+      await testDbConnection(withDbPass(payload));
+      if (!dbCreds.dbname?.trim()) {
+        setDbCreds((prev) => ({ ...prev, dbname }));
+      }
+      alert("Connection successful. Click Load tables to list schemas.");
     } catch (err) {
       alert(err?.response?.data?.detail || "Connection test failed.");
     }
@@ -1585,19 +1913,36 @@ export default function JobList() {
       alert("Fill connection name, host, port and username.");
       return;
     }
+    if (!dbCreds.pass?.trim()) {
+      alert("Enter the database password before saving (required for encrypted storage).");
+      return;
+    }
     try {
-      await saveDbConnection({
+      const res = await saveDbConnection({
         connection_name: connectionName,
         host: dbCreds.host,
         port: dbCreds.port,
         user: dbCreds.user,
         pass: dbCreds.pass,
+        db_type: "postgres",
       });
+      const newId = res?.data?.connection_id;
       alert("Connection saved.");
       setConnectionName("");
       await fetchSavedConnections();
+      if (newId != null) {
+        setInputConnectionId(String(newId));
+        if (!dbCreds.dbname?.trim()) {
+          setDbCreds((prev) => ({ ...prev, dbname: "mdms" }));
+        }
+      }
     } catch (err) {
-      alert(err?.response?.data?.detail || "Failed to save connection.");
+      const detail = err?.response?.data?.detail;
+      const msg =
+        typeof detail === "string"
+          ? detail
+          : "Failed to save connection. Use a unique connection name or update an existing profile on DB Connections.";
+      alert(msg);
     }
   };
 
@@ -1640,11 +1985,24 @@ export default function JobList() {
 
   return (
     <div className="joblist-theme-root bg-background text-foreground relative">
-      {showSchedule && (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/50 px-4">
-          <div className="w-full max-w-xl rounded-xl bg-card shadow-xl border border-border">
-            <div className="flex items-center justify-between border-b border-border px-5 py-4">
-              <h4 className="text-sm font-bold uppercase tracking-widest text-foreground">
+      {showSchedule &&
+        createPortal(
+          <div className="fixed inset-0 z-[105] overflow-y-auto overscroll-contain">
+            <div
+              className="fixed inset-0 bg-black/50 backdrop-blur-[2px]"
+              aria-hidden
+              onClick={closeScheduleModal}
+            />
+            <div className="relative flex min-h-full justify-center p-4 sm:p-6 pointer-events-none">
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="schedule-job-modal-title"
+                className="pointer-events-auto my-auto flex w-full max-w-xl max-h-[min(90vh,calc(100dvh-2rem))] min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card text-card-foreground shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+            <div className="flex shrink-0 items-center justify-between border-b border-border px-5 py-4">
+              <h4 id="schedule-job-modal-title" className="text-sm font-bold uppercase tracking-widest text-foreground">
                 Schedule Job
                 {scheduleContextJobId != null ? ` #${scheduleContextJobId}` : ""}
               </h4>
@@ -1657,7 +2015,7 @@ export default function JobList() {
                 <X size={18} />
               </button>
             </div>
-            <div className="p-5 space-y-4 text-xs">
+            <div className="min-h-0 flex-1 overflow-y-auto p-5 space-y-4 text-xs">
               <div>
                 <label className="text-[11px] uppercase tracking-widest text-muted-foreground mb-2 block">Schedule Type</label>
                 <select
@@ -1730,8 +2088,8 @@ export default function JobList() {
                   placeholder="* * * * *"
                 />
               )}
-
-              <div className="flex justify-end gap-2 pt-2">
+            </div>
+            <div className="flex shrink-0 justify-end gap-2 border-t border-border px-5 py-4">
                 <button
                   type="button"
                   onClick={closeScheduleModal}
@@ -1746,11 +2104,12 @@ export default function JobList() {
                 >
                   Save Schedule
                 </button>
+            </div>
               </div>
             </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
 
       <div className="fixed top-6 right-6 z-[80] space-y-2 w-[300px]">
         {schedulerToasts.map((toast) => (
@@ -1811,7 +2170,7 @@ export default function JobList() {
           Job List
         </h1>
         <button
-          onClick={() => setShowAddModal(true)}
+          onClick={openCreateJobModal}
           className="bg-[#23243B] text-white px-6 py-3 text-md font-semibold uppercase tracking-widest cursor-pointer hover:bg-black transition-colors flex items-center gap-2"
         >
           <Plus size={20} />
@@ -1820,7 +2179,57 @@ export default function JobList() {
       </div>
 
       <div className="p-8 flex flex-col gap-4">
-        {jobs.map((job) => (
+        {(() => {
+          const incompleteCount = jobs.filter((j) => (j.total_tables || 0) === 0).length;
+          if (incompleteCount === 0 || showIncompleteJobs) return null;
+          return (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <span>
+                {incompleteCount} incomplete job{incompleteCount === 1 ? "" : "s"} hidden (no data
+                attached — usually from a failed upload). You can delete them or try NEW JOB again.
+              </span>
+              <div className="flex flex-wrap gap-3 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setShowIncompleteJobs(true)}
+                  className="text-xs font-bold uppercase tracking-wider underline hover:no-underline"
+                >
+                  Show incomplete
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDeleteAllIncomplete}
+                  className="text-xs font-bold uppercase tracking-wider px-3 py-1.5 bg-rose-700 text-white rounded hover:bg-rose-800"
+                >
+                  Delete all incomplete
+                </button>
+              </div>
+            </div>
+          );
+        })()}
+        {showIncompleteJobs &&
+          jobs.some((j) => (j.total_tables || 0) === 0) && (
+            <div className="flex flex-wrap gap-3 self-start">
+              <button
+                type="button"
+                onClick={() => setShowIncompleteJobs(false)}
+                className="text-xs font-bold uppercase tracking-wider text-gray-500 underline hover:no-underline"
+              >
+                Hide incomplete jobs
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteAllIncomplete}
+                className="text-xs font-bold uppercase tracking-wider px-3 py-1.5 bg-rose-700 text-white rounded hover:bg-rose-800"
+              >
+                Delete all incomplete
+              </button>
+            </div>
+          )}
+        {(showIncompleteJobs
+          ? jobs
+          : jobs.filter((j) => (j.total_tables || 0) > 0)
+        ).map((job) => (
           <div
             key={job.job_id}
             className="border border-border bg-card shadow-sm relative"
@@ -1864,6 +2273,12 @@ export default function JobList() {
                     <span className={`inline-block mt-1 text-[10px] uppercase tracking-wider px-2 py-0.5 ${ (job.total_tables || 0) > 0 ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}>
                       {(job.total_tables || 0) > 0 ? "Ready" : "No Data"}
                     </span>
+                    {(job.total_tables || 0) === 0 && (
+                      <p className="text-[11px] text-amber-700 mt-1 max-w-md">
+                        Setup did not finish (upload or import failed). Use the menu to delete, or
+                        create the job again with NEW JOB.
+                      </p>
+                    )}
                     {runStatusByJob[job.job_id] === "running" && (
                       <span className="inline-block mt-1 ml-2 text-[10px] uppercase tracking-wider px-2 py-0.5 bg-blue-100 text-blue-700">
                         Running
@@ -2308,12 +2723,25 @@ export default function JobList() {
         </div>
       )}
 
-      {/* --- ADD DATA MODAL --- */}
-      {showAddModal && (
-        <div className="fixed inset-0 bg-black/30 backdrop-blur-[2px] flex items-center justify-center z-50 p-2 sm:p-4">
-          <div className="bg-card w-full max-w-5xl border border-border rounded-xl shadow-2xl flex flex-col overflow-hidden max-h-[96vh]">
-            <div className="flex justify-between items-center p-5 border-b border-border bg-background">
-              <span className="font-bold uppercase tracking-widest text-foreground">
+      {/* --- ADD DATA MODAL (portaled — motion.main transform breaks in-flow fixed) --- */}
+      {showAddModal &&
+        createPortal(
+          <div className="fixed inset-0 z-[100] overflow-y-auto overscroll-contain">
+            <div
+              className="fixed inset-0 bg-black/30 backdrop-blur-[2px]"
+              aria-hidden
+              onClick={resetCreateFlow}
+            />
+            <div className="relative flex min-h-full justify-center p-2 sm:p-4 pointer-events-none">
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="add-job-modal-title"
+                className="pointer-events-auto my-auto flex w-full max-w-5xl max-h-[min(90vh,calc(100dvh-2rem))] min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+            <div className="flex shrink-0 justify-between items-center p-5 border-b border-border bg-background">
+              <span id="add-job-modal-title" className="font-bold uppercase tracking-widest text-foreground">
                 {editFlow.isEdit ? "Edit Job Flow" : "Add New Job"}
               </span>
               <X
@@ -2323,7 +2751,7 @@ export default function JobList() {
               />
             </div>
 
-            <div className="p-4 sm:p-6 md:p-8 bg-[#FCFCFD] overflow-y-auto">
+            <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6 md:p-8 bg-[#FCFCFD]">
               {/* TAB 1: CREATE JOB */}
                 <div className="flex flex-col gap-6">
                   {showRuleStep && (
@@ -2597,17 +3025,19 @@ export default function JobList() {
                           <div className="grid grid-cols-2 gap-2 mb-3">
                             <button
                               type="button"
-                              onClick={() => setOutputDbMode("saved")}
+                              onClick={() => {
+                                setOutputDbMode("saved");
+                                if (!outputConnectionId && inputConnectionId) {
+                                  handleOutputConnectionChange(String(inputConnectionId));
+                                }
+                              }}
                               className={`py-2 font-bold uppercase border ${outputDbMode === "saved" ? "bg-[#23243B] text-white border-[#23243B]" : "text-[#23243B] border-[#A1A3AF] bg-white"}`}
                             >
                               Saved Connection
                             </button>
                             <button
                               type="button"
-                              onClick={() => {
-                                setOutputDbMode("manual");
-                                setSelectedConnectionId("");
-                              }}
+                              onClick={() => setOutputDbMode("manual")}
                               className={`py-2 font-bold uppercase border ${outputDbMode === "manual" ? "bg-[#23243B] text-white border-[#23243B]" : "text-[#23243B] border-[#A1A3AF] bg-white"}`}
                             >
                               Manual
@@ -2618,8 +3048,8 @@ export default function JobList() {
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
                               <select
                                 className="border border-[#A1A3AF] p-2"
-                                value={selectedConnectionId}
-                                onChange={(e) => handleSavedConnectionChange(e.target.value)}
+                                value={outputConnectionId}
+                                onChange={(e) => handleOutputConnectionChange(e.target.value)}
                               >
                                 <option value="">Select saved connection...</option>
                                 {savedConnections.map((c) => (
@@ -2630,7 +3060,7 @@ export default function JobList() {
                               </select>
                               <input
                                 className="border border-[#A1A3AF] p-2"
-                                placeholder="Database name"
+                                placeholder="Database name (not mdms)"
                                 value={dbCreds.dbname}
                                 onChange={(e) => setDbCreds((p) => ({ ...p, dbname: e.target.value }))}
                               />
@@ -2702,7 +3132,10 @@ export default function JobList() {
                           </div>
 
                           <p className="mt-1 text-[11px] text-gray-500">
-                            After you click <b>Run Job</b>, results are inserted automatically using this table configuration.
+                            Export runs after <b>Run Job</b> only if you click <b>Done</b> here with a
+                            valid saved connection, output database (e.g. <code>postgres</code>, not{" "}
+                            <code>mdms</code>), and target table. Otherwise use <b>File Output</b> to
+                            download results.
                           </p>
                           {outputDbState.message ? (
                             <p className={`mt-2 text-xs ${outputDbState.message.toLowerCase().includes("failed") ? "text-red-600" : "text-green-700"}`}>
@@ -2724,6 +3157,7 @@ export default function JobList() {
                         </button>
                         <button
                           onClick={() => {
+                            setExportOnRunEnabled(isTableExportFullyConfigured());
                             resetCreateFlow();
                             fetchJobs();
                           }}
@@ -2737,7 +3171,7 @@ export default function JobList() {
 
                   {!showRuleStep && !showOutputStep && (
                     <>
-                  {!(createDataMode === "file" && showFilePreview) && (
+                  {!showFilePreview && (
                     <>
                       <div>
                         <label className="text-[10px] uppercase tracking-wider text-gray-500 font-bold">
@@ -2749,21 +3183,38 @@ export default function JobList() {
                           value={newJobName}
                           onChange={(e) => setNewJobName(e.target.value)}
                         />
+                        <p className="text-[11px] text-gray-500 mt-1">
+                          Use a descriptive name for this job. &quot;File Input&quot; / &quot;Table
+                          Input&quot; below are source types, not the job name.
+                        </p>
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <button
+                          type="button"
                           onClick={() => setCreateDataMode("file")}
                           className={`py-3 text-xs font-bold uppercase tracking-widest border ${createDataMode === "file" ? "bg-[#23243B] text-white border-[#23243B]" : "bg-white text-[#23243B] border-[#A1A3AF]"}`}
                         >
                           File Input
                         </button>
                         <button
-                          onClick={() => setCreateDataMode("db")}
+                          onClick={() => {
+                            setCreateDataMode("db");
+                            setSchemasLoadHint("");
+                            setDbCreds((prev) => ({
+                              ...prev,
+                              dbname: prev.dbname?.trim() ? prev.dbname : "mdms",
+                            }));
+                          }}
                           className={`py-3 text-xs font-bold uppercase tracking-widest border ${createDataMode === "db" ? "bg-[#23243B] text-white border-[#23243B]" : "bg-white text-[#23243B] border-[#A1A3AF]"}`}
                         >
                           Table Input
                         </button>
                       </div>
+                      <p className="text-[11px] text-gray-500">
+                        {createDataMode === "file"
+                          ? "File: upload CSV or paste a path → Next → preview → rules → output."
+                          : "Table: connection → Load tables → schema/table → Next → preview → rules → output."}
+                      </p>
                     </>
                   )}
 
@@ -2822,7 +3273,7 @@ export default function JobList() {
                       </button>
                     </>
                   ) : (
-                    createDataMode === "db" && (
+                    createDataMode === "db" && !showFilePreview && (
                     <>
                       <div className="mt-2 border border-[#D6D9E0] rounded-lg p-4 bg-white">
                         <div className="text-[10px] uppercase tracking-wider text-gray-500 font-bold mb-3">
@@ -2834,8 +3285,8 @@ export default function JobList() {
                           </label>
                           <select
                             className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none bg-transparent"
-                            value={selectedConnectionId}
-                            onChange={(e) => handleSavedConnectionChange(e.target.value)}
+                            value={inputConnectionId}
+                            onChange={(e) => handleInputConnectionChange(e.target.value)}
                           >
                             <option value="">Select a saved connection...</option>
                             {savedConnections.map((c) => (
@@ -2845,13 +3296,20 @@ export default function JobList() {
                             ))}
                           </select>
                         </div>
+                        <p className="text-[11px] text-gray-500 mt-2">
+                          <b>Easy way:</b> pick a saved connection, set <b>Database</b> to{" "}
+                          <code className="text-[10px]">mdms</code>, click <b>Load tables</b>.
+                          <br />
+                          <b>Manual way:</b> leave dropdown empty, fill Host / Username / Password /
+                          Database, then <b>Load tables</b>.
+                        </p>
                         <div className="mt-3">
                           <label className="text-[10px] uppercase text-gray-500 font-bold">
-                            Connection Name
+                            Label for Save Connection (optional)
                           </label>
                           <input
                             className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none"
-                            placeholder="e.g. PROD_POSTGRES"
+                            placeholder="e.g. MY_LOCAL_PG (only if you click Save Connection)"
                             value={connectionName}
                             autoComplete="off"
                             onChange={(e) => setConnectionName(e.target.value)}
@@ -2920,11 +3378,11 @@ export default function JobList() {
                         </div>
                         <div className="mt-3">
                           <label className="text-[10px] uppercase text-gray-500 font-bold">
-                            Database
+                            Database (required for Load tables)
                           </label>
                           <input
                             className="w-full border-b border-[#A1A3AF] p-2 text-sm outline-none"
-                            placeholder="e.g. mdms"
+                            placeholder="mdms"
                             value={dbCreds.dbname}
                             autoComplete="off"
                             onChange={(e) =>
@@ -2943,9 +3401,10 @@ export default function JobList() {
                           <button
                             type="button"
                             onClick={handleFetchTables}
-                            className="w-full py-2 border border-[#23243B] text-[#23243B] text-xs font-bold uppercase hover:bg-gray-50"
+                            disabled={schemasLoadBusy}
+                            className="w-full py-2 border border-[#23243B] text-[#23243B] text-xs font-bold uppercase hover:bg-gray-50 disabled:opacity-50"
                           >
-                            Connect
+                            {schemasLoadBusy ? "Loading…" : "Load tables"}
                           </button>
                           <button
                             type="button"
@@ -2956,13 +3415,30 @@ export default function JobList() {
                           </button>
                         </div>
                       </div>
-                      <div>
+                      {schemasLoadHint ? (
+                        <p
+                          className={`text-xs mt-2 ${
+                            schemasLoadHint.toLowerCase().includes("loaded")
+                              ? "text-green-700"
+                              : "text-amber-700"
+                          }`}
+                        >
+                          {schemasLoadHint}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-gray-500 mt-2">
+                          After connection details, click <b>Load tables</b> (or <b>Test Connection</b>) to
+                          fill schema and table lists.
+                        </p>
+                      )}
+                      <div ref={schemaSectionRef}>
                         <label className="text-[10px] uppercase text-gray-500 font-bold">
                           Choose Schema
                         </label>
                         <select
                           className="w-full border border-[#A1A3AF] p-2 text-sm bg-white"
                           value={selectedSchema}
+                          disabled={schemasLoadBusy || schemaOptions.length === 0}
                           onChange={(e) => {
                             const schema = e.target.value;
                             setSelectedSchema(schema);
@@ -2971,7 +3447,11 @@ export default function JobList() {
                             setSelectedTables(scopedTables.length > 0 ? [scopedTables[0]] : []);
                           }}
                         >
-                          <option value="">Select schema...</option>
+                          <option value="">
+                            {schemaOptions.length === 0
+                              ? "Load tables first…"
+                              : "Select schema…"}
+                          </option>
                           {schemaOptions.map((schema) => (
                             <option key={schema} value={schema}>
                               {schema}
@@ -2988,7 +3468,8 @@ export default function JobList() {
                             <button
                               type="button"
                               onClick={() => setDbDropdownOpen((prev) => !prev)}
-                              className="w-full cursor-pointer border border-[#A1A3AF] p-2 text-sm bg-white flex items-center justify-between"
+                              disabled={schemasLoadBusy || schemaOptions.length === 0}
+                              className="w-full cursor-pointer border border-[#A1A3AF] p-2 text-sm bg-white flex items-center justify-between disabled:opacity-50"
                             >
                               <span className="truncate text-left">
                                 {selectedTables.length > 0
@@ -3035,9 +3516,10 @@ export default function JobList() {
                           <button
                             type="button"
                             onClick={handleFetchTables}
-                            className="px-3 py-2 text-xs font-bold uppercase border border-[#23243B] text-[#23243B] hover:bg-[#23243B] hover:text-white"
+                            disabled={schemasLoadBusy}
+                            className="px-3 py-2 text-xs font-bold uppercase border border-[#23243B] text-[#23243B] hover:bg-[#23243B] hover:text-white disabled:opacity-50"
                           >
-                            Connect
+                            {schemasLoadBusy ? "…" : "Reload"}
                           </button>
                         </div>
                         {selectedTables.length > 0 && (
@@ -3189,13 +3671,25 @@ export default function JobList() {
                   )}
                 </div>
             </div>
-          </div>
-        </div>
-      )}
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
 
-      {lookupModal.open && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/45 p-4">
-          <div className="bg-white border border-[#23243B] w-full max-w-lg shadow-2xl relative p-6">
+      {lookupModal.open &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 p-4"
+            onClick={closeLookupModal}
+          >
+          <div
+            className="bg-white border border-[#23243B] w-full max-w-lg shadow-2xl relative p-6 max-h-[min(90vh,calc(100dvh-2rem))] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="lookup-modal-title"
+          >
             <button
               type="button"
               onClick={closeLookupModal}
@@ -3204,7 +3698,7 @@ export default function JobList() {
             >
               <X size={20} />
             </button>
-            <h3 className="text-sm font-bold uppercase tracking-widest text-[#23243B] mb-1 pr-8">
+            <h3 id="lookup-modal-title" className="text-sm font-bold uppercase tracking-widest text-[#23243B] mb-1 pr-8">
               Lookup master values
             </h3>
             <p className="text-xs text-gray-500 mb-4">
@@ -3333,8 +3827,8 @@ export default function JobList() {
                     type="button"
                     onClick={() => {
                       setLookupDbConnMode("saved");
-                      if (!selectedConnectionId && savedConnections[0]) {
-                        handleSavedConnectionChange(String(savedConnections[0].connection_id));
+                      if (!inputConnectionId && savedConnections[0]) {
+                        handleInputConnectionChange(String(savedConnections[0].connection_id));
                       }
                     }}
                     className={`py-2 text-xs font-bold uppercase tracking-widest border ${lookupDbConnMode === "saved" ? "bg-[#23243B] text-white border-[#23243B]" : "bg-white text-[#23243B] border-[#A1A3AF]"}`}
@@ -3345,7 +3839,7 @@ export default function JobList() {
                     type="button"
                     onClick={() => {
                       setLookupDbConnMode("manual");
-                      setSelectedConnectionId("");
+                      setInputConnectionId("");
                     }}
                     className={`py-2 text-xs font-bold uppercase tracking-widest border ${lookupDbConnMode === "manual" ? "bg-[#23243B] text-white border-[#23243B]" : "bg-white text-[#23243B] border-[#A1A3AF]"}`}
                   >
@@ -3360,8 +3854,8 @@ export default function JobList() {
                         Saved connection
                       </label>
                       <select
-                        value={selectedConnectionId}
-                        onChange={(e) => handleSavedConnectionChange(e.target.value)}
+                        value={inputConnectionId}
+                        onChange={(e) => handleInputConnectionChange(e.target.value)}
                         className="w-full border border-[#D1D5DB] p-2 text-sm"
                       >
                         <option value="">Select a saved connection...</option>
@@ -3526,8 +4020,9 @@ export default function JobList() {
               </div>
             )}
           </div>
-        </div>
-      )}
+        </div>,
+          document.body,
+        )}
     </div>
   );
 }

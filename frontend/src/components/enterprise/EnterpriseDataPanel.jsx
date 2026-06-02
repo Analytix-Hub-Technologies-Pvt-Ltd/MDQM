@@ -161,9 +161,12 @@ export default function EnterpriseDataPanel({
             </thead>
             <tbody>
               {items.map((row, idx) => (
-                <tr key={row.id ?? idx} className="border-b border-border">
-                  {columns.map((c) => (
-                    <td key={c.key} className="p-3 align-middle text-foreground">
+                <tr
+                  key={row.id != null && row.id !== "" ? `row-${row.id}-${idx}` : `row-${idx}`}
+                  className="border-b border-border"
+                >
+                  {columns.map((c, ci) => (
+                    <td key={`${c.key}-${ci}`} className="p-3 align-middle text-foreground">
                       {c.render ? c.render(row[c.key], row) : String(row[c.key] ?? "—")}
                     </td>
                   ))}

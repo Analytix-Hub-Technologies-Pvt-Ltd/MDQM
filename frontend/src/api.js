@@ -32,6 +32,27 @@ apiClient.interceptors.response.use(
     }
 );
 
+const assertDownloadBlob = async (blob, expectedKind) => {
+    const type = String(blob?.type || "").toLowerCase();
+    if (type.includes("text/html")) {
+        throw new Error(
+            `Download failed: received the app web page instead of ${expectedKind}. ` +
+                "Restart the frontend dev server (npm run dev) so /tables routes proxy to the API."
+        );
+    }
+    if (blob instanceof Blob && blob.size > 0 && blob.size < 4096) {
+        const head = await blob.slice(0, 200).text();
+        const trimmed = head.trimStart();
+        if (trimmed.startsWith("<!DOCTYPE") || trimmed.startsWith("<html")) {
+            throw new Error(
+                `Download failed: file contains HTML, not ${expectedKind}. ` +
+                    "Check that the backend is running and Vite proxies /tables to port 8000."
+            );
+        }
+    }
+    return blob;
+};
+
 const readFilenameFromDisposition = (disposition = "", fallback = "download") => {
     const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
     if (utf8Match?.[1]) {
@@ -125,6 +146,10 @@ export const deleteSchedule = async (jobId, action = null) => {
 
 export const deleteJob = async (jobId) => {
     return apiClient.delete(`/jobs/${jobId}`);
+};
+
+export const deleteIncompleteJobs = async () => {
+    return apiClient.delete(`/jobs/incomplete`);
 };
 
 export const deleteTable = async (tableId) => {
@@ -277,7 +302,8 @@ export const downloadJobZip = async (jobId) => {
         res?.headers?.["content-disposition"] || "",
         `Job_${jobId}_Results.zip`
     );
-    return { blob: res.data, filename };
+    const blob = await assertDownloadBlob(res.data, "ZIP");
+    return { blob, filename };
 };
 
 export const downloadTableOutputCsv = async (jobId, tableId) => {
@@ -288,7 +314,8 @@ export const downloadTableOutputCsv = async (jobId, tableId) => {
         res?.headers?.["content-disposition"] || "",
         `table_${tableId}_results.csv`
     );
-    return { blob: res.data, filename };
+    const blob = await assertDownloadBlob(res.data, "CSV");
+    return { blob, filename };
 };
 
 export const downloadTableOutputExcel = async (jobId, tableId) => {
@@ -299,7 +326,8 @@ export const downloadTableOutputExcel = async (jobId, tableId) => {
         res?.headers?.["content-disposition"] || "",
         `table_${tableId}_results.xlsx`
     );
-    return { blob: res.data, filename };
+    const blob = await assertDownloadBlob(res.data, "Excel");
+    return { blob, filename };
 };
 
 export const uploadTableOutputToSharePoint = async (tableId, payload) => {

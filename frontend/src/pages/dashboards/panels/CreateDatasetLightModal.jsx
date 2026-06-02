@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { AppModal, ModalAlert, modalInputClass, modalLabelClass } from "@/components/layout/AppModal";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -6,10 +7,13 @@ import {
   createNewJob,
   uploadCsvToJob,
   uploadCsvPathToJob,
+  deleteJob,
   listSchemasTables,
   listSavedConnections,
+  getSavedConnectionCredentials,
   registerDbDatasetSource,
   scheduleJob,
+  testDbConnection,
 } from "../../../api";
 import { enterpriseGovernanceDatasetCreate } from "../enterpriseApi";
 
@@ -21,6 +25,7 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
   const [filePath, setFilePath] = useState("");
   const [busy, setBusy] = useState(false);
   const [schemasBusy, setSchemasBusy] = useState(false);
+  const [credsLoading, setCredsLoading] = useState(false);
   const [error, setError] = useState("");
   const [loadHint, setLoadHint] = useState("");
 
@@ -43,11 +48,81 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
   const [scheduleTime, setScheduleTime] = useState("02:00");
   const [scheduleDate, setScheduleDate] = useState("");
 
+  const pickConnection = async (value, connList) => {
+    setSelectedConnectionId(value);
+    setSchemaOptions([]);
+    setTablesBySchema({});
+    setSelectedSchema("");
+    setTableOptions([]);
+    setSelectedTable("");
+    setLoadHint("");
+    setError("");
+
+    const selected = (connList || []).find((c) => String(c.connection_id) === String(value));
+    if (!selected) return;
+
+    const type = selected.db_type || "postgres";
+    let defaultPort = "5432";
+    let defaultDb = "mdms";
+    if (type === "sqlserver") {
+      defaultPort = "1433";
+      defaultDb = "master";
+    } else if (type === "mysql") {
+      defaultPort = "3306";
+      defaultDb = "";
+    }
+
+    setDbCreds((prev) => ({
+      ...prev,
+      host: selected.host || "",
+      port: selected.port || defaultPort,
+      user: selected.user || "",
+      pass: "",
+      dbname: prev.dbname || defaultDb,
+    }));
+
+    setCredsLoading(true);
+    try {
+      const res = await getSavedConnectionCredentials(Number(value));
+      const creds = res?.data;
+      if (creds) {
+        setDbCreds((prev) => ({
+          ...prev,
+          host: creds.host || prev.host,
+          port: creds.port || prev.port,
+          user: creds.user || prev.user,
+          pass: creds.password || "",
+        }));
+      }
+    } catch {
+      setError("Could not load saved password. Type it below or fix the profile on DB Connections.");
+    } finally {
+      setCredsLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (!open) return;
-    listSavedConnections()
-      .then((res) => setSavedConnections(Array.isArray(res?.data) ? res.data : []))
-      .catch(() => setSavedConnections([]));
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await listSavedConnections();
+        const list = Array.isArray(res?.data) ? res.data : [];
+        if (cancelled) return;
+        setSavedConnections(list);
+        const preferred =
+          list.find((c) => /^good$/i.test(String(c.connection_name || "").trim())) ||
+          list.find((c) => /good/i.test(String(c.connection_name || "")));
+        if (preferred) {
+          await pickConnection(String(preferred.connection_id), list);
+        }
+      } catch {
+        if (!cancelled) setSavedConnections([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [open]);
 
   const reset = () => {
@@ -78,27 +153,11 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
   };
 
   const onSavedConnChange = (value) => {
-    setSelectedConnectionId(value);
-    const selected = savedConnections.find((c) => String(c.connection_id) === String(value));
-    if (!selected) return;
-    const type = selected.db_type || "postgres";
-    let defaultPort = "5432";
-    let defaultDb = "postgres";
-    if (type === "sqlserver") {
-      defaultPort = "1433";
-      defaultDb = "master";
-    } else if (type === "mysql") {
-      defaultPort = "3306";
-      defaultDb = "";
+    if (!value) {
+      setSelectedConnectionId("");
+      return;
     }
-    setDbCreds((prev) => ({
-      ...prev,
-      host: selected.host || "",
-      port: selected.port || defaultPort,
-      user: selected.user || "",
-      pass: "",
-      dbname: prev.dbname || defaultDb,
-    }));
+    pickConnection(value, savedConnections);
   };
 
   function formatAxiosDetail(data) {
@@ -109,9 +168,24 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
     return "";
   }
 
+  const buildSchemasPayload = () => {
+    const dbname = (dbCreds.dbname || "mdms").trim();
+    const payload = {
+      dbname,
+      host: dbCreds.host,
+      port: dbCreds.port || "5432",
+      user: dbCreds.user,
+      pass: dbCreds.pass || "",
+    };
+    if (selectedConnectionId) {
+      payload.connection_id = Number(selectedConnectionId);
+    }
+    return payload;
+  };
+
   const loadSchemasTables = async () => {
     if (!selectedConnectionId) {
-      setError("Select a saved connection (save profiles from Jobs → database connection).");
+      setError("Select a saved connection (save profiles from DB Connections or Jobs).");
       setLoadHint("");
       return;
     }
@@ -120,20 +194,17 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
       setLoadHint("");
       return;
     }
+    if (!dbCreds.pass?.trim()) {
+      setError("Enter the database password below (or re-save the connection on DB Connections with the correct password).");
+      setLoadHint("");
+      return;
+    }
     setError("");
     setLoadHint("");
     setSchemasBusy(true);
     try {
-      const dbname = dbCreds.dbname.trim();
-      const payload = selectedConnectionId
-        ? { connection_id: Number(selectedConnectionId), dbname }
-        : {
-            host: dbCreds.host,
-            port: dbCreds.port || "5432",
-            user: dbCreds.user,
-            pass: dbCreds.pass || "",
-            dbname,
-          };
+      const payload = buildSchemasPayload();
+      await testDbConnection(payload);
       const res = await listSchemasTables(payload);
       const schemas = res?.data?.schemas || [];
       const tableMap = res?.data?.tables_by_schema || {};
@@ -193,9 +264,10 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
     }
     setBusy(true);
     setError("");
+    let jobId = null;
     try {
       const { data } = await createNewJob(n);
-      const jobId = data?.job_id;
+      jobId = data?.job_id;
       if (!jobId) throw new Error("Could not create job.");
       if (filePath.trim()) {
         await uploadCsvPathToJob(jobId, filePath.trim());
@@ -206,6 +278,13 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
       onCreated?.();
       handleClose();
     } catch (err) {
+      if (jobId) {
+        try {
+          await deleteJob(jobId);
+        } catch {
+          /* best-effort */
+        }
+      }
       setError(formatAxiosDetail(err?.response?.data) || err?.message || "Create failed.");
     } finally {
       setBusy(false);
@@ -239,13 +318,10 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
     setError("");
     setLoadHint("");
     try {
-      const payload = {
-        job_name: n,
-        dbname: dbCreds.dbname.trim(),
-        schema_name: selectedSchema,
-        table_names: [selectedTable],
-      };
-      payload.connection_id = Number(selectedConnectionId);
+      const payload = buildSchemasPayload();
+      payload.job_name = n;
+      payload.schema_name = selectedSchema;
+      payload.table_names = [selectedTable];
       const regRes = await registerDbDatasetSource(payload);
       const jobId = regRes?.data?.job_id ?? regRes?.data?.created_jobs?.[0]?.job_id;
       if (!jobId) throw new Error("Could not register dataset.");
@@ -377,23 +453,69 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
               </select>
               {savedConnections.length === 0 ? (
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  No saved connections yet. Add one from the Jobs screen first.
+                  No saved connections yet.{" "}
+                  <Link to="/connections" className="text-primary underline" onClick={handleClose}>
+                    Add one on DB Connections
+                  </Link>
+                  .
                 </p>
               ) : null}
+              {credsLoading ? (
+                <p className="text-[11px] text-muted-foreground mt-1">Loading connection details…</p>
+              ) : null}
             </div>
+            {selectedConnectionId ? (
+              <div className="grid sm:grid-cols-2 gap-2">
+                <div>
+                  <label className={modalLabelClass}>Postgres username</label>
+                  <input
+                    className={modalInputClass}
+                    value={dbCreds.user}
+                    onChange={(e) => setDbCreds((p) => ({ ...p, user: e.target.value }))}
+                    placeholder="e.g. postgres"
+                  />
+                </div>
+                <div>
+                  <label className={modalLabelClass}>Host</label>
+                  <input
+                    className={cn(modalInputClass, "opacity-70")}
+                    value={dbCreds.host}
+                    readOnly
+                  />
+                </div>
+              </div>
+            ) : null}
             <div>
               <label className={modalLabelClass}>Database name</label>
               <input
                 className={modalInputClass}
-                placeholder="e.g. postgres"
+                placeholder="e.g. mdms"
                 value={dbCreds.dbname}
                 onChange={(e) => setDbCreds((p) => ({ ...p, dbname: e.target.value }))}
               />
             </div>
+            <div>
+              <label className={modalLabelClass}>Password</label>
+              <input
+                type="password"
+                className={modalInputClass}
+                placeholder="Postgres password for this connection"
+                value={dbCreds.pass}
+                autoComplete="new-password"
+                onChange={(e) => setDbCreds((p) => ({ ...p, pass: e.target.value }))}
+              />
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Wrong password on <b>Test user 1</b>? Pick connection <b>good</b>, or{" "}
+                <Link to="/connections" className="text-primary underline" onClick={handleClose}>
+                  edit the profile on DB Connections
+                </Link>
+                .
+              </p>
+            </div>
             <Button
               type="button"
               variant="outline"
-              disabled={schemasBusy}
+              disabled={schemasBusy || credsLoading}
               onClick={loadSchemasTables}
               className="w-full text-xs font-bold uppercase tracking-wide"
             >
