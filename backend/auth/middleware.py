@@ -37,6 +37,21 @@ def _business_user_post_allowed(path: str) -> bool:
         return True
     if path.startswith("/jobs/") and path.endswith("/run"):
         return True
+    # New Job wizard (file + table input)
+    if path == "/jobs/create":
+        return True
+    if path.startswith("/jobs/") and (
+        path.endswith("/upload")
+        or path.endswith("/upload-from-path")
+        or path.endswith("/import-from-db")
+    ):
+        return True
+    if path.startswith("/files/preview"):
+        return True
+    if path.startswith("/db/"):
+        return True
+    if path.startswith("/schedule-job/"):
+        return True
     return False
 
 
@@ -51,6 +66,8 @@ def _business_user_patch_allowed(path: str) -> bool:
 
 
 def _business_user_delete_allowed(path: str) -> bool:
+    if path == "/jobs/incomplete":
+        return True
     if path.startswith("/api/enterprise/business/data-requests/"):
         return True
     if path.startswith("/api/enterprise/business/alert-subscriptions/"):

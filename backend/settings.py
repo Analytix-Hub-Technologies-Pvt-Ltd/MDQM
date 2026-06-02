@@ -11,6 +11,8 @@ _BACKEND_DIR = Path(__file__).resolve().parent
 DEFAULT_CORS_ORIGINS = [
     "http://localhost:3000",
     "http://localhost:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
     "https://analytix-hub-technologies-pvt-ltd.github.io",
 ]
 
@@ -205,10 +207,16 @@ def demo_users_seed_enabled() -> bool:
 
 
 def get_cors_origins() -> list[str]:
+    """Allowed browser origins. Always includes local dev hosts when not in production."""
     raw = (os.getenv("CORS_ORIGINS") or "").strip()
-    if raw:
-        return [origin.strip() for origin in raw.split(",") if origin.strip()]
-    return list(DEFAULT_CORS_ORIGINS)
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()] if raw else []
+    if not is_production():
+        for origin in DEFAULT_CORS_ORIGINS:
+            if origin not in origins:
+                origins.append(origin)
+    elif not origins:
+        origins = list(DEFAULT_CORS_ORIGINS)
+    return origins
 
 
 def get_frontend_base_url() -> str:

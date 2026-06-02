@@ -74,8 +74,11 @@ async def upload_file(
             if os.path.exists(temp_file_path):
                 os.remove(temp_file_path)
         else:
-            df = pd.read_csv(final_csv_path)
-            
+            df = pd.read_csv(temp_file_path)
+            df.to_csv(final_csv_path, index=False)
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+
         # ==========================================================
         # 3. FIX: THE MIXED-FORMAT DATE DETECTION MAGIC GOES HERE
         # ==========================================================
@@ -95,6 +98,11 @@ async def upload_file(
         row_count = len(df)
         columns = df.dtypes.items()
     except Exception as e:
+        if os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+            except OSError:
+                pass
         raise HTTPException(status_code=400, detail=f"Invalid File format: {str(e)}")
 
     new_table = models.TableMetadata(

@@ -20,7 +20,7 @@ if True:
     import base64
     import atexit
     import sys
-    from settings import get_cors_origins, load_env
+    from settings import get_cors_origins, is_production, load_env
 
     load_env()
     from database import POSTGRES_DB, SessionLocal, engine
@@ -130,16 +130,6 @@ if True:
     except Exception:
         pass
 
-    # --- 1. CORS (local dev + GitHub Pages via CORS_ORIGINS env) ---
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=get_cors_origins(),
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=["Content-Disposition", "X-Export-Id"],
-    )
-
     app.include_router(auth_router)
     app.include_router(access_router)
     app.include_router(admin_router)
@@ -193,6 +183,19 @@ if True:
     @app.middleware("http")
     async def rbac_middleware(request: Request, call_next):
         return await auth_middleware(request, call_next)
+
+    # CORS outermost so 401/403/500 responses still include Access-Control-Allow-Origin
+    # (if CORS is inner, auth short-circuits before CORS runs — browser shows a CORS error).
+    _cors_kwargs = {
+        "allow_origins": get_cors_origins(),
+        "allow_credentials": True,
+        "allow_methods": ["*"],
+        "allow_headers": ["*"],
+        "expose_headers": ["Content-Disposition", "X-Export-Id"],
+    }
+    if not is_production():
+        _cors_kwargs["allow_origin_regex"] = r"https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+    app.add_middleware(CORSMiddleware, **_cors_kwargs)
 
     scheduler = BackgroundScheduler()
     scheduler.start()
@@ -381,16 +384,20 @@ if True:
 
 
     def _stored_connection_password_plain(row: models.DbConnection) -> str:
-        """Decrypt saved password or return legacy plaintext."""
+        """Decrypt saved password or return legacy plaintext (never return Fernet ciphertext as password)."""
         from utils.source_secret_crypto import decrypt_db_password_optional
 
         blob = row.password
         if not blob or not str(blob).strip():
             return ""
-        plain = decrypt_db_password_optional(blob)
+        s = str(blob).strip()
+        plain = decrypt_db_password_optional(s)
         if plain is not None:
             return plain
-        return str(blob)
+        # Legacy plaintext only — do not treat failed decrypt tokens as passwords.
+        if s.startswith("gAAAA"):
+            return ""
+        return s
 
 
     def _read_source_paths():
@@ -758,6 +765,121 @@ if True:
         return {"message": "Connection saved", "connection_id": row.connection_id}
 
 
+    @app.post("/db/test-connection")
+    def test_db_connection_route(request: Request, payload: dict = Body(...)):
+        """Verify host/port/user/password (and optional dbname) without listing schemas."""
+        creds = _apply_connection_payload_overrides(
+            _resolve_connection_payload(payload, getattr(request.state, "user_id", None)),
+            payload,
+        )
+        dbname = str(payload.get("dbname") or creds.get("dbname") or "mdms").strip() or "mdms"
+        creds["dbname"] = dbname
+
+        if not creds.get("host") or not creds.get("user"):
+            raise HTTPException(status_code=400, detail="Host and username are required.")
+
+        conn = None
+        try:
+            conn = _connect_db(creds)
+            return {"message": "Connection successful", "dbname": dbname}
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=_format_db_list_error(e, creds))
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+
+    @app.post("/db/preview-table")
+    def preview_db_table(request: Request, payload: dict = Body(...)):
+        """Return first rows + column types for a table in an external database."""
+        creds = _resolve_connection_payload(payload, getattr(request.state, "user_id", None))
+        if str(payload.get("host") or "").strip():
+            creds["host"] = str(payload["host"]).strip()
+        if str(payload.get("port") or "").strip():
+            creds["port"] = str(payload["port"]).strip()
+        if str(payload.get("user") or "").strip():
+            creds["user"] = str(payload.get("user")).strip()
+        pw = payload.get("pass")
+        if pw is not None and str(pw):
+            creds["pass"] = str(pw)
+
+        schema_name = str(payload.get("schema_name") or "").strip()
+        table_name = str(payload.get("table_name") or "").strip()
+        if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
+            raise HTTPException(
+                status_code=400,
+                detail="Provide database name, host, and username (or a saved connection_id).",
+            )
+        if not schema_name or not table_name:
+            raise HTTPException(status_code=400, detail="schema_name and table_name are required.")
+        if not str(creds.get("pass") or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No password is stored for this connection. Re-save the connection with a password "
+                    "or enter it in the form before preview."
+                ),
+            )
+
+        conn = None
+        try:
+            conn = _connect_db(creds)
+            db_type = str(creds.get("db_type") or "postgres").lower().strip()
+            preview_limit = 11
+
+            if db_type in ("mssql", "sqlserver", "sql_server"):
+                preview_q = (
+                    f"SELECT TOP {preview_limit} * FROM [{schema_name}].[{table_name}]"
+                )
+                count_q = f"SELECT COUNT(*) AS cnt FROM [{schema_name}].[{table_name}]"
+            elif db_type == "mysql":
+                if schema_name:
+                    qualified = f"`{schema_name}`.`{table_name}`"
+                else:
+                    qualified = f"`{table_name}`"
+                preview_q = f"SELECT * FROM {qualified} LIMIT {preview_limit}"
+                count_q = f"SELECT COUNT(*) AS cnt FROM {qualified}"
+            else:
+                preview_sql = psql.SQL("SELECT * FROM {}.{} LIMIT {}").format(
+                    psql.Identifier(schema_name),
+                    psql.Identifier(table_name),
+                    psql.Literal(preview_limit),
+                )
+                count_sql = psql.SQL("SELECT COUNT(*) AS cnt FROM {}.{}").format(
+                    psql.Identifier(schema_name),
+                    psql.Identifier(table_name),
+                )
+                preview_q = preview_sql.as_string(conn)
+                count_q = count_sql.as_string(conn)
+
+            total_rows = int(pd.read_sql_query(count_q, conn).iloc[0, 0])
+            df = pd.read_sql_query(preview_q, conn)
+            df = _normalize_import_dataframe_dates(df)
+            rows = df.head(preview_limit).fillna("").to_dict(orient="records")
+            column_types = {col: str(dtype) for col, dtype in df.dtypes.items()}
+            return {
+                "columns": df.columns.tolist(),
+                "column_types": column_types,
+                "rows": rows,
+                "total_rows": total_rows,
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=_format_db_list_error(e, creds))
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+
     @app.put("/db/connections/{connection_id}")
     def update_db_connection(
         connection_id: int,
@@ -766,10 +888,24 @@ if True:
         user: models.User = Depends(get_current_user),
     ):
         _migrate_saved_connections_json_to_db(db)
+        shared_exists = (
+            db.query(models.DbConnectionShare)
+            .filter(
+                models.DbConnectionShare.connection_id == models.DbConnection.connection_id,
+                models.DbConnectionShare.shared_user_id == user.id,
+            )
+            .exists()
+        )
         row = (
             db.query(models.DbConnection)
             .filter(models.DbConnection.connection_id == connection_id)
-            .filter(models.DbConnection.user_id == user.id)
+            .filter(
+                or_(
+                    models.DbConnection.user_id == user.id,
+                    models.DbConnection.user_id.is_(None),
+                    shared_exists,
+                )
+            )
             .first()
         )
         if not row:
@@ -782,11 +918,15 @@ if True:
         row.connection_name = name
         row.host = str(payload.get("host") or "")
         row.port = str(payload.get("port") or "5432")
-        row.username = str(payload.get("user") or "").strip()
+        resolved_user = payload.get("user", payload.get("username", row.username))
+        row.username = str(resolved_user or "").strip()
         row.db_type = str(payload.get("db_type") or "postgres").strip().lower()
 
-        if payload.get("pass") is not None:
-            plain_pw = str(payload.get("pass") or "").strip()
+        pass_field = payload.get("pass")
+        if pass_field is None:
+            pass_field = payload.get("password")
+        if pass_field is not None:
+            plain_pw = str(pass_field or "").strip()
             if plain_pw:
                 from utils.source_secret_crypto import encrypt_db_password_optional, encryption_available
                 if not encryption_available():
@@ -957,7 +1097,7 @@ if True:
     def _resolve_connection_payload(payload: dict, current_user_id: int | None = None):
         """Resolve credentials from direct fields or saved connection id."""
         connection_id = payload.get("connection_id")
-        if connection_id is not None:
+        if connection_id is not None and str(connection_id).strip() not in ("", "0"):
             db = SessionLocal()
             try:
                 _migrate_saved_connections_json_to_db(db)
@@ -965,6 +1105,11 @@ if True:
                     cid = int(float(connection_id))
                 except (TypeError, ValueError):
                     raise HTTPException(status_code=404, detail="Saved connection not found")
+                if cid <= 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Select a saved connection or enter host, username, and password.",
+                    )
 
                 query = db.query(models.DbConnection).filter(models.DbConnection.connection_id == cid)
                 if current_user_id is not None:
@@ -1032,6 +1177,50 @@ if True:
             "db_type": db_type,
         }
 
+
+    def _apply_connection_payload_overrides(creds: dict, payload: dict) -> dict:
+        """Let the request body override saved-connection fields (e.g. password typed in UI)."""
+        if str(payload.get("host") or "").strip():
+            creds["host"] = str(payload["host"]).strip()
+        if str(payload.get("port") or "").strip():
+            creds["port"] = str(payload["port"]).strip()
+        if str(payload.get("user") or "").strip():
+            creds["user"] = str(payload.get("user")).strip()
+        pw = payload.get("pass")
+        if pw is None:
+            pw = payload.get("password")
+        if pw is not None and str(pw):
+            creds["pass"] = str(pw)
+        if payload.get("db_type"):
+            creds["db_type"] = str(payload["db_type"]).strip().lower()
+        if str(payload.get("dbname") or "").strip():
+            creds["dbname"] = str(payload["dbname"]).strip()
+        return creds
+
+
+    def _format_db_list_error(exc: Exception, creds: dict) -> str:
+        msg = str(exc).lower()
+        if "password authentication failed" in msg:
+            return (
+                "Database login failed. Open DB Connections (menu → Connections), edit this profile "
+                "with the correct Postgres username and password, or type the password in the form and try again."
+            )
+        if "no password supplied" in msg or "fe_sendauth" in msg:
+            return (
+                "No password is stored for this connection. Edit the saved connection and "
+                "enter the database password."
+            )
+        if "does not exist" in msg and "database" in msg:
+            return (
+                f"Database '{creds.get('dbname')}' was not found on the server. "
+                "Check the database name field (for local MDQM this is often 'mdms')."
+            )
+        if "could not connect to server" in msg or "connection refused" in msg:
+            return (
+                f"Cannot reach the database at {creds.get('host')}:{creds.get('port')}. "
+                "Confirm PostgreSQL is running and the host/port are correct."
+            )
+        return f"Failed to list schemas/tables: {exc}"
 
     def _connect_postgres_with_fallback(creds: dict):
         """
@@ -1334,7 +1523,10 @@ if True:
         if not table_name:
             raise HTTPException(status_code=400, detail="table_names[0] must be a non-empty string.")
 
-        creds = _resolve_connection_payload(payload, getattr(request.state, "user_id", None))
+        creds = _apply_connection_payload_overrides(
+            _resolve_connection_payload(payload, getattr(request.state, "user_id", None)),
+            payload,
+        )
         if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
             raise HTTPException(
                 status_code=400,
@@ -1430,7 +1622,7 @@ if True:
                 table_names_unique.append(t)
         table_names = table_names_unique
 
-        creds = _resolve_connection_payload(payload, getattr(request.state, "user_id", None), getattr(request.state, "user_id", None))
+        creds = _resolve_connection_payload(payload, getattr(request.state, "user_id", None))
         if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
             raise HTTPException(
                 status_code=400,
@@ -1719,11 +1911,22 @@ if True:
 
     @app.post("/db/list-schemas-tables")
     def list_schemas_tables(request: Request, payload: dict = Body(...)):
-        creds = _resolve_connection_payload(payload, getattr(request.state, "user_id", None))
+        creds = _apply_connection_payload_overrides(
+            _resolve_connection_payload(payload, getattr(request.state, "user_id", None)),
+            payload,
+        )
         if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
             raise HTTPException(
                 status_code=400,
                 detail="Provide database name, host, and username (or fix the saved connection), then try again.",
+            )
+        if not str(creds.get("pass") or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No password is stored for this connection. Edit the saved connection "
+                    "on the Jobs screen and enter the database password."
+                ),
             )
 
         conn = None
@@ -1854,8 +2057,10 @@ if True:
 
             cur.close()
             return {"schemas": schemas, "tables_by_schema": tables_by_schema}
+        except HTTPException:
+            raise
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to list schemas/tables: {str(e)}")
+            raise HTTPException(status_code=400, detail=_format_db_list_error(e, creds))
         finally:
             if conn is not None:
                 conn.close()
@@ -1863,7 +2068,10 @@ if True:
 
     @app.post("/db/table-columns")
     def db_table_columns(request: Request, payload: dict = Body(...)):
-        creds = _resolve_connection_payload(payload, getattr(request.state, "user_id", None))
+        creds = _apply_connection_payload_overrides(
+            _resolve_connection_payload(payload, getattr(request.state, "user_id", None)),
+            payload,
+        )
         schema_name = payload.get("schema_name")
         table_name = payload.get("table_name")
 
@@ -1931,7 +2139,10 @@ if True:
 
     @app.post("/db/lookup-values")
     def db_lookup_values(request: Request, payload: dict = Body(...)):
-        creds = _resolve_connection_payload(payload, getattr(request.state, "user_id", None))
+        creds = _apply_connection_payload_overrides(
+            _resolve_connection_payload(payload, getattr(request.state, "user_id", None)),
+            payload,
+        )
         schema_name = payload.get("schema_name")
         table_name = payload.get("table_name")
         column_name = payload.get("column_name")
@@ -2084,7 +2295,10 @@ if True:
         if not src_table:
             raise HTTPException(status_code=404, detail="Source table not found")
 
-        creds = _resolve_connection_payload(payload, getattr(request.state, "user_id", None), getattr(request.state, "user_id", None))
+        creds = _apply_connection_payload_overrides(
+            _resolve_connection_payload(payload, getattr(request.state, "user_id", None)),
+            payload,
+        )
         if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
             raise HTTPException(
                 status_code=400,
@@ -2231,8 +2445,11 @@ if True:
                 if os.path.exists(temp_file_path):
                     os.remove(temp_file_path)
             else:
-                df = pd.read_csv(final_csv_path)
-                
+                df = pd.read_csv(temp_file_path)
+                df.to_csv(final_csv_path, index=False)
+                if os.path.exists(temp_file_path):
+                    os.remove(temp_file_path)
+
             # ==========================================================
             # 3. FIX: THE MIXED-FORMAT DATE DETECTION MAGIC GOES HERE
             # ==========================================================
@@ -2252,6 +2469,11 @@ if True:
             row_count = len(df)
             columns = df.dtypes.items()
         except Exception as e:
+            if os.path.exists(temp_file_path):
+                try:
+                    os.remove(temp_file_path)
+                except OSError:
+                    pass
             raise HTTPException(status_code=400, detail=f"Invalid File format: {str(e)}")
 
         new_table = models.TableMetadata(
@@ -2639,7 +2861,7 @@ if True:
         prefer_refresh = str(action or "").strip().lower() == "refresh"
         j, _key = _find_scheduled_job(job_id, prefer_refresh=prefer_refresh)
         if not j:
-            raise HTTPException(status_code=404, detail="Schedule not found")
+            return None
         return _serialize_schedule_job(j)
 
 
@@ -2935,33 +3157,79 @@ if True:
             db.rollback()
             raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
+    def _delete_job_cascade(db: Session, job_id: int) -> None:
+        """Remove a job and all metadata children (shared by single + bulk delete)."""
+        db.query(models.QuarantineLog).filter(models.QuarantineLog.job_id == job_id).delete()
+        db.query(models.MasterTable).filter(models.MasterTable.job_id == job_id).delete()
+        db.query(models.ColumnMetadata).filter(models.ColumnMetadata.job_id == job_id).delete()
+        db.query(models.Rule).filter(models.Rule.job_id == job_id).delete()
+        db.query(models.TableStats).filter(models.TableStats.job_id == job_id).delete()
+        db.query(models.TableMetadata).filter(models.TableMetadata.job_id == job_id).delete()
+        job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+        if job:
+            db.delete(job)
+
+    @app.delete("/jobs/incomplete")
+    def delete_incomplete_jobs(db: Session = Depends(get_db)):
+        """Delete all jobs with zero attached tables (failed / abandoned wizard runs)."""
+        try:
+            table_counts = dict(
+                db.query(models.TableMetadata.job_id, func.count(models.TableMetadata.table_id))
+                .group_by(models.TableMetadata.job_id)
+                .all()
+            )
+            incomplete = (
+                db.query(models.Job.job_id)
+                .order_by(models.Job.job_id.asc())
+                .all()
+            )
+            job_ids = [
+                row[0]
+                for row in incomplete
+                if table_counts.get(row[0], 0) == 0
+            ]
+            for job_id in job_ids:
+                try:
+                    scheduler.remove_job(_scheduler_job_key(job_id))
+                except Exception:
+                    pass
+                try:
+                    scheduler.remove_job(_scheduler_refresh_job_key(job_id))
+                except Exception:
+                    pass
+                _delete_job_cascade(db, job_id)
+            db.commit()
+            return {
+                "message": f"Deleted {len(job_ids)} incomplete job(s).",
+                "deleted_job_ids": job_ids,
+                "count": len(job_ids),
+            }
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Failed to delete incomplete jobs: {str(e)}")
+
     @app.delete("/jobs/{job_id}")
     def delete_job(job_id: int, db: Session = Depends(get_db)):
         job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
-        if not job: 
+        if not job:
             raise HTTPException(status_code=404, detail="Job not found")
-        
+
         try:
-            # 1. Delete the "Leaf" nodes first (the newest tables we added)
-            db.query(models.QuarantineLog).filter(models.QuarantineLog.job_id == job_id).delete()
-            db.query(models.MasterTable).filter(models.MasterTable.job_id == job_id).delete()
-            
-            # 2. Delete the rest of the child records
-            db.query(models.ColumnMetadata).filter(models.ColumnMetadata.job_id == job_id).delete()
-            db.query(models.Rule).filter(models.Rule.job_id == job_id).delete()
-            db.query(models.TableStats).filter(models.TableStats.job_id == job_id).delete()
-            
-            # 3. Delete the intermediate parent (Tables)
-            db.query(models.TableMetadata).filter(models.TableMetadata.job_id == job_id).delete()
-            
-            # 4. Finally, it is safe to delete the root Job
-            db.delete(job)
+            try:
+                scheduler.remove_job(_scheduler_job_key(job_id))
+            except Exception:
+                pass
+            try:
+                scheduler.remove_job(_scheduler_refresh_job_key(job_id))
+            except Exception:
+                pass
+            _delete_job_cascade(db, job_id)
             db.commit()
-            
+
             return {"message": "Job and all associated data deleted completely"}
-            
+
         except Exception as e:
-            db.rollback() # Instantly undo everything if it hits a snag
+            db.rollback()
             raise HTTPException(status_code=500, detail=f"Failed to delete job: {str(e)}")
 
     @app.delete("/tables/{table_id}")
