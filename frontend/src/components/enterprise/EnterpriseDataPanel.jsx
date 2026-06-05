@@ -93,8 +93,8 @@ export default function EnterpriseDataPanel({
     return () => clearTimeout(t);
   }, [query]);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     setError("");
     try {
       const res = await fetchPage({ page, pageSize, query: debouncedQuery });
@@ -106,7 +106,7 @@ export default function EnterpriseDataPanel({
       setTotal(0);
       setError(e?.response?.data?.detail || e?.message || "Failed to load");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [fetchPage, page, pageSize, debouncedQuery]);
 
@@ -116,7 +116,7 @@ export default function EnterpriseDataPanel({
 
   useEffect(() => {
     if (!refreshEventName) return;
-    const onRefresh = () => load();
+    const onRefresh = (e) => load({ silent: Boolean(e?.detail?.silent) });
     window.addEventListener(refreshEventName, onRefresh);
     return () => window.removeEventListener(refreshEventName, onRefresh);
   }, [refreshEventName, load]);

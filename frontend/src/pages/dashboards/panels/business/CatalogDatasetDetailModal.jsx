@@ -5,6 +5,7 @@ import { StatusBadge } from "../../../../components/enterprise/EnterpriseDataPan
 import { formatRelativeTime } from "../../../../utils/formatRelativeTime";
 import { AppModal, ModalSection, ModalAlert, modalLabelClass } from "@/components/layout/AppModal";
 import { Button } from "@/components/ui/button";
+import DatasetTableInventoryBlock from "@/components/enterprise/DatasetTableInventoryBlock";
 import { cn } from "@/lib/utils";
 
 function formatDetail(d) {
@@ -187,41 +188,12 @@ export default function CatalogDatasetDetailModal({ datasetId, open, onClose }) 
                   )}
                 </div>
 
-                <div>
-                  <p className={cn(modalLabelClass, "mb-1.5")}>Sample data</p>
-                  {(t.sample_rows || []).length ? (
-                    <div className="mdqm-scroll-x max-h-40 overflow-auto rounded-lg border border-border">
-                      <table className="w-full min-w-[400px] text-[11px]">
-                        <thead className="sticky top-0 bg-[var(--table-header-bg)] text-[var(--table-header-fg)]">
-                          <tr>
-                            {(t.columns || []).map((c) => (
-                              <th key={c.name} className="whitespace-nowrap border-b border-border p-2 text-left">
-                                {c.name}
-                              </th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(t.sample_rows || []).slice(0, 8).map((row, ri) => (
-                            <tr key={ri} className="border-b border-border">
-                              {(t.columns || []).map((c) => (
-                                <td
-                                  key={c.name}
-                                  className="max-w-[180px] truncate p-2 text-foreground"
-                                  title={String(row[c.name] ?? "")}
-                                >
-                                  {row[c.name] != null && row[c.name] !== "" ? String(row[c.name]) : "—"}
-                                </td>
-                              ))}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">No sample rows available.</p>
-                  )}
-                </div>
+                <DatasetTableInventoryBlock
+                  table={t}
+                  maxSampleRows={8}
+                  embedded
+                  showSampleRows
+                />
               </div>
             </div>
           ))}

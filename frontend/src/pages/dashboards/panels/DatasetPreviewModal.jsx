@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { importJobFromDb, refreshJobFromDb } from "../../../api";
-import { enterpriseGovernanceDatasetPreview, openGovernanceDatasetEdaReport } from "../enterpriseApi";
+import { enterpriseGovernanceDatasetPreview, invalidateEdaReportCache } from "../enterpriseApi";
+import DatasetEdaReportModal from "./DatasetEdaReportModal";
 import ScoreRing from "../../../components/business/ScoreRing";
-import { AppModal, ModalSection, ModalAlert, modalLabelClass } from "@/components/layout/AppModal";
+import { AppModal, ModalSection, ModalAlert } from "@/components/layout/AppModal";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import DatasetTableInventoryBlock from "@/components/enterprise/DatasetTableInventoryBlock";
 
 function formatDetail(d) {
   if (typeof d === "string") return d;
@@ -26,6 +27,7 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
   const [refreshErr, setRefreshErr] = useState("");
   const [refreshOk, setRefreshOk] = useState("");
   const [runBusy, setRunBusy] = useState(false);
+  const [edaOpen, setEdaOpen] = useState(false);
 
   const loadPreview = useCallback(async () => {
     if (datasetId == null) return;
@@ -76,6 +78,7 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
     setRefreshOk("");
     try {
       await refreshJobFromDb(job.job_id, {});
+      if (datasetId != null) invalidateEdaReportCache(datasetId);
       setRefreshOk("Snapshot updated from the database.");
       await loadPreview();
     } catch (e) {
@@ -85,20 +88,20 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
     }
   };
 
-  const handleEdaReport = async () => {
+  const handleEdaReport = () => {
     if (datasetId == null) return;
-    try {
-      await openGovernanceDatasetEdaReport(datasetId);
-    } catch (e) {
-      setRefreshErr(formatDetail(e?.response?.data) || e?.message || "EDA report failed.");
-    }
+    setEdaOpen(true);
   };
 
   const jobStatus = (job?.status || "").toLowerCase();
   const needsImport = jobStatus === "registered" || jobStatus === "import failed";
-  const hasTableData = (payload?.tables || []).some((t) => (t.row_count || 0) > 0 || (t.sample_rows || []).length > 0);
+  const dataLoaded = Boolean(payload?.data_loaded);
+  const hasTableData =
+    dataLoaded &&
+    (payload?.tables || []).some((t) => (t.row_count || 0) > 0 || (t.sample_rows || []).length > 0);
 
   return (
+    <>
     <AppModal
       open={open}
       onClose={onClose}
@@ -190,75 +193,12 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
           ) : null}
 
           {(payload?.tables || []).map((t) => (
-            <div key={`${t.table_id}-${t.table_name}`} className="overflow-hidden rounded-xl border border-border">
-              <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-border bg-muted/50 px-3 py-2">
-                <span className="font-mono font-semibold text-foreground">{t.table_name}</span>
-                <span className="text-[11px] text-muted-foreground">
-                  {t.row_count != null ? `${t.row_count} rows stored` : "—"}
-                  {t.source_file ? ` · ${t.source_file}` : ""}
-                </span>
-              </div>
-              <div className="space-y-3 p-3">
-                <div>
-                  <p className={cn(modalLabelClass, "mb-1.5")}>Columns (type)</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {(t.columns || []).map((c) => (
-                      <span
-                        key={c.name}
-                        className="rounded-md border border-border bg-card px-2 py-0.5 text-[11px] text-foreground"
-                        title={c.data_type}
-                      >
-                        <span className="font-mono">{c.name}</span>
-                        <span className="ml-1 text-muted-foreground">({c.data_type || "?"})</span>
-                      </span>
-                    ))}
-                  </div>
-                  {!(t.columns || []).length ? (
-                    <p className="text-xs text-muted-foreground">No column metadata — run import or open this job in Jobs.</p>
-                  ) : null}
-                </div>
-                <div>
-                  <p className={cn(modalLabelClass, "mb-1.5")}>
-                    Sample rows (first {Math.min((t.sample_rows || []).length, 15)})
-                  </p>
-                  {(t.sample_rows || []).length ? (
-                    <div className="mdqm-scroll-x max-h-56 overflow-auto rounded-lg border border-border">
-                      <table className="w-full min-w-[400px] text-[11px]">
-                        <thead className="sticky top-0 bg-[var(--table-header-bg)] text-[var(--table-header-fg)]">
-                          <tr>
-                            {(t.columns || []).map((c) => (
-                              <th key={c.name} className="whitespace-nowrap border-b border-border p-2 text-left font-bold">
-                                {c.name}
-                              </th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(t.sample_rows || []).map((row, ri) => (
-                            <tr key={ri} className="border-b border-border">
-                              {(t.columns || []).map((c) => (
-                                <td
-                                  key={c.name}
-                                  className="max-w-[220px] truncate p-2 align-top text-foreground"
-                                  title={String(row[c.name] ?? "")}
-                                >
-                                  {row[c.name] != null && row[c.name] !== "" ? String(row[c.name]) : "—"}
-                                </td>
-                              ))}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">
-                      No sample available (CSV missing or unreadable under uploads/). Column list above reflects registered
-                      schema.
-                    </p>
-                  )}
-                </div>
-              </div>
-            </div>
+            <DatasetTableInventoryBlock
+              key={`${t.table_id}-${t.table_name}`}
+              table={t}
+              maxSampleRows={15}
+              showSampleRows={dataLoaded}
+            />
           ))}
 
           {!loading && !err && !(payload?.tables || []).length && !payload?.hint ? (
@@ -267,5 +207,12 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
         </div>
       )}
     </AppModal>
+    <DatasetEdaReportModal
+      datasetId={datasetId}
+      datasetName={ds?.name}
+      open={edaOpen}
+      onClose={() => setEdaOpen(false)}
+    />
+    </>
   );
 }

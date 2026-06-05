@@ -96,71 +96,51 @@ export async function enterpriseGovernanceDatasetPreview(datasetId) {
   return apiClient.get(`/api/enterprise/governance/datasets/${datasetId}/preview`);
 }
 
-/** Open ydata-profiling HTML report in a new browser tab with premium load screen. */
-export async function openGovernanceDatasetEdaReport(datasetId) {
-  const newWindow = window.open("about:blank", "_blank");
-  if (newWindow) {
-    newWindow.document.title = "Generating EDA Report...";
-    newWindow.document.body.innerHTML = `
-      <div style="font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background-color: #0f172a; color: #f8fafc; margin: 0;">
-        <div style="font-size: 1.25rem; font-weight: 600; margin-bottom: 0.5rem;">Generating EDA Profiling Report...</div>
-        <div style="color: #94a3b8; font-size: 0.875rem;">This might take 10-30 seconds depending on dataset size. Please keep this tab open.</div>
-        <div style="margin-top: 1.5rem; border: 4px solid #334155; border-top: 4px solid #3b82f6; border-radius: 50%; width: 36px; height: 36px; animation: spin 1s linear infinite;"></div>
-        <style>
-          @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-          }
-        </style>
-      </div>
-    `;
+/** In-memory EDA HTML cache (per browser tab) for instant re-open. */
+const edaReportHtmlCache = new Map();
+
+export function getCachedEdaReportHtml(datasetId) {
+  const entry = edaReportHtmlCache.get(Number(datasetId));
+  return entry?.html ?? null;
+}
+
+export function invalidateEdaReportCache(datasetId) {
+  if (datasetId == null) return;
+  edaReportHtmlCache.delete(Number(datasetId));
+}
+
+export function clearEdaReportCache() {
+  edaReportHtmlCache.clear();
+}
+
+/** Warm browser + server cache after import (no UI). */
+export function prefetchEdaReportHtml(datasetId) {
+  const id = Number(datasetId);
+  if (!Number.isFinite(id) || getCachedEdaReportHtml(id)) return;
+  fetchGovernanceDatasetEdaReportHtml(id).catch(() => {});
+}
+
+/** Fetch ydata-profiling HTML for in-page viewer (modal / iframe). Uses browser + server disk cache. */
+export async function fetchGovernanceDatasetEdaReportHtml(datasetId, { refresh = false } = {}) {
+  const id = Number(datasetId);
+  if (!refresh) {
+    const cached = getCachedEdaReportHtml(id);
+    if (cached) return cached;
+  } else {
+    invalidateEdaReportCache(id);
   }
 
-  try {
-    const res = await apiClient.get(`/api/enterprise/governance/datasets/${datasetId}/eda-report`, {
-      responseType: "text",
-    });
-    const html = typeof res?.data === "string" ? res.data : "";
-    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    
-    if (newWindow && !newWindow.closed) {
-      newWindow.location.href = url;
-      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    } else {
-      URL.revokeObjectURL(url);
-    }
-  } catch (err) {
-    let errorDetail = "";
-    if (err?.response?.data) {
-      if (typeof err.response.data === "string") {
-        try {
-          const parsed = JSON.parse(err.response.data);
-          errorDetail = parsed.detail || parsed.message;
-        } catch {
-          errorDetail = err.response.data;
-        }
-      } else {
-        errorDetail = err.response.data.detail || err.response.data.message;
-      }
-    }
-    if (!errorDetail) {
-      errorDetail = err.message || "An unexpected error occurred.";
-    }
-
-    if (newWindow && !newWindow.closed) {
-      newWindow.document.body.innerHTML = `
-        <div style="font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background-color: #0f172a; color: #f8fafc; padding: 20px; text-align: center; margin: 0;">
-          <div style="font-size: 1.25rem; font-weight: 600; margin-bottom: 0.5rem; color: #f87171;">Failed to generate EDA Report</div>
-          <div style="color: #94a3b8; font-size: 0.875rem; max-width: 500px; margin-bottom: 1.5rem;">
-            ${errorDetail}
-          </div>
-          <button onclick="window.close()" style="background-color: #3b82f6; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 500; font-size: 0.875rem; hover: opacity-95">Close Tab</button>
-        </div>
-      `;
-    }
-    throw err;
+  const res = await apiClient.get(`/api/enterprise/governance/datasets/${id}/eda-report`, {
+    responseType: "text",
+    timeout: 300_000,
+    params: refresh ? { refresh: "1" } : undefined,
+  });
+  const html = typeof res?.data === "string" ? res.data : "";
+  if (!html.trim()) {
+    throw new Error("EDA report returned empty HTML from the server.");
   }
+  edaReportHtmlCache.set(id, { html, cachedAt: Date.now() });
+  return html;
 }
 
 export async function enterpriseGovernanceAccessRequests(params) {

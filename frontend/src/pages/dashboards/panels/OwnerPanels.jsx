@@ -5,6 +5,7 @@ import ScoreRing from "../../../components/business/ScoreRing";
 import LineageGraphView from "../../../components/business/LineageGraphView";
 import CreateDatasetLightModal from "./CreateDatasetLightModal";
 import DatasetPreviewModal from "./DatasetPreviewModal";
+import DatasetEdaReportModal from "./DatasetEdaReportModal";
 import DatasetRefreshScheduleModal from "./DatasetRefreshScheduleModal";
 import { getAllSchedules, importJobFromDb, refreshJobFromDb } from "../../../api";
 import {
@@ -12,7 +13,8 @@ import {
   enterpriseGovernanceAccessRequestApprove,
   enterpriseGovernanceAccessRequestReject,
   enterpriseGovernanceDatasets,
-  openGovernanceDatasetEdaReport,
+  invalidateEdaReportCache,
+  prefetchEdaReportHtml,
   enterpriseGovernanceGlossary,
   enterpriseGovernanceGlossaryCreate,
   enterpriseGovernancePolicies,
@@ -22,6 +24,13 @@ import {
   enterpriseGovernanceBusinessReportDelete,
   lineageGraph,
 } from "../enterpriseApi";
+
+/** Soft-refresh datasets table without remounting (avoids flicker during import polling). */
+const GOVERNANCE_DATASETS_REFRESH = "mdqm-governance-datasets-refresh";
+
+function refreshDatasetsTable(silent = true) {
+  window.dispatchEvent(new CustomEvent(GOVERNANCE_DATASETS_REFRESH, { detail: { silent } }));
+}
 
 const polCols = [
   { key: "policy_name", label: "Policy" },
@@ -252,11 +261,16 @@ function GovernanceDatasetSection() {
   const [createOpen, setCreateOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [previewDatasetId, setPreviewDatasetId] = useState(null);
+  const [edaReport, setEdaReport] = useState(null);
   const [scheduleRow, setScheduleRow] = useState(null);
   const [refreshSchedules, setRefreshSchedules] = useState({});
   const [actionBusy, setActionBusy] = useState(null);
+  const [importingJobIds, setImportingJobIds] = useState([]);
 
-  const bump = () => setRefreshKey((k) => k + 1);
+  const bump = () => {
+    setRefreshKey((k) => k + 1);
+    refreshDatasetsTable();
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -280,13 +294,60 @@ function GovernanceDatasetSection() {
     };
   }, [refreshKey]);
 
+  useEffect(() => {
+    if (!importingJobIds.length) return undefined;
+
+    let cancelled = false;
+    const poll = async () => {
+      if (cancelled) return;
+      refreshDatasetsTable();
+      try {
+        const res = await enterpriseGovernanceDatasets({ page: 1, page_size: 100 });
+        const items = res?.data?.items ?? [];
+        setImportingJobIds((prev) => {
+          const next = prev.filter((jid) => {
+            const match = items.find((i) => i.job_id === jid);
+            const st = (match?.import_status || "").toLowerCase();
+            return st === "importing";
+          });
+          for (const jid of prev) {
+            if (next.includes(jid)) continue;
+            const match = items.find((i) => i.job_id === jid);
+            if (match?.id && match.data_loaded) prefetchEdaReportHtml(match.id);
+          }
+          return next;
+        });
+      } catch {
+        /* keep polling until timeout */
+      }
+    };
+
+    poll();
+    const intervalId = window.setInterval(poll, 3000);
+    const stopId = window.setTimeout(() => {
+      setImportingJobIds([]);
+      refreshDatasetsTable();
+    }, 120_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.clearTimeout(stopId);
+    };
+  }, [importingJobIds]);
+
   const handleRunImport = async (row) => {
     if (!row.job_id) return;
     setActionBusy(`run-${row.id}`);
+    invalidateEdaReportCache(row.id);
+    setImportingJobIds((prev) =>
+      prev.includes(row.job_id) ? prev : [...prev, row.job_id]
+    );
     try {
       await importJobFromDb(row.job_id);
-      bump();
+      refreshDatasetsTable();
     } catch (e) {
+      setImportingJobIds((prev) => prev.filter((id) => id !== row.job_id));
       alert(e?.response?.data?.detail || e?.message || "Import failed to start.");
     } finally {
       setActionBusy(null);
@@ -298,6 +359,7 @@ function GovernanceDatasetSection() {
     setActionBusy(`refresh-${row.id}`);
     try {
       await refreshJobFromDb(row.job_id, {});
+      invalidateEdaReportCache(row.id);
       bump();
     } catch (e) {
       alert(e?.response?.data?.detail || e?.message || "Refresh failed.");
@@ -306,19 +368,14 @@ function GovernanceDatasetSection() {
     }
   };
 
-  const handleEdaReport = async (row) => {
-    if (!row.eda_report_ready) {
-      alert("Load data first (Run), then open the EDA report.");
+  const handleEdaReport = (row) => {
+    const st = (row.import_status || "").toLowerCase();
+    const ready = row.eda_report_ready && st !== "registered" && st !== "importing";
+    if (!ready) {
+      alert("Run import first, then open the EDA report.");
       return;
     }
-    setActionBusy(`eda-${row.id}`);
-    try {
-      await openGovernanceDatasetEdaReport(row.id);
-    } catch (e) {
-      alert(e?.response?.data?.detail || e?.message || "EDA report failed.");
-    } finally {
-      setActionBusy(null);
-    }
+    setEdaReport({ id: row.id, name: row.name });
   };
 
   const dsCols = [
@@ -347,22 +404,32 @@ function GovernanceDatasetSection() {
     {
       key: "eda_report",
       label: "EDA report",
-      render: (_, row) => (
-        <button
-          type="button"
-          disabled={!row.eda_report_ready || actionBusy === `eda-${row.id}`}
-          className="text-xs font-semibold text-primary hover:underline disabled:opacity-40 whitespace-nowrap"
-          title={row.eda_report_ready ? "Open ydata-profiling report" : "Load data first (Run)"}
-          onClick={() => handleEdaReport(row)}
-        >
-          {actionBusy === `eda-${row.id}` ? "Opening…" : "EDA report"}
-        </button>
-      ),
+      render: (_, row) => {
+        const st = (row.import_status || "").toLowerCase();
+        const ready = row.eda_report_ready && st !== "registered" && st !== "importing";
+        return (
+          <button
+            type="button"
+            disabled={!ready}
+            className="text-xs font-semibold text-primary hover:underline disabled:opacity-40 whitespace-nowrap"
+            title={ready ? "View ydata-profiling report" : "Run import first"}
+            onClick={() => handleEdaReport(row)}
+          >
+            EDA report
+          </button>
+        );
+      },
     },
     {
       key: "eda_score",
       label: "EDA score",
-      render: (v, row) => scoreCell(v, row.eda_score_source, "Load data"),
+      render: (v, row) => {
+        const st = (row.import_status || "").toLowerCase();
+        if (st === "registered" || st === "importing" || !row.data_loaded) {
+          return scoreCell(null, "none", "Run import");
+        }
+        return scoreCell(v, row.eda_score_source, "Load data");
+      },
     },
     {
       key: "dq_score",
@@ -382,6 +449,16 @@ function GovernanceDatasetSection() {
       render: (_, row) => {
         const sched = row.job_id ? refreshSchedules[row.job_id] : null;
         const isTableSource = row.source_kind === "table";
+        const importStatus = (row.import_status || "").toLowerCase();
+        const isImporting =
+          importStatus === "importing" ||
+          (row.job_id != null && importingJobIds.includes(row.job_id));
+        const awaitingImport =
+          importStatus === "registered" || importStatus === "import failed";
+        const showRun =
+          row.job_id && isTableSource && awaitingImport && !isImporting;
+        const showPostLoad =
+          row.job_id && row.data_loaded && !awaitingImport && !isImporting;
         return (
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -391,17 +468,20 @@ function GovernanceDatasetSection() {
             >
               View
             </button>
-            {row.job_id && !row.data_loaded ? (
+            {showRun ? (
               <button
                 type="button"
-                disabled={actionBusy === `run-${row.id}` || row.import_status === "Importing"}
+                disabled={actionBusy === `run-${row.id}`}
                 className="text-xs font-semibold text-primary hover:underline disabled:opacity-40 whitespace-nowrap"
                 onClick={() => handleRunImport(row)}
               >
-                {actionBusy === `run-${row.id}` || row.import_status === "Importing" ? "Starting…" : "Run"}
+                {actionBusy === `run-${row.id}` ? "Starting…" : "Run"}
               </button>
             ) : null}
-            {row.job_id && row.data_loaded ? (
+            {isImporting ? (
+              <span className="text-xs text-muted-foreground whitespace-nowrap">Importing…</span>
+            ) : null}
+            {showPostLoad ? (
               <button
                 type="button"
                 disabled={actionBusy === `refresh-${row.id}`}
@@ -411,7 +491,7 @@ function GovernanceDatasetSection() {
                 {actionBusy === `refresh-${row.id}` ? "…" : "Refresh now"}
               </button>
             ) : null}
-            {row.job_id && isTableSource ? (
+            {showPostLoad && isTableSource ? (
               <button
                 type="button"
                 className="text-xs font-semibold text-primary hover:underline whitespace-nowrap"
@@ -437,6 +517,12 @@ function GovernanceDatasetSection() {
         datasetId={previewDatasetId}
         open={previewDatasetId != null}
         onClose={() => setPreviewDatasetId(null)}
+      />
+      <DatasetEdaReportModal
+        datasetId={edaReport?.id ?? null}
+        datasetName={edaReport?.name}
+        open={edaReport != null}
+        onClose={() => setEdaReport(null)}
       />
       <DatasetRefreshScheduleModal
         open={scheduleRow != null}
@@ -470,9 +556,9 @@ function GovernanceDatasetSection() {
         </div>
       </div>
       <EnterpriseDataPanel
-        key={`ds-${refreshKey}`}
         title="Registered datasets"
         columns={dsCols}
+        refreshEventName={GOVERNANCE_DATASETS_REFRESH}
         searchPlaceholder="Name contains…"
         fetchPage={({ page, pageSize, query }) =>
           enterpriseGovernanceDatasets({
