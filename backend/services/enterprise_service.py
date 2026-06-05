@@ -576,9 +576,20 @@ def dataset_column_count(db: Session, job_id: int | None) -> int | None:
 
 
 def dataset_has_loaded_data(db: Session, job_id: int | None) -> bool:
+    """True only after ingested rows exist (Run / import completed), not on register-only."""
     if not job_id:
         return False
+    import os
+
     from utils.upload_paths import resolve_table_csv_path
+
+    job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+    cfg = getattr(job, "db_source_config", None) if job else None
+    is_db_table = isinstance(cfg, dict) and cfg.get("kind") == "postgres_tables"
+    if job and is_db_table:
+        status = (job.status or "").strip().lower()
+        if status in ("registered", "importing"):
+            return False
 
     tables = (
         db.query(models.TableMetadata)
@@ -586,17 +597,16 @@ def dataset_has_loaded_data(db: Session, job_id: int | None) -> bool:
         .all()
     )
     for t in tables:
+        if (t.row_count or 0) <= 0:
+            continue
         path = resolve_table_csv_path(job_id, t.table_name)
-        if path and (t.row_count or 0) > 0:
-            return True
-        if path:
-            try:
-                import os
-
-                if os.path.isfile(path) and os.path.getsize(path) > 0:
-                    return True
-            except OSError:
-                pass
+        if not path:
+            continue
+        try:
+            if os.path.isfile(path) and os.path.getsize(path) > 0:
+                return True
+        except OSError:
+            pass
     return False
 
 
@@ -608,10 +618,23 @@ def list_datasets(db: Session, page: int, page_size: int, name_q: str | None = N
     total = q.count()
     rows = q.offset(offset).limit(page_size).all()
     items = []
+    from services.dataset_db_import import sync_registered_table_columns_from_source
+
     for r in rows:
         scores = compute_dataset_scores(db, r)
         jid = scores.get("job_id") or r.job_id
         job = db.query(models.Job).filter(models.Job.job_id == jid).first() if jid else None
+        col_count = dataset_column_count(db, jid)
+        if col_count == 0 and job and not dataset_has_loaded_data(db, jid):
+            first_table = (
+                db.query(models.TableMetadata)
+                .filter(models.TableMetadata.job_id == jid)
+                .order_by(models.TableMetadata.table_id.asc())
+                .first()
+            )
+            if first_table:
+                sync_registered_table_columns_from_source(db, job=job, table=first_table)
+                col_count = dataset_column_count(db, jid)
         items.append(
             {
                 "id": r.id,
@@ -624,7 +647,7 @@ def list_datasets(db: Session, page: int, page_size: int, name_q: str | None = N
                 "created_at": r.created_at.isoformat() if r.created_at else None,
                 "source_kind": dataset_source_kind(db, r, jid),
                 "source_details": format_dataset_source_details(db, r, jid),
-                "column_count": dataset_column_count(db, jid),
+                "column_count": col_count or None,
                 "import_status": job.status if job else None,
                 "data_loaded": dataset_has_loaded_data(db, jid),
                 "eda_report_ready": dataset_has_loaded_data(db, jid),
@@ -689,6 +712,53 @@ def _dataset_refresh_meta(job_row: models.Job | None) -> dict[str, Any]:
     }
 
 
+def _pandas_dtype_label(dtype: Any) -> str:
+    s = str(dtype).lower()
+    if "int" in s:
+        return "Integer"
+    if "float" in s:
+        return "Float"
+    if "bool" in s:
+        return "Boolean"
+    if "datetime" in s or "date" in s:
+        return "Date"
+    return "String"
+
+
+def _glossary_definitions_by_term(db: Session) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for row in db.query(models.EnterpriseGlossaryTerm).all():
+        term = (row.term or "").strip().lower()
+        if term and row.definition:
+            out[term] = str(row.definition).strip()
+    return out
+
+
+def _column_description(
+    column_name: str,
+    data_type: str | None,
+    glossary: dict[str, str],
+    *,
+    table_name: str | None = None,
+) -> str:
+    key = (column_name or "").strip().lower()
+    if key in glossary:
+        return glossary[key]
+    try:
+        from services.groq_description_service import generate_column_description
+
+        return generate_column_description(column_name, data_type, table_name)
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).debug(
+            "Groq column description failed for %s: %s", column_name, exc
+        )
+        if data_type:
+            return f"Field stored as {data_type} in the ingested snapshot."
+        return "—"
+
+
 def build_dataset_inventory_preview(
     db: Session, dataset_id: int, *, sample_rows: int = 15
 ) -> dict[str, Any] | None:
@@ -733,6 +803,7 @@ def build_dataset_inventory_preview(
         }
 
     job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+    data_loaded = dataset_has_loaded_data(db, job_id)
     tables_meta = (
         db.query(models.TableMetadata)
         .filter(models.TableMetadata.job_id == job_id)
@@ -741,8 +812,13 @@ def build_dataset_inventory_preview(
     )
     from utils.upload_paths import resolve_table_csv_path
 
+    from services.dataset_db_import import sync_registered_table_columns_from_source
+
+    glossary = _glossary_definitions_by_term(db)
     out_tables: list[dict[str, Any]] = []
     for t in tables_meta:
+        if job and not data_loaded:
+            sync_registered_table_columns_from_source(db, job=job, table=t)
         cols = (
             db.query(models.ColumnMetadata)
             .filter(
@@ -752,13 +828,36 @@ def build_dataset_inventory_preview(
             .order_by(models.ColumnMetadata.column_name.asc())
             .all()
         )
-        col_list = [{"name": c.column_name, "data_type": c.data_type} for c in cols]
+        col_list = [
+            {
+                "name": c.column_name,
+                "data_type": c.data_type,
+                "description": _column_description(
+                    c.column_name, c.data_type, glossary, table_name=t.table_name
+                ),
+            }
+            for c in cols
+        ]
         sample: list[dict[str, Any]] = []
         csv_path = resolve_table_csv_path(job_id, t.table_name)
-        if csv_path:
+        if data_loaded and csv_path:
             try:
                 df = pd.read_csv(csv_path, nrows=sample_rows)
                 sample = df.fillna("").astype(str).to_dict(orient="records")
+                if not col_list and len(df.columns) > 0:
+                    col_list = [
+                        {
+                            "name": str(c),
+                            "data_type": _pandas_dtype_label(df[c].dtype),
+                            "description": _column_description(
+                                str(c),
+                                _pandas_dtype_label(df[c].dtype),
+                                glossary,
+                                table_name=t.table_name,
+                            ),
+                        }
+                        for c in df.columns
+                    ]
             except Exception:
                 sample = []
         rel_source = None
@@ -777,6 +876,7 @@ def build_dataset_inventory_preview(
 
     return {
         **base,
+        "data_loaded": data_loaded,
         "linked_job": {
             "job_id": job_id,
             "job_name": job.job_name if job else None,

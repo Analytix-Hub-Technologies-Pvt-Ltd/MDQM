@@ -452,10 +452,11 @@ def governance_dataset_eda_report(
             status_code=400,
             detail="Load data first (Run import), then open the EDA report.",
         )
+    refresh = (request.query_params.get("refresh") or "").strip().lower() in ("1", "true", "yes")
     try:
         from services.eda_profiling_service import build_ydata_profiling_html
 
-        html = build_ydata_profiling_html(db, job_id)
+        html, from_cache = build_ydata_profiling_html(db, job_id, use_cache=not refresh)
     except ValueError as e:
         if str(e) == "no_data":
             raise HTTPException(status_code=400, detail="No ingested data available for profiling.")
@@ -468,7 +469,10 @@ def governance_dataset_eda_report(
     safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in (row.name or "dataset"))[:80]
     return HTMLResponse(
         content=html,
-        headers={"Content-Disposition": f'inline; filename="{safe_name}_eda_report.html"'},
+        headers={
+            "Content-Disposition": f'inline; filename="{safe_name}_eda_report.html"',
+            "X-EDA-Cache": "HIT" if from_cache else "MISS",
+        },
     )
 
 

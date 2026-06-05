@@ -191,11 +191,17 @@ if True:
         "allow_credentials": True,
         "allow_methods": ["*"],
         "allow_headers": ["*"],
-        "expose_headers": ["Content-Disposition", "X-Export-Id"],
+        "expose_headers": ["Content-Disposition", "X-Export-Id", "X-EDA-Cache"],
     }
     if not is_production():
         _cors_kwargs["allow_origin_regex"] = r"https?://(localhost|127\.0\.0\.1)(:\d+)?$"
     app.add_middleware(CORSMiddleware, **_cors_kwargs)
+    try:
+        from starlette.middleware.gzip import GZipMiddleware
+
+        app.add_middleware(GZipMiddleware, minimum_size=1024)
+    except ImportError:
+        pass
 
     scheduler = BackgroundScheduler()
     scheduler.start()
@@ -1374,6 +1380,12 @@ if True:
             models.TableStats.table_id == table_id,
         ).delete(synchronize_session=False)
         db.commit()
+        try:
+            from services.eda_profiling_service import invalidate_eda_cache_for_job
+
+            invalidate_eda_cache_for_job(job_id)
+        except Exception:
+            pass
 
     def _resolve_import_creds_from_job(db: Session, job: models.Job, body: dict | None = None):
         """Build Postgres creds + schema/tables from job.db_source_config (saved connection aware)."""
@@ -1487,6 +1499,12 @@ if True:
             if job:
                 job.status = "Pending"
                 db.commit()
+                try:
+                    from services.eda_profiling_service import prewarm_eda_cache_for_job
+
+                    prewarm_eda_cache_for_job(db, job_id)
+                except Exception:
+                    pass
         except Exception:
             job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
             if job:
@@ -1553,6 +1571,36 @@ if True:
         if jr:
             jr.db_source_config = cfg_dict
             db.commit()
+
+        from services.dataset_db_import import (
+            connect_external_db,
+            fetch_table_column_schema,
+            persist_table_column_schema,
+        )
+
+        external_conn = None
+        try:
+            external_conn = connect_external_db(creds)
+            columns = fetch_table_column_schema(
+                external_conn,
+                schema_name,
+                table_name,
+                creds.get("db_type") or "postgres",
+            )
+            persist_table_column_schema(
+                db,
+                job_id=job_id,
+                table_id=1,
+                columns=columns,
+            )
+        except Exception:
+            pass
+        finally:
+            if external_conn is not None:
+                try:
+                    external_conn.close()
+                except Exception:
+                    pass
 
         return {
             "message": "Dataset registered (data not loaded yet). Run import when ready.",
@@ -1763,10 +1811,34 @@ if True:
             raise HTTPException(status_code=404, detail="Job not found")
         cfg = job.db_source_config
         if not cfg or not isinstance(cfg, dict) or cfg.get("kind") != "postgres_tables":
-            raise HTTPException(
-                status_code=400,
-                detail="Refresh is only available for database-backed datasets (Data Owner → Table).",
-            )
+            # File/server-path datasets: refresh from saved local source paths.
+            tms = db.query(models.TableMetadata).filter(models.TableMetadata.job_id == job_id).all()
+            refreshed = []
+            for tm in tms:
+                source_path = _get_table_source_path(job_id, tm.table_id)
+                if not source_path or not os.path.isfile(source_path):
+                    continue
+                _refresh_table_csv_from_source_path(job_id, tm.table_id, db)
+                refreshed.append({"table_name": tm.table_name, "source_path": source_path})
+
+            if not refreshed:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No saved source file path found for this dataset. Re-upload or choose a valid server path first.",
+                )
+
+            try:
+                from services.eda_profiling_service import invalidate_eda_cache_for_job
+
+                invalidate_eda_cache_for_job(job_id)
+            except Exception:
+                pass
+
+            return {
+                "message": "Job tables refreshed from saved source path",
+                "job_id": job_id,
+                "tables": refreshed,
+            }
         schema_name = str(cfg.get("schema_name") or "").strip()
         table_names = cfg.get("table_names") or []
         if not schema_name or not isinstance(table_names, list) or len(table_names) == 0:
