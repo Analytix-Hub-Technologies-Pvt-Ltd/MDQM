@@ -14,6 +14,7 @@ import AdminAccessRequestsPage from "./pages/admin/AdminAccessRequestsPage";
 import DbConnectionsPage from "./pages/DbConnectionsPage";
 import LineagePage from "./pages/LineagePage";
 import AuditLogsPage from "./pages/AuditLogsPage";
+import DeveloperToolsPage from "./pages/DeveloperToolsPage";
 import ProtectedRoute from "./auth/ProtectedRoute";
 import PermissionGuard from "./auth/PermissionGuard";
 import { PERMISSIONS } from "./auth/permissions";
@@ -37,6 +38,14 @@ function AppShell() {
       <Routes>
         <Route path="/dashboard" element={<DashboardRouter />} />
         <Route path="/profile" element={<ProfilePage />} />
+        <Route
+          path="/developer-tools"
+          element={
+            <PermissionGuard require={PERMISSIONS.API_MONITOR_VIEW}>
+              <DeveloperToolsPage />
+            </PermissionGuard>
+          }
+        />
         <Route
           path="/jobs"
           element={

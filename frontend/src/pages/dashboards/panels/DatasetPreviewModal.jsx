@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { importJobFromDb, refreshJobFromDb } from "../../../api";
+import { importJobFromDb, refreshJobFromDb, removeJobJoinSource } from "../../../api";
 import { enterpriseGovernanceDatasetPreview, invalidateEdaReportCache } from "../enterpriseApi";
 import DatasetEdaReportModal from "./DatasetEdaReportModal";
+import EditDatasetSourceModal from "./EditDatasetSourceModal";
+import AddDataSourceModal from "./AddDataSourceModal";
 import ScoreRing from "../../../components/business/ScoreRing";
 import { AppModal, ModalSection, ModalAlert } from "@/components/layout/AppModal";
 import { Button } from "@/components/ui/button";
@@ -28,6 +30,9 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
   const [refreshOk, setRefreshOk] = useState("");
   const [runBusy, setRunBusy] = useState(false);
   const [edaOpen, setEdaOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [addSourceOpen, setAddSourceOpen] = useState(false);
+  const [removeJoinBusy, setRemoveJoinBusy] = useState("");
 
   const loadPreview = useCallback(async () => {
     if (datasetId == null) return;
@@ -55,6 +60,11 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
   const job = payload?.linked_job;
   const refreshMeta = payload?.refresh || {};
   const canRefresh = Boolean(job?.job_id && refreshMeta.available);
+  const canEditDataset = Boolean(job?.job_id && refreshMeta.available);
+  const baseTable = (payload?.tables || [])[0];
+  const baseColumns = baseTable?.columns || [];
+  const canAddDataSource = Boolean(job?.job_id && baseColumns.length > 0);
+  const joinSources = payload?.join_sources || [];
 
   const handleRunImport = async () => {
     if (!job?.job_id) return;
@@ -93,6 +103,23 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
     setEdaOpen(true);
   };
 
+  const handleRemoveJoin = async (joinId) => {
+    if (!job?.job_id || !joinId) return;
+    setRemoveJoinBusy(joinId);
+    setRefreshErr("");
+    setRefreshOk("");
+    try {
+      await removeJobJoinSource(job.job_id, joinId);
+      if (datasetId != null) invalidateEdaReportCache(datasetId);
+      setRefreshOk("Join removed. Dataset restored without that source.");
+      await loadPreview();
+    } catch (e) {
+      setRefreshErr(formatDetail(e?.response?.data) || e?.message || "Failed to remove join.");
+    } finally {
+      setRemoveJoinBusy("");
+    }
+  };
+
   const jobStatus = (job?.status || "").toLowerCase();
   const needsImport = jobStatus === "registered" || jobStatus === "import failed";
   const dataLoaded = Boolean(payload?.data_loaded);
@@ -105,8 +132,30 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
     <AppModal
       open={open}
       onClose={onClose}
-      title="Dataset storage"
-      description="Registered columns (from MDQM metadata) and a short sample of rows loaded into this product."
+      headerContent={
+        <div className="min-w-0">
+          <div className="flex items-start justify-between gap-3">
+            <h2 id="app-modal-title" className="text-sm font-bold uppercase tracking-wider text-foreground">
+              Dataset storage
+            </h2>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              {canAddDataSource ? (
+                <Button type="button" variant="default" size="sm" onClick={() => setAddSourceOpen(true)} className="text-xs uppercase tracking-wide">
+                  Add data source
+                </Button>
+              ) : null}
+              {canEditDataset ? (
+                <Button type="button" variant="outline" size="sm" onClick={() => setEditOpen(true)} className="text-xs uppercase tracking-wide">
+                  Edit dataset
+                </Button>
+              ) : null}
+            </div>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Registered columns (from MDQM metadata) and a short sample of rows loaded into this product.
+          </p>
+        </div>
+      }
       maxWidth="max-w-4xl"
       footer={
         <Button type="button" variant="outline" className="w-full" onClick={onClose}>
@@ -156,6 +205,39 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
               {job.job_name ? <span className="text-muted-foreground"> — {job.job_name}</span> : null}
               {job.status ? <span className="text-muted-foreground"> ({job.status})</span> : null}
             </ModalAlert>
+          ) : null}
+
+          {joinSources.length > 0 ? (
+            <ModalSection title="Joined data sources">
+              <div className="space-y-2">
+                {joinSources.map((j) => (
+                  <div key={j.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card px-3 py-2">
+                    <div className="min-w-0 text-xs">
+                      <p className="font-semibold text-foreground">{j.label || j.file_name || j.table_name || "Join source"}</p>
+                      <p className="text-muted-foreground">
+                        {(j.source_kind || "file").toUpperCase()} · {(j.join_type || "left").toUpperCase()} JOIN ·{" "}
+                        <span className="font-mono">{j.left_key}</span> = <span className="font-mono">{j.right_key}</span>
+                      </p>
+                      {j.selected_columns?.length ? (
+                        <p className="mt-1 text-[10px] text-muted-foreground line-clamp-2">
+                          Columns: {j.selected_columns.join(", ")}
+                        </p>
+                      ) : null}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={removeJoinBusy === j.id}
+                      onClick={() => handleRemoveJoin(j.id)}
+                      className="text-xs uppercase tracking-wide text-destructive hover:text-destructive"
+                    >
+                      {removeJoinBusy === j.id ? "Removing…" : "Remove join"}
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </ModalSection>
           ) : null}
 
           {canRefresh ? (
@@ -212,6 +294,28 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
       datasetName={ds?.name}
       open={edaOpen}
       onClose={() => setEdaOpen(false)}
+    />
+    <EditDatasetSourceModal
+      open={editOpen}
+      onClose={() => setEditOpen(false)}
+      jobId={job?.job_id}
+      sourceConfig={payload?.source_config}
+      onSaved={async () => {
+        await loadPreview();
+        setEditOpen(false);
+        setRefreshOk("Dataset source updated. Run import to load updated source data.");
+      }}
+    />
+    <AddDataSourceModal
+      open={addSourceOpen}
+      onClose={() => setAddSourceOpen(false)}
+      jobId={job?.job_id}
+      baseColumns={baseColumns}
+      onSaved={async () => {
+        if (datasetId != null) invalidateEdaReportCache(datasetId);
+        await loadPreview();
+        setRefreshOk("Data source joined successfully. Preview updated with merged columns.");
+      }}
     />
     </>
   );

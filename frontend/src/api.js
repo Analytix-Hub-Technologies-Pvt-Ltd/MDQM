@@ -164,12 +164,15 @@ export const renameTable = async (tableId, newName) => {
     return apiClient.put(`/tables/${tableId}/rename`, { name: newName });
 };
 
-export const uploadCsvToJob = async (jobId, file, previewEdits = [], sourcePath = "") => {
+export const uploadCsvToJob = async (jobId, file, previewEdits = [], sourcePath = "", selectedColumns = []) => {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("preview_edits", JSON.stringify(previewEdits));
     if (String(sourcePath || "").trim()) {
         formData.append("source_path", String(sourcePath).trim());
+    }
+    if (Array.isArray(selectedColumns) && selectedColumns.length > 0) {
+        formData.append("selected_columns", JSON.stringify(selectedColumns));
     }
     return apiClient.post(`/jobs/${jobId}/upload`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
@@ -192,8 +195,12 @@ export const createNewJob = async (jobName) => {
     return apiClient.post(`/jobs/create`, { job_name: jobName });
 };
 
-export const uploadCsvPathToJob = async (jobId, filePath) => {
-    return apiClient.post(`/jobs/${jobId}/upload-from-path`, { file_path: filePath });
+export const uploadCsvPathToJob = async (jobId, filePath, selectedColumns = []) => {
+    const body = { file_path: filePath };
+    if (Array.isArray(selectedColumns) && selectedColumns.length > 0) {
+        body.selected_columns = selectedColumns;
+    }
+    return apiClient.post(`/jobs/${jobId}/upload-from-path`, body);
 };
 
 export const replaceTableFileFromPath = async (jobId, tableId, filePath) => {
@@ -231,6 +238,31 @@ export const importJobFromDb = async (jobId, body = {}) => {
 /** Re-pull all tables for a job created via /db/connect (uses stored db_source_config). */
 export const refreshJobFromDb = async (jobId, body = {}) => {
     return apiClient.post(`/jobs/${jobId}/refresh-from-db`, body);
+};
+
+/** Update DB source configuration (table + selected columns) for a DB-backed dataset job. */
+export const updateJobDbSource = async (jobId, payload) => {
+    return apiClient.put(`/jobs/${jobId}/db-source`, payload);
+};
+
+export const listJobJoinSources = async (jobId) => {
+    return apiClient.get(`/jobs/${jobId}/join-sources`);
+};
+
+export const addJobJoinSource = async (jobId, payload, file = null) => {
+    if (file) {
+        const formData = new FormData();
+        formData.append("payload_json", JSON.stringify(payload));
+        formData.append("file", file);
+        return apiClient.post(`/jobs/${jobId}/join-sources`, formData, {
+            headers: { "Content-Type": "multipart/form-data" },
+        });
+    }
+    return apiClient.post(`/jobs/${jobId}/join-sources`, payload);
+};
+
+export const removeJobJoinSource = async (jobId, joinId) => {
+    return apiClient.delete(`/jobs/${jobId}/join-sources/${joinId}`);
 };
 
 export const listDatabases = async (credentials) => {

@@ -1,13 +1,17 @@
 import { useState, useRef, useEffect } from "react";
-import { ChevronDown, User, LogOut } from "lucide-react";
+import { ChevronDown, User, LogOut, Code2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+import { usePermissions } from "../auth/usePermissions";
+import { PERMISSIONS } from "../auth/permissions";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 export default function ProfileDropdown() {
   const { user, logout } = useAuth();
+  const { hasPermission } = usePermissions();
   const navigate = useNavigate();
+  const canViewDeveloperTools = hasPermission(PERMISSIONS.API_MONITOR_VIEW);
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef(null);
 
@@ -54,6 +58,19 @@ export default function ProfileDropdown() {
               <User className="h-4 w-4" />
               Edit profile
             </button>
+            {canViewDeveloperTools ? (
+              <button
+                type="button"
+                onClick={() => {
+                  navigate("/developer-tools");
+                  setIsOpen(false);
+                }}
+                className="flex w-full items-center gap-2 px-4 py-2 text-sm hover:bg-muted transition-colors"
+              >
+                <Code2 className="h-4 w-4" />
+                Developer Tools
+              </button>
+            ) : null}
           </div>
           <div className="border-t border-border py-1">
             <button

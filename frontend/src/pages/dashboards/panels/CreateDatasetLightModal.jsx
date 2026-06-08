@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { AppModal, ModalAlert, modalInputClass, modalLabelClass } from "@/components/layout/AppModal";
+import ColumnSelector from "@/components/enterprise/ColumnSelector";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -14,6 +15,9 @@ import {
   registerDbDatasetSource,
   scheduleJob,
   testDbConnection,
+  previewCsvFile,
+  previewCsvFileFromPath,
+  getDbTableColumns,
 } from "../../../api";
 import { enterpriseGovernanceDatasetCreate } from "../enterpriseApi";
 
@@ -47,6 +51,9 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
   const [scheduleType, setScheduleType] = useState("daily");
   const [scheduleTime, setScheduleTime] = useState("02:00");
   const [scheduleDate, setScheduleDate] = useState("");
+  const [availableColumns, setAvailableColumns] = useState([]);
+  const [selectedColumns, setSelectedColumns] = useState([]);
+  const [columnsLoading, setColumnsLoading] = useState(false);
 
   const pickConnection = async (value, connList) => {
     setSelectedConnectionId(value);
@@ -145,6 +152,23 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
     setScheduleType("daily");
     setScheduleTime("02:00");
     setScheduleDate("");
+    setAvailableColumns([]);
+    setSelectedColumns([]);
+    setColumnsLoading(false);
+  };
+
+  const setColumnsFromList = (cols = []) => {
+    const list = Array.isArray(cols) ? cols.map((c) => String(c)) : [];
+    setAvailableColumns(list);
+    setSelectedColumns(list);
+  };
+
+  const validateColumnSelection = () => {
+    if (availableColumns.length > 0 && selectedColumns.length === 0) {
+      setError("Select at least one column.");
+      return false;
+    }
+    return true;
   };
 
   const handleClose = () => {
@@ -262,6 +286,7 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
       setError("Choose a CSV file or enter a server file path.");
       return;
     }
+    if (!validateColumnSelection()) return;
     setBusy(true);
     setError("");
     let jobId = null;
@@ -269,10 +294,11 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
       const { data } = await createNewJob(n);
       jobId = data?.job_id;
       if (!jobId) throw new Error("Could not create job.");
+      const cols = selectedColumns.length ? selectedColumns : undefined;
       if (filePath.trim()) {
-        await uploadCsvPathToJob(jobId, filePath.trim());
+        await uploadCsvPathToJob(jobId, filePath.trim(), cols);
       } else {
-        await uploadCsvToJob(jobId, file, [], "");
+        await uploadCsvToJob(jobId, file, [], "", cols);
       }
       await registerGovernanceQuiet(n, jobId);
       onCreated?.();
@@ -314,6 +340,7 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
       setError("Pick a date for the one-time refresh schedule.");
       return;
     }
+    if (!validateColumnSelection()) return;
     setBusy(true);
     setError("");
     setLoadHint("");
@@ -322,6 +349,9 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
       payload.job_name = n;
       payload.schema_name = selectedSchema;
       payload.table_names = [selectedTable];
+      if (selectedColumns.length) {
+        payload.selected_columns = selectedColumns;
+      }
       const regRes = await registerDbDatasetSource(payload);
       const jobId = regRes?.data?.job_id ?? regRes?.data?.created_jobs?.[0]?.job_id;
       if (!jobId) throw new Error("Could not register dataset.");
@@ -351,7 +381,72 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
     const opts = tablesBySchema[schemaName] || [];
     setTableOptions(opts);
     setSelectedTable("");
+    setColumnsFromList([]);
   };
+
+  const loadCsvColumns = async (nextFile, nextPath) => {
+    setColumnsLoading(true);
+    setError("");
+    try {
+      if (nextFile) {
+        const res = await previewCsvFile(nextFile);
+        setColumnsFromList(res?.data?.columns || []);
+      } else if (nextPath?.trim()) {
+        const res = await previewCsvFileFromPath(nextPath.trim());
+        setColumnsFromList(res?.data?.columns || []);
+      } else {
+        setColumnsFromList([]);
+      }
+    } catch (e) {
+      setColumnsFromList([]);
+      setError(formatAxiosDetail(e?.response?.data) || e?.message || "Could not read file columns.");
+    } finally {
+      setColumnsLoading(false);
+    }
+  };
+
+  const loadTableColumns = async (schemaName, tableName) => {
+    if (!schemaName || !tableName || !selectedConnectionId) {
+      setColumnsFromList([]);
+      return;
+    }
+    if (!dbCreds.pass?.trim()) {
+      setColumnsFromList([]);
+      return;
+    }
+    setColumnsLoading(true);
+    setError("");
+    try {
+      const payload = buildSchemasPayload();
+      payload.schema_name = schemaName;
+      payload.table_name = tableName;
+      const res = await getDbTableColumns(payload);
+      setColumnsFromList(res?.data?.columns || []);
+    } catch (e) {
+      setColumnsFromList([]);
+      setError(formatAxiosDetail(e?.response?.data) || e?.message || "Could not load table columns.");
+    } finally {
+      setColumnsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!open || mode !== "file") return undefined;
+    const timer = setTimeout(() => {
+      loadCsvColumns(file, filePath);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [open, mode, file, filePath]);
+
+  useEffect(() => {
+    if (!open || mode !== "table") return undefined;
+    if (!selectedSchema || !selectedTable) {
+      setColumnsFromList([]);
+      return undefined;
+    }
+    loadTableColumns(selectedSchema, selectedTable);
+    return undefined;
+  }, [open, mode, selectedSchema, selectedTable, selectedConnectionId, dbCreds.pass, dbCreds.dbname]);
 
   const modeBtn = (active) =>
     cn(
@@ -384,14 +479,20 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
         <div className="grid grid-cols-2 gap-2 mb-4">
           <button
             type="button"
-            onClick={() => setMode("file")}
+            onClick={() => {
+              setMode("file");
+              setColumnsFromList([]);
+            }}
             className={modeBtn(mode === "file")}
           >
             File (CSV)
           </button>
           <button
             type="button"
-            onClick={() => setMode("table")}
+            onClick={() => {
+              setMode("table");
+              setColumnsFromList([]);
+            }}
             className={modeBtn(mode === "table")}
           >
             Table (DB)
@@ -416,6 +517,7 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
                 onChange={(e) => {
                   setFile(e.target.files?.[0] || null);
                   if (e.target.files?.[0]) setFilePath("");
+                  setColumnsFromList([]);
                 }}
               />
             </div>
@@ -428,10 +530,17 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
                 onChange={(e) => {
                   setFilePath(e.target.value);
                   if (e.target.value.trim()) setFile(null);
+                  setColumnsFromList([]);
                 }}
               />
             </div>
-            <Button type="submit" disabled={busy} className="w-full text-xs font-bold uppercase tracking-wide">
+            <ColumnSelector
+              columns={availableColumns}
+              selected={selectedColumns}
+              onChange={setSelectedColumns}
+              loading={columnsLoading}
+            />
+            <Button type="submit" disabled={busy || columnsLoading} className="w-full text-xs font-bold uppercase tracking-wide">
               {busy ? "Creating…" : "Create from file"}
             </Button>
           </form>
@@ -566,6 +675,12 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
                 ) : null}
               </div>
             ) : null}
+            <ColumnSelector
+              columns={availableColumns}
+              selected={selectedColumns}
+              onChange={setSelectedColumns}
+              loading={columnsLoading}
+            />
             <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
               <input
                 type="checkbox"
@@ -603,7 +718,7 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
                 />
               </div>
             ) : null}
-            <Button type="submit" disabled={busy || schemasBusy} className="w-full text-xs font-bold uppercase tracking-wide">
+            <Button type="submit" disabled={busy || schemasBusy || columnsLoading} className="w-full text-xs font-bold uppercase tracking-wide">
               {busy ? "Saving…" : "Save & close"}
             </Button>
             <p className="text-[11px] text-muted-foreground text-center">
