@@ -426,7 +426,9 @@ def create_dataset(
     return row
 
 
-def compute_dataset_scores(db: Session, row: models.EnterpriseDataset) -> dict[str, Any]:
+def compute_dataset_scores(
+    db: Session, row: models.EnterpriseDataset, *, csv_sample_rows: int = 5000
+) -> dict[str, Any]:
     """
     EDA score: exploratory profile of ingested CSVs (column completeness / null rate).
     DQ score: validation outcomes from the latest TableStats per table on the linked job.
@@ -466,7 +468,10 @@ def compute_dataset_scores(db: Session, row: models.EnterpriseDataset) -> dict[s
             if not csv_path:
                 continue
             try:
-                df = pd.read_csv(csv_path)
+                read_kwargs: dict[str, Any] = {}
+                if csv_sample_rows > 0:
+                    read_kwargs["nrows"] = csv_sample_rows
+                df = pd.read_csv(csv_path, **read_kwargs)
             except Exception:
                 continue
             if df.empty or len(df.columns) == 0:
@@ -734,31 +739,6 @@ def _glossary_definitions_by_term(db: Session) -> dict[str, str]:
     return out
 
 
-def _column_description(
-    column_name: str,
-    data_type: str | None,
-    glossary: dict[str, str],
-    *,
-    table_name: str | None = None,
-) -> str:
-    key = (column_name or "").strip().lower()
-    if key in glossary:
-        return glossary[key]
-    try:
-        from services.groq_description_service import generate_column_description
-
-        return generate_column_description(column_name, data_type, table_name)
-    except Exception as exc:
-        import logging
-
-        logging.getLogger(__name__).debug(
-            "Groq column description failed for %s: %s", column_name, exc
-        )
-        if data_type:
-            return f"Field stored as {data_type} in the ingested snapshot."
-        return "—"
-
-
 def build_dataset_inventory_preview(
     db: Session, dataset_id: int, *, sample_rows: int = 15
 ) -> dict[str, Any] | None:
@@ -812,13 +792,11 @@ def build_dataset_inventory_preview(
     )
     from utils.upload_paths import resolve_table_csv_path
 
-    from services.dataset_db_import import sync_registered_table_columns_from_source
+    from services.column_description_service import flush_column_descriptions, resolve_column_description
 
     glossary = _glossary_definitions_by_term(db)
     out_tables: list[dict[str, Any]] = []
     for t in tables_meta:
-        if job and not data_loaded:
-            sync_registered_table_columns_from_source(db, job=job, table=t)
         cols = (
             db.query(models.ColumnMetadata)
             .filter(
@@ -832,12 +810,20 @@ def build_dataset_inventory_preview(
             {
                 "name": c.column_name,
                 "data_type": c.data_type,
-                "description": _column_description(
-                    c.column_name, c.data_type, glossary, table_name=t.table_name
+                "description": resolve_column_description(
+                    db,
+                    job_id=job_id,
+                    table_id=t.table_id,
+                    column_name=c.column_name,
+                    data_type=c.data_type,
+                    glossary=glossary,
+                    table_name=t.table_name,
+                    column_row=c,
                 ),
             }
             for c in cols
         ]
+        flush_column_descriptions(db)
         sample: list[dict[str, Any]] = []
         csv_path = resolve_table_csv_path(job_id, t.table_name)
         if data_loaded and csv_path:
@@ -845,19 +831,25 @@ def build_dataset_inventory_preview(
                 df = pd.read_csv(csv_path, nrows=sample_rows)
                 sample = df.fillna("").astype(str).to_dict(orient="records")
                 if not col_list and len(df.columns) > 0:
-                    col_list = [
-                        {
-                            "name": str(c),
-                            "data_type": _pandas_dtype_label(df[c].dtype),
-                            "description": _column_description(
-                                str(c),
-                                _pandas_dtype_label(df[c].dtype),
-                                glossary,
-                                table_name=t.table_name,
-                            ),
-                        }
-                        for c in df.columns
-                    ]
+                    col_list = []
+                    for c in df.columns:
+                        dtype = _pandas_dtype_label(df[c].dtype)
+                        col_list.append(
+                            {
+                                "name": str(c),
+                                "data_type": dtype,
+                                "description": resolve_column_description(
+                                    db,
+                                    job_id=job_id,
+                                    table_id=t.table_id,
+                                    column_name=str(c),
+                                    data_type=dtype,
+                                    glossary=glossary,
+                                    table_name=t.table_name,
+                                ),
+                            }
+                        )
+                    flush_column_descriptions(db)
             except Exception:
                 sample = []
         rel_source = None
@@ -874,6 +866,9 @@ def build_dataset_inventory_preview(
             }
         )
 
+    src_cfg = job.db_source_config if job and isinstance(job.db_source_config, dict) else {}
+    from services.dataset_join_service import list_join_sources
+
     return {
         **base,
         "data_loaded": data_loaded,
@@ -883,6 +878,23 @@ def build_dataset_inventory_preview(
             "status": job.status if job else None,
         },
         "refresh": _dataset_refresh_meta(job),
+        "source_config": (
+            {
+                "kind": "postgres_tables",
+                "connection_id": src_cfg.get("connection_id"),
+                "db_type": src_cfg.get("db_type") or "postgres",
+                "host": src_cfg.get("host"),
+                "port": str(src_cfg.get("port") or "5432"),
+                "user": src_cfg.get("user"),
+                "dbname": src_cfg.get("dbname"),
+                "schema_name": src_cfg.get("schema_name"),
+                "table_name": (src_cfg.get("table_names") or [None])[0],
+                "selected_columns": src_cfg.get("selected_columns") or [],
+            }
+            if src_cfg.get("kind") == "postgres_tables"
+            else None
+        ),
+        "join_sources": list_join_sources(job) if job else [],
         "tables": out_tables,
     }
 

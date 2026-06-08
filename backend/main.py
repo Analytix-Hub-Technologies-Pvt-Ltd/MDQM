@@ -98,6 +98,16 @@ if True:
                     "ALTER TABLE metadata.db_connections ADD COLUMN IF NOT EXISTS db_type VARCHAR(32) DEFAULT 'postgres'"
                 )
             )
+            conn.execute(
+                text(
+                    "ALTER TABLE metadata.column_metadata ADD COLUMN IF NOT EXISTS description TEXT"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE metadata.column_metadata ADD COLUMN IF NOT EXISTS description_generated_at TIMESTAMPTZ"
+                )
+            )
         print("[mdqm] Database schema ready.", file=sys.stderr, flush=True)
 
     def _seed_users():
@@ -1486,6 +1496,10 @@ if True:
             job.status = "Importing"
             db.commit()
             external_conn = _connect_db(creds)
+            cfg = job.db_source_config if isinstance(job.db_source_config, dict) else {}
+            from services.dataset_db_import import normalize_selected_columns
+
+            selected_columns = normalize_selected_columns(cfg.get("selected_columns"))
             import_tables_into_job(
                 db,
                 job_id=job_id,
@@ -1494,6 +1508,7 @@ if True:
                 table_names=table_names,
                 snapshot_fn=_snapshot_dataframe_to_job_table,
                 db_type=creds.get("db_type") or "postgres",
+                selected_columns=selected_columns or None,
             )
             job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
             if job:
@@ -1524,9 +1539,14 @@ if True:
         Register a dataset job + single table without pulling rows yet.
         Data Owner uses /jobs/{id}/import-from-db to load data in the background.
         """
-        from services.dataset_db_import import build_db_source_config
+        from services.dataset_db_import import (
+            build_db_source_config,
+            filter_column_schema,
+            normalize_selected_columns,
+        )
 
         job_name = str(payload.get("job_name") or "").strip()
+        selected_columns = normalize_selected_columns(payload.get("selected_columns"))
         schema_name = str(payload.get("schema_name") or "").strip()
         raw_tables = payload.get("table_names")
 
@@ -1587,6 +1607,7 @@ if True:
                 table_name,
                 creds.get("db_type") or "postgres",
             )
+            columns = filter_column_schema(columns, selected_columns)
             persist_table_column_schema(
                 db,
                 job_id=job_id,
@@ -1955,6 +1976,9 @@ if True:
                     )
 
             external_conn = _connect_db(creds)
+            from services.dataset_db_import import normalize_selected_columns
+
+            selected_columns = normalize_selected_columns(cfg.get("selected_columns"))
             summaries = import_tables_into_job(
                 db,
                 job_id=job_id,
@@ -1963,6 +1987,7 @@ if True:
                 table_names=table_names,
                 snapshot_fn=_snapshot_dataframe_to_job_table,
                 db_type=creds.get("db_type") or "postgres",
+                selected_columns=selected_columns or None,
             )
         except HTTPException:
             raise
@@ -1980,6 +2005,261 @@ if True:
             "job_id": job_id,
             "tables": summaries,
         }
+
+    @app.put("/jobs/{job_id}/db-source")
+    def update_job_db_source(
+        job_id: int,
+        request: Request,
+        payload: dict = Body(...),
+        db: Session = Depends(get_db),
+    ):
+        """
+        Update DB-backed dataset source settings (connection/schema/table/selected columns)
+        for an existing job created via Table (DB) flow.
+        """
+        job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        cfg = job.db_source_config if isinstance(job.db_source_config, dict) else {}
+        if cfg.get("kind") != "postgres_tables":
+            raise HTTPException(
+                status_code=400,
+                detail="Only database-backed jobs can update dataset source settings.",
+            )
+
+        prev_tables = cfg.get("table_names") or []
+        schema_name = str(payload.get("schema_name") or cfg.get("schema_name") or "").strip()
+        table_name = str(payload.get("table_name") or "").strip()
+        if not table_name and prev_tables:
+            table_name = str(prev_tables[0] or "").strip()
+
+        if not schema_name or not table_name:
+            raise HTTPException(
+                status_code=400,
+                detail="schema_name and table_name are required.",
+            )
+
+        base_payload = {
+            "connection_id": payload.get("connection_id", cfg.get("connection_id")),
+            "host": payload.get("host", cfg.get("host")),
+            "port": payload.get("port", cfg.get("port") or "5432"),
+            "user": payload.get("user", cfg.get("user")),
+            "dbname": payload.get("dbname", cfg.get("dbname")),
+            "db_type": payload.get("db_type", cfg.get("db_type") or "postgres"),
+        }
+        if payload.get("pass") is not None:
+            base_payload["pass"] = payload.get("pass")
+
+        creds = _apply_connection_payload_overrides(
+            _resolve_connection_payload(base_payload, getattr(request.state, "user_id", None)),
+            base_payload,
+        )
+        if not creds.get("host") or not creds.get("user") or not creds.get("dbname"):
+            raise HTTPException(
+                status_code=400,
+                detail="host, user, and dbname are required (or provide connection_id + dbname).",
+            )
+        if not str(creds.get("pass") or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No password is stored for this connection. Re-save the connection with a password "
+                    "or provide pass in this request."
+                ),
+            )
+
+        from services.dataset_db_import import (
+            build_db_source_config,
+            fetch_table_column_schema,
+            filter_column_schema,
+            normalize_selected_columns,
+            persist_table_column_schema,
+        )
+
+        selected_columns = normalize_selected_columns(payload.get("selected_columns"))
+        ext_conn = None
+        try:
+            ext_conn = _connect_db(creds)
+            source_columns = fetch_table_column_schema(
+                ext_conn,
+                schema_name,
+                table_name,
+                creds.get("db_type") or "postgres",
+            )
+            if not source_columns:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No columns found for selected table.",
+                )
+            filtered_columns = filter_column_schema(source_columns, selected_columns)
+            if selected_columns and len(filtered_columns) == len(source_columns):
+                # If none of selected names matched, filter_column_schema returns full set.
+                source_names = {c.get("name") for c in source_columns}
+                if not all(c in source_names for c in selected_columns):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Some selected columns are not present in source table.",
+                    )
+        finally:
+            if ext_conn is not None:
+                try:
+                    ext_conn.close()
+                except Exception:
+                    pass
+
+        # Reset table/column metadata to match updated source definition.
+        db.query(models.ColumnMetadata).filter(models.ColumnMetadata.job_id == job_id).delete(
+            synchronize_session=False
+        )
+        db.query(models.TableMetadata).filter(models.TableMetadata.job_id == job_id).delete(
+            synchronize_session=False
+        )
+        db.add(
+            models.TableMetadata(
+                job_id=job_id,
+                table_id=1,
+                table_name=table_name,
+                row_count=0,
+            )
+        )
+        db.commit()
+
+        persist_table_column_schema(
+            db,
+            job_id=job_id,
+            table_id=1,
+            columns=filtered_columns,
+        )
+
+        cfg_payload = {
+            "connection_id": base_payload.get("connection_id"),
+            "selected_columns": [c.get("name") for c in filtered_columns],
+        }
+        job.db_source_config = build_db_source_config(
+            cfg_payload,
+            creds,
+            schema_name,
+            [table_name],
+        )
+        job.status = "Registered"
+        db.commit()
+
+        return {
+            "message": "Dataset source updated. Run import to load new source data.",
+            "job_id": job_id,
+            "schema_name": schema_name,
+            "table_name": table_name,
+            "selected_columns": [c.get("name") for c in filtered_columns],
+            "status": job.status,
+        }
+
+    @app.get("/jobs/{job_id}/join-sources")
+    def list_job_join_sources(job_id: int, db: Session = Depends(get_db)):
+        from services.dataset_join_service import list_join_sources
+
+        job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return {"job_id": job_id, "join_sources": list_join_sources(job)}
+
+    @app.post("/jobs/{job_id}/join-sources")
+    async def add_job_join_source(
+        job_id: int,
+        request: Request,
+        db: Session = Depends(get_db),
+        file: Optional[UploadFile] = File(None),
+        payload_json: Optional[str] = Form(None),
+    ):
+        from services.dataset_join_service import add_join_source
+
+        job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        content_type = (request.headers.get("content-type") or "").lower()
+        if payload_json:
+            try:
+                payload = json.loads(payload_json)
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=400, detail="payload_json must be valid JSON.")
+        elif "application/json" in content_type:
+            payload = await request.json()
+        else:
+            payload = {}
+
+        temp_path = None
+        try:
+            source_kind = str(payload.get("source_kind") or "file").lower()
+            if source_kind == "file":
+                if file and file.filename:
+                    temp_path = job_temp_upload_path(job_id, file.filename)
+                    with open(temp_path, "wb") as buffer:
+                        shutil.copyfileobj(file.file, buffer)
+                elif payload.get("file_path"):
+                    temp_path = _normalize_local_path(payload.get("file_path"))
+                    if not temp_path or not os.path.isfile(temp_path):
+                        raise HTTPException(status_code=400, detail="file_path not found.")
+                else:
+                    raise HTTPException(status_code=400, detail="Upload a file or provide file_path.")
+
+            if source_kind == "table":
+                base_payload = {
+                    "connection_id": payload.get("connection_id"),
+                    "host": payload.get("host"),
+                    "port": payload.get("port"),
+                    "user": payload.get("user"),
+                    "dbname": payload.get("dbname"),
+                    "db_type": payload.get("db_type") or "postgres",
+                }
+                if payload.get("pass") is not None:
+                    base_payload["pass"] = payload.get("pass")
+                creds = _apply_connection_payload_overrides(
+                    _resolve_connection_payload(base_payload, getattr(request.state, "user_id", None)),
+                    base_payload,
+                )
+                payload["host"] = creds.get("host")
+                payload["port"] = creds.get("port")
+                payload["user"] = creds.get("user")
+                payload["dbname"] = creds.get("dbname")
+                payload["db_type"] = creds.get("db_type") or "postgres"
+                payload["pass"] = creds.get("pass") or payload.get("pass") or ""
+
+            result = add_join_source(
+                db,
+                job,
+                payload=payload,
+                file_path=temp_path,
+                snapshot_fn=_snapshot_dataframe_to_job_table,
+            )
+            return {"message": "Join source added and dataset materialized.", **result}
+        except HTTPException:
+            raise
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to add join source: {e}")
+        finally:
+            if temp_path and file and os.path.isfile(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+
+    @app.delete("/jobs/{job_id}/join-sources/{join_id}")
+    def delete_job_join_source(job_id: int, join_id: str, db: Session = Depends(get_db)):
+        from services.dataset_join_service import remove_join_source
+
+        job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        try:
+            result = remove_join_source(db, job, join_id, _snapshot_dataframe_to_job_table)
+            return {"message": "Join source removed and dataset materialized.", **result}
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to remove join source: {e}")
 
     @app.post("/db/list-schemas-tables")
     def list_schemas_tables(request: Request, payload: dict = Body(...)):
@@ -2485,11 +2765,26 @@ if True:
         return {"job_id": new_job.job_id, "message": "Job Created"}
 
     # 1. FIX: Changed the URL to match the frontend exactly
+    def _apply_selected_columns_to_df(df, selected_columns):
+        from services.dataset_db_import import normalize_selected_columns
+
+        cols = normalize_selected_columns(selected_columns)
+        if not cols:
+            return df
+        missing = [c for c in cols if c not in df.columns]
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Selected column(s) not found in file: {', '.join(missing)}",
+            )
+        return df[cols]
+
     @app.post("/jobs/{job_id}/upload")
     async def upload_file(
         job_id: int,
         file: UploadFile = File(...),
         source_path: Optional[str] = Form(None),
+        selected_columns: Optional[str] = Form(None),
         db: Session = Depends(get_db),
     ):
         # Clean the table name upfront by removing any extension
@@ -2507,20 +2802,21 @@ if True:
         next_table_id = 1 if max_id is None else max_id + 1
 
         try:
-            # 2. FIX: Handle both Excel and CSV formats
             if file.filename.endswith(".xlsx") or file.filename.endswith(".xls"):
-                # Read the Excel file and instantly save it as our standardized CSV
                 df = pd.read_excel(temp_file_path)
-                df.to_csv(final_csv_path, index=False)
-                
-                # Delete the original Excel file to save space
-                if os.path.exists(temp_file_path):
-                    os.remove(temp_file_path)
             else:
                 df = pd.read_csv(temp_file_path)
-                df.to_csv(final_csv_path, index=False)
-                if os.path.exists(temp_file_path):
-                    os.remove(temp_file_path)
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+
+            parsed_columns = None
+            if selected_columns:
+                try:
+                    parsed_columns = json.loads(selected_columns)
+                except json.JSONDecodeError:
+                    raise HTTPException(status_code=400, detail="selected_columns must be valid JSON array.")
+            df = _apply_selected_columns_to_df(df, parsed_columns)
+            df.to_csv(final_csv_path, index=False)
 
             # ==========================================================
             # 3. FIX: THE MIXED-FORMAT DATE DETECTION MAGIC GOES HERE
@@ -2540,6 +2836,8 @@ if True:
 
             row_count = len(df)
             columns = df.dtypes.items()
+        except HTTPException:
+            raise
         except Exception as e:
             if os.path.exists(temp_file_path):
                 try:
@@ -2604,6 +2902,8 @@ if True:
             else:
                 df = pd.read_csv(file_path)
 
+            df = _apply_selected_columns_to_df(df, payload.get("selected_columns"))
+
             # Normalize to job-scoped CSV for downstream engine.
             df.to_csv(final_csv_path, index=False)
 
@@ -2618,6 +2918,8 @@ if True:
 
             row_count = len(df)
             columns = df.dtypes.items()
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid file format: {str(e)}")
 

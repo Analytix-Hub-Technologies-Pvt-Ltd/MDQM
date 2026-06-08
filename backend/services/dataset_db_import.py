@@ -172,19 +172,42 @@ def persist_table_column_schema(
 ) -> None:
     if not columns:
         return
+    existing = (
+        db.query(models.ColumnMetadata)
+        .filter(
+            models.ColumnMetadata.job_id == job_id,
+            models.ColumnMetadata.table_id == table_id,
+        )
+        .all()
+    )
+    cached_descriptions = {
+        (c.column_name or "").strip(): (
+            c.description,
+            c.description_generated_at,
+            c.data_type,
+        )
+        for c in existing
+    }
     db.query(models.ColumnMetadata).filter(
         models.ColumnMetadata.job_id == job_id,
         models.ColumnMetadata.table_id == table_id,
     ).delete(synchronize_session=False)
     for col in columns:
-        db.add(
-            models.ColumnMetadata(
-                job_id=job_id,
-                table_id=table_id,
-                column_name=col["name"],
-                data_type=col.get("data_type") or "String",
-            )
+        name = col["name"]
+        data_type = col.get("data_type") or "String"
+        row = models.ColumnMetadata(
+            job_id=job_id,
+            table_id=table_id,
+            column_name=name,
+            data_type=data_type,
         )
+        cached = cached_descriptions.get((name or "").strip())
+        if cached:
+            description, generated_at, old_type = cached
+            if description and old_type == data_type:
+                row.description = description
+                row.description_generated_at = generated_at
+        db.add(row)
     db.commit()
 
 
@@ -339,6 +362,86 @@ def _normalize_import_dataframe_dates(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def normalize_selected_columns(raw) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        name = str(item or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+def filter_column_schema(columns: list[dict[str, str]], selected_columns: list[str] | None) -> list[dict[str, str]]:
+    if not selected_columns:
+        return columns
+    wanted = {c for c in selected_columns}
+    filtered = [col for col in columns if col.get("name") in wanted]
+    return filtered if filtered else columns
+
+
+def build_table_select_query(
+    schema_name: str,
+    table_name: str,
+    db_type: str,
+    external_conn,
+    selected_columns: list[str] | None = None,
+) -> str:
+    db_type_lower = str(db_type or "postgres").lower().strip()
+    cols = normalize_selected_columns(selected_columns)
+
+    if not cols:
+        if db_type_lower in ("mssql", "sqlserver", "sql_server"):
+            return f"SELECT * FROM [{schema_name}].[{table_name}]"
+        if db_type_lower == "mysql":
+            if schema_name:
+                return f"SELECT * FROM `{schema_name}`.`{table_name}`"
+            return f"SELECT * FROM `{table_name}`"
+        if db_type_lower in ("oracle", "snowflake"):
+            if schema_name:
+                return f'SELECT * FROM "{schema_name}"."{table_name}"'
+            return f'SELECT * FROM "{table_name}"'
+        if db_type_lower == "databricks":
+            if schema_name:
+                return f"SELECT * FROM `{schema_name}`.`{table_name}`"
+            return f"SELECT * FROM `{table_name}`"
+        query = psql.SQL("SELECT * FROM {}.{}").format(
+            psql.Identifier(schema_name),
+            psql.Identifier(table_name),
+        )
+        return query.as_string(external_conn)
+
+    if db_type_lower in ("mssql", "sqlserver", "sql_server"):
+        col_sql = ", ".join(f"[{c}]" for c in cols)
+        return f"SELECT {col_sql} FROM [{schema_name}].[{table_name}]"
+    if db_type_lower == "mysql":
+        col_sql = ", ".join(f"`{c}`" for c in cols)
+        if schema_name:
+            return f"SELECT {col_sql} FROM `{schema_name}`.`{table_name}`"
+        return f"SELECT {col_sql} FROM `{table_name}`"
+    if db_type_lower in ("oracle", "snowflake"):
+        col_sql = ", ".join(f'"{c}"' for c in cols)
+        if schema_name:
+            return f'SELECT {col_sql} FROM "{schema_name}"."{table_name}"'
+        return f'SELECT {col_sql} FROM "{table_name}"'
+    if db_type_lower == "databricks":
+        col_sql = ", ".join(f"`{c}`" for c in cols)
+        if schema_name:
+            return f"SELECT {col_sql} FROM `{schema_name}`.`{table_name}`"
+        return f"SELECT {col_sql} FROM `{table_name}`"
+
+    query = psql.SQL("SELECT {} FROM {}.{}").format(
+        psql.SQL(", ").join(psql.Identifier(c) for c in cols),
+        psql.Identifier(schema_name),
+        psql.Identifier(table_name),
+    )
+    return query.as_string(external_conn)
+
+
 def build_db_source_config(payload: dict, creds: dict, schema_name: str, table_names: list[str]) -> dict[str, Any]:
     from utils.source_secret_crypto import encrypt_db_password_optional
 
@@ -353,6 +456,9 @@ def build_db_source_config(payload: dict, creds: dict, schema_name: str, table_n
         "port": str(creds.get("port") or "5432"),
         "user": creds.get("user"),
     }
+    selected_columns = normalize_selected_columns(payload.get("selected_columns"))
+    if selected_columns:
+        cfg["selected_columns"] = selected_columns
     enc = encrypt_db_password_optional(creds.get("pass") or "")
     if enc:
         cfg["encrypted_db_pass"] = enc
@@ -368,6 +474,7 @@ def import_tables_into_job(
     table_names: list[str],
     snapshot_fn,
     db_type: str = "postgres",
+    selected_columns: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Pull tables from Postgres/SQLServer/MySQL and snapshot to job CSVs. Returns per-table summaries."""
     summaries: list[dict[str, Any]] = []
@@ -385,30 +492,13 @@ def import_tables_into_job(
 
     db_type_lower = str(db_type or "postgres").lower().strip()
     for table_name in table_names:
-        if db_type_lower in ("mssql", "sqlserver", "sql_server"):
-            q_str = f"SELECT * FROM [{schema_name}].[{table_name}]"
-        elif db_type_lower == "mysql":
-            if schema_name:
-                q_str = f"SELECT * FROM `{schema_name}`.`{table_name}`"
-            else:
-                q_str = f"SELECT * FROM `{table_name}`"
-        elif db_type_lower in ("oracle", "snowflake"):
-            if schema_name:
-                q_str = f'SELECT * FROM "{schema_name}"."{table_name}"'
-            else:
-                q_str = f'SELECT * FROM "{table_name}"'
-        elif db_type_lower == "databricks":
-            if schema_name:
-                q_str = f"SELECT * FROM `{schema_name}`.`{table_name}`"
-            else:
-                q_str = f"SELECT * FROM `{table_name}`"
-        else:
-            query = psql.SQL("SELECT * FROM {}.{}").format(
-                psql.Identifier(schema_name),
-                psql.Identifier(table_name),
-            )
-            q_str = query.as_string(external_conn)
-
+        q_str = build_table_select_query(
+            schema_name,
+            table_name,
+            db_type_lower,
+            external_conn,
+            selected_columns,
+        )
         df = pd.read_sql_query(q_str, external_conn)
         df = _normalize_import_dataframe_dates(df)
 

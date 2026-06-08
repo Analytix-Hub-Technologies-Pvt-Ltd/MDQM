@@ -47,6 +47,8 @@ class ColumnMetadata(Base):
     table_id = Column(Integer)
     column_name = Column(String)
     data_type = Column(String)
+    description = Column(Text, nullable=True)
+    description_generated_at = Column(DateTime(timezone=True), nullable=True)
 
     table = relationship("TableMetadata", back_populates="columns")
 

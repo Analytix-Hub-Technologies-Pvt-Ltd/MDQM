@@ -476,6 +476,8 @@ CREATE TABLE IF NOT EXISTS metadata.column_metadata (
     table_id INTEGER,
     column_name VARCHAR,
     data_type VARCHAR,
+    description TEXT,
+    description_generated_at TIMESTAMPTZ,
     PRIMARY KEY (column_id),
     FOREIGN KEY(job_id, table_id) REFERENCES metadata.table_metadata (job_id, table_id),
     FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
