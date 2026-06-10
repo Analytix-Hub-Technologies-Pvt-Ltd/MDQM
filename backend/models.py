@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Text, ForeignKeyConstraint, JSON, UniqueConstraint
+from sqlalchemy import BigInteger, Column, Integer, String, Boolean, ForeignKey, DateTime, Text, ForeignKeyConstraint, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -29,6 +29,7 @@ class TableMetadata(Base):
     
     table_name = Column(String)
     row_count = Column(Integer, default=0)
+    data_updated_at = Column(DateTime(timezone=True), nullable=True)
 
     job = relationship("Job", back_populates="tables")
     columns = relationship("ColumnMetadata", back_populates="table", cascade="all, delete-orphan")
@@ -51,6 +52,40 @@ class ColumnMetadata(Base):
     description_generated_at = Column(DateTime(timezone=True), nullable=True)
 
     table = relationship("TableMetadata", back_populates="columns")
+
+
+class DatasetRow(Base):
+    """Ingested dataset row snapshot (replaces uploads/job_*/table.csv for new data)."""
+    __tablename__ = "dataset_rows"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["job_id", "table_id"],
+            ["metadata.table_metadata.job_id", "metadata.table_metadata.table_id"],
+        ),
+        UniqueConstraint("job_id", "table_id", "row_index", name="uq_metadata_dataset_rows_job_table_row"),
+        {"schema": "metadata"},
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    job_id = Column(Integer, nullable=False, index=True)
+    table_id = Column(Integer, nullable=False)
+    row_index = Column(Integer, nullable=False)
+    row_data = Column(JSON, nullable=False)
+
+
+class DatasetBaseBackupRow(Base):
+    """Pre-join primary snapshot backup (one per job)."""
+    __tablename__ = "dataset_base_backup_rows"
+    __table_args__ = (
+        UniqueConstraint("job_id", "row_index", name="uq_metadata_dataset_base_backup_job_row"),
+        {"schema": "metadata"},
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    job_id = Column(Integer, ForeignKey("metadata.jobs.job_id"), nullable=False, index=True)
+    row_index = Column(Integer, nullable=False)
+    row_data = Column(JSON, nullable=False)
+
 
 class Rule(Base):
     __tablename__ = "rules"

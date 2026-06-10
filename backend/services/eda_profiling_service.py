@@ -9,12 +9,12 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 import models
-from utils.upload_paths import ensure_job_upload_dir, resolve_table_csv_path
-
-EDA_CACHE_DIR = ".eda_cache"
+from utils.upload_paths import eda_cache_dir, resolve_table_csv_path
 
 
 def _first_table_with_data(db: Session, job_id: int) -> tuple[str, str] | None:
+    from services.dataset_row_storage_service import has_db_snapshot, snapshot_exists
+
     tables = (
         db.query(models.TableMetadata)
         .filter(models.TableMetadata.job_id == job_id)
@@ -22,6 +22,9 @@ def _first_table_with_data(db: Session, job_id: int) -> tuple[str, str] | None:
         .all()
     )
     for t in tables:
+        if has_db_snapshot(db, job_id, t.table_id):
+            token = f"db:{job_id}:{t.table_id}:{t.data_updated_at}"
+            return t.table_name, token
         path = resolve_table_csv_path(job_id, t.table_name)
         if path and os.path.isfile(path) and os.path.getsize(path) > 0:
             return t.table_name, path
@@ -29,6 +32,8 @@ def _first_table_with_data(db: Session, job_id: int) -> tuple[str, str] | None:
 
 
 def _csv_cache_key(csv_path: str) -> str:
+    if str(csv_path).startswith("db:"):
+        return csv_path.replace(":", "_")
     st = os.stat(csv_path)
     return f"{st.st_size}_{getattr(st, 'st_mtime_ns', int(st.st_mtime * 1e9))}"
 
@@ -38,13 +43,12 @@ def _safe_table_slug(table_name: str) -> str:
 
 
 def _eda_cache_path(job_id: int, table_name: str, cache_key: str) -> str:
-    base = os.path.join(ensure_job_upload_dir(job_id), EDA_CACHE_DIR)
-    os.makedirs(base, exist_ok=True)
+    base = eda_cache_dir(job_id)
     return os.path.join(base, f"{_safe_table_slug(table_name)}_{cache_key}.html")
 
 
 def _prune_stale_eda_cache(job_id: int, table_name: str, keep_path: str) -> None:
-    base = os.path.join(ensure_job_upload_dir(job_id), EDA_CACHE_DIR)
+    base = eda_cache_dir(job_id)
     if not os.path.isdir(base):
         return
     slug = _safe_table_slug(table_name)
@@ -57,8 +61,8 @@ def _prune_stale_eda_cache(job_id: int, table_name: str, keep_path: str) -> None
 
 
 def invalidate_eda_cache_for_job(job_id: int) -> None:
-    """Drop cached EDA HTML after refresh/import rewrites CSV snapshots."""
-    base = os.path.join(ensure_job_upload_dir(job_id), EDA_CACHE_DIR)
+    """Drop cached EDA HTML after refresh/import updates dataset snapshots."""
+    base = eda_cache_dir(job_id)
     if not os.path.isdir(base):
         return
     for path in glob.glob(os.path.join(base, "*.html")):
@@ -117,7 +121,19 @@ def build_ydata_profiling_html(
         with open(cache_path, encoding="utf-8") as f:
             return f.read(), True
 
-    df = pd.read_csv(csv_path, nrows=max_rows)
+    if str(csv_path).startswith("db:"):
+        from services.dataset_row_storage_service import load_snapshot_with_csv_fallback
+
+        tbl = (
+            db.query(models.TableMetadata)
+            .filter(models.TableMetadata.job_id == job_id, models.TableMetadata.table_name == table_name)
+            .first()
+        )
+        df = load_snapshot_with_csv_fallback(
+            db, job_id, table_name, table_id=tbl.table_id if tbl else None, nrows=max_rows
+        )
+    else:
+        df = pd.read_csv(csv_path, nrows=max_rows)
     if df.empty:
         raise ValueError("empty_data")
 

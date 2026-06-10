@@ -452,7 +452,7 @@ def compute_dataset_scores(
         out["has_dq_run"] = True
 
     if job_id:
-        from utils.upload_paths import resolve_table_csv_path
+        from services.dataset_row_storage_service import load_snapshot_with_csv_fallback
 
         tables = (
             db.query(models.TableMetadata)
@@ -464,17 +464,13 @@ def compute_dataset_scores(
         eda_parts: list[float] = []
         eda_weights: list[int] = []
         for t in tables:
-            csv_path = resolve_table_csv_path(job_id, t.table_name)
-            if not csv_path:
-                continue
             try:
                 read_kwargs: dict[str, Any] = {}
-                if csv_sample_rows > 0:
-                    read_kwargs["nrows"] = csv_sample_rows
-                df = pd.read_csv(csv_path, **read_kwargs)
+                nrows = csv_sample_rows if csv_sample_rows > 0 else None
+                df = load_snapshot_with_csv_fallback(db, job_id, t.table_name, table_id=t.table_id, nrows=nrows)
             except Exception:
                 continue
-            if df.empty or len(df.columns) == 0:
+            if df is None or df.empty or len(df.columns) == 0:
                 continue
             col_completeness = [float(df[c].notna().mean()) * 100.0 for c in df.columns]
             table_eda = sum(col_completeness) / len(col_completeness)
@@ -524,15 +520,19 @@ def compute_dataset_scores(
 def dataset_source_kind(
     db: Session, row: models.EnterpriseDataset, job_id: int | None
 ) -> str:
-    """file | table | unknown"""
+    """file | table | join | unknown"""
     if job_id:
         job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
         if job:
             cfg = getattr(job, "db_source_config", None) or {}
-            if isinstance(cfg, dict) and cfg.get("kind") == "postgres_tables":
-                return "table"
-    if (row.classification or "").lower() == "file":
-        return "file"
+            if isinstance(cfg, dict):
+                joins = cfg.get("join_sources") or []
+                if isinstance(joins, list) and len(joins) > 0:
+                    return "join"
+                if cfg.get("kind") == "postgres_tables":
+                    return "table"
+    if (row.classification or "").lower() in ("file", "join"):
+        return (row.classification or "file").lower()
     if job_id:
         return "file"
     return "unknown"
@@ -543,6 +543,22 @@ def format_dataset_source_details(
 ) -> str:
     """Human-readable source line for the datasets table."""
     kind = dataset_source_kind(db, row, job_id)
+    if kind == "join":
+        job = db.query(models.Job).filter(models.Job.job_id == job_id).first() if job_id else None
+        cfg = getattr(job, "db_source_config", None) or {} if job else {}
+        joins = cfg.get("join_sources") or [] if isinstance(cfg, dict) else []
+        join_count = len(joins) if isinstance(joins, list) else 0
+        base_hint = "table" if isinstance(cfg, dict) and cfg.get("kind") == "postgres_tables" else "CSV"
+        labels = [
+            str(j.get("label") or j.get("table_name") or j.get("file_name") or "source").strip()
+            for j in joins
+            if isinstance(j, dict)
+        ]
+        joined = labels[0] if labels else "extra source"
+        if join_count > 1:
+            return f"Join · {base_hint} + {join_count} sources"
+        return f"Join · {base_hint} + {joined}"
+
     if kind == "file":
         job = (
             db.query(models.Job).filter(models.Job.job_id == job_id).first() if job_id else None
@@ -584,9 +600,8 @@ def dataset_has_loaded_data(db: Session, job_id: int | None) -> bool:
     """True only after ingested rows exist (Run / import completed), not on register-only."""
     if not job_id:
         return False
-    import os
 
-    from utils.upload_paths import resolve_table_csv_path
+    from services.dataset_row_storage_service import has_db_snapshot, snapshot_exists
 
     job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
     cfg = getattr(job, "db_source_config", None) if job else None
@@ -604,15 +619,50 @@ def dataset_has_loaded_data(db: Session, job_id: int | None) -> bool:
     for t in tables:
         if (t.row_count or 0) <= 0:
             continue
+        if has_db_snapshot(db, job_id, t.table_id):
+            return True
+        if snapshot_exists(db, job_id, t.table_name, table_id=t.table_id):
+            return True
+    return False
+
+
+def dataset_last_refreshed_at(db: Session, job_id: int | None) -> datetime | None:
+    """Latest snapshot time for a job (DB storage or legacy CSV mtime)."""
+    if not job_id or not dataset_has_loaded_data(db, job_id):
+        return None
+    import os
+
+    from utils.upload_paths import resolve_table_csv_path
+
+    latest_dt: datetime | None = None
+    latest_mtime: float | None = None
+    tables = (
+        db.query(models.TableMetadata)
+        .filter(models.TableMetadata.job_id == job_id)
+        .all()
+    )
+    for t in tables:
+        if t.data_updated_at is not None:
+            ts = t.data_updated_at
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=None)
+            if latest_dt is None or ts > latest_dt:
+                latest_dt = ts
         path = resolve_table_csv_path(job_id, t.table_name)
         if not path:
             continue
         try:
             if os.path.isfile(path) and os.path.getsize(path) > 0:
-                return True
+                mtime = os.path.getmtime(path)
+                if latest_mtime is None or mtime > latest_mtime:
+                    latest_mtime = mtime
         except OSError:
             pass
-    return False
+    if latest_dt is not None:
+        return latest_dt.replace(tzinfo=None) if latest_dt.tzinfo else latest_dt
+    if latest_mtime is None:
+        return None
+    return datetime.fromtimestamp(latest_mtime)
 
 
 def list_datasets(db: Session, page: int, page_size: int, name_q: str | None = None):
@@ -640,6 +690,7 @@ def list_datasets(db: Session, page: int, page_size: int, name_q: str | None = N
             if first_table:
                 sync_registered_table_columns_from_source(db, job=job, table=first_table)
                 col_count = dataset_column_count(db, jid)
+        last_refreshed = dataset_last_refreshed_at(db, jid)
         items.append(
             {
                 "id": r.id,
@@ -650,6 +701,7 @@ def list_datasets(db: Session, page: int, page_size: int, name_q: str | None = N
                 "classification": r.classification,
                 "description": _ellipsis_text(r.description),
                 "created_at": r.created_at.isoformat() if r.created_at else None,
+                "last_refreshed_at": last_refreshed.isoformat() if last_refreshed else None,
                 "source_kind": dataset_source_kind(db, r, jid),
                 "source_details": format_dataset_source_details(db, r, jid),
                 "column_count": col_count or None,
@@ -790,8 +842,6 @@ def build_dataset_inventory_preview(
         .order_by(models.TableMetadata.table_id.asc())
         .all()
     )
-    from utils.upload_paths import resolve_table_csv_path
-
     from services.column_description_service import flush_column_descriptions, resolve_column_description
 
     glossary = _glossary_definitions_by_term(db)
@@ -825,36 +875,43 @@ def build_dataset_inventory_preview(
         ]
         flush_column_descriptions(db)
         sample: list[dict[str, Any]] = []
-        csv_path = resolve_table_csv_path(job_id, t.table_name)
-        if data_loaded and csv_path:
+        from services.dataset_row_storage_service import (
+            has_db_snapshot,
+            load_snapshot_with_csv_fallback,
+            storage_label,
+        )
+
+        db_stored = has_db_snapshot(db, job_id, t.table_id)
+        if data_loaded:
             try:
-                df = pd.read_csv(csv_path, nrows=sample_rows)
-                sample = df.fillna("").astype(str).to_dict(orient="records")
-                if not col_list and len(df.columns) > 0:
-                    col_list = []
-                    for c in df.columns:
-                        dtype = _pandas_dtype_label(df[c].dtype)
-                        col_list.append(
-                            {
-                                "name": str(c),
-                                "data_type": dtype,
-                                "description": resolve_column_description(
-                                    db,
-                                    job_id=job_id,
-                                    table_id=t.table_id,
-                                    column_name=str(c),
-                                    data_type=dtype,
-                                    glossary=glossary,
-                                    table_name=t.table_name,
-                                ),
-                            }
-                        )
-                    flush_column_descriptions(db)
+                df = load_snapshot_with_csv_fallback(
+                    db, job_id, t.table_name, table_id=t.table_id, nrows=sample_rows
+                )
+                if df is not None and not df.empty:
+                    sample = df.fillna("").astype(str).to_dict(orient="records")
+                    if not col_list and len(df.columns) > 0:
+                        col_list = []
+                        for c in df.columns:
+                            dtype = _pandas_dtype_label(df[c].dtype)
+                            col_list.append(
+                                {
+                                    "name": str(c),
+                                    "data_type": dtype,
+                                    "description": resolve_column_description(
+                                        db,
+                                        job_id=job_id,
+                                        table_id=t.table_id,
+                                        column_name=str(c),
+                                        data_type=dtype,
+                                        glossary=glossary,
+                                        table_name=t.table_name,
+                                    ),
+                                }
+                            )
+                        flush_column_descriptions(db)
             except Exception:
                 sample = []
-        rel_source = None
-        if csv_path:
-            rel_source = os.path.relpath(csv_path, "uploads").replace("\\", "/")
+        rel_source = storage_label(job_id, t.table_name, db_stored=db_stored) if data_loaded else None
         out_tables.append(
             {
                 "table_id": t.table_id,
@@ -989,6 +1046,59 @@ def upsert_analytics_metric(db: Session, *, metric_key: str, metric_value: dict,
 
 
 # --- Notifications ---
+
+
+def notify_dataset_refresh_finished(
+    db: Session,
+    job_id: int,
+    *,
+    status: str,
+    message: str | None = None,
+    schedule_id: int | None = None,
+    source: str = "schedule",
+) -> None:
+    """In-app notification + schedule run log after a dataset DB refresh."""
+    dataset = (
+        db.query(models.EnterpriseDataset)
+        .filter(models.EnterpriseDataset.job_id == job_id)
+        .first()
+    )
+    name = (dataset.name if dataset else None) or f"Job {job_id}"
+    owner_id = dataset.owner_user_id if dataset else None
+    ok = str(status).lower() in ("success", "completed", "ok")
+
+    run_message = message or (
+        f"{'Scheduled' if source == 'schedule' else 'Manual'} refresh completed for “{name}”."
+        if ok
+        else f"{'Scheduled' if source == 'schedule' else 'Manual'} refresh failed for “{name}”."
+    )
+    append_schedule_run(
+        db,
+        schedule_id=schedule_id,
+        job_id=job_id,
+        status="success" if ok else "failed",
+        message=run_message,
+    )
+
+    if not owner_id:
+        return
+
+    if ok:
+        subject = f"Dataset refreshed: {name}"
+        body = run_message
+        severity = "info"
+    else:
+        subject = f"Dataset refresh failed: {name}"
+        body = message or run_message
+        severity = "warning"
+
+    create_notification(
+        db,
+        user_id=owner_id,
+        subject=subject,
+        body=body,
+        severity=severity,
+    )
 
 
 def list_notifications(db: Session, user_id: int | None, page: int, page_size: int, unread_only: bool):

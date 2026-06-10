@@ -426,6 +426,31 @@ def governance_dataset_preview(
     return preview
 
 
+@router.get("/governance/datasets/{dataset_id}/chart-insights")
+def governance_dataset_chart_insights(
+    dataset_id: int,
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    """LLM-suggested charts executed on the ingested dataset snapshot (read-only)."""
+    require_any_permission(
+        _role(request),
+        Permissions.DASHBOARD_OWNER,
+        Permissions.DASHBOARD_CDO,
+        Permissions.DASHBOARD_BUSINESS_USER,
+        Permissions.GOVERNANCE_VIEW,
+        Permissions.ADMIN_VIEW,
+    )
+    refresh = (request.query_params.get("refresh") or "").strip().lower() in ("1", "true", "yes")
+    from services.dataset_chart_insights_service import build_dataset_chart_insights
+
+    result = build_dataset_chart_insights(db, dataset_id, refresh=refresh)
+    if result.get("ok") is False and result.get("error") == "Dataset not found":
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return result
+
+
 @router.get("/governance/datasets/{dataset_id}/eda-report")
 def governance_dataset_eda_report(
     dataset_id: int,

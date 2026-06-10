@@ -18,7 +18,7 @@ from services.dataset_db_import import (
     resolve_creds_from_job_config,
 )
 from utils.source_secret_crypto import decrypt_db_password_optional, encrypt_db_password_optional
-from utils.upload_paths import ensure_job_upload_dir, resolve_table_csv_path
+from utils.upload_paths import join_source_cache_path, resolve_table_csv_path
 
 
 JOIN_TYPES = {"left", "inner", "right", "outer"}
@@ -40,12 +40,15 @@ def _infer_kind(cfg: dict[str, Any]) -> str:
     return "file"
 
 
-def base_snapshot_path(job_id: int) -> str:
-    return os.path.join(ensure_job_upload_dir(job_id), "_base_primary.csv")
+def legacy_base_snapshot_path(job_id: int) -> str:
+    """Legacy CSV backup path — only read for old jobs; new jobs use metadata.dataset_base_backup_rows."""
+    from utils.upload_paths import UPLOAD_ROOT
+
+    return os.path.join(UPLOAD_ROOT, f"job_{job_id}", "_base_primary.csv")
 
 
 def join_source_csv_path(job_id: int, join_id: str) -> str:
-    return os.path.join(ensure_job_upload_dir(job_id), f"join_{join_id}.csv")
+    return join_source_cache_path(job_id, join_id)
 
 
 def list_join_sources(job: models.Job) -> list[dict[str, Any]]:
@@ -84,34 +87,51 @@ def _primary_table(db: Session, job_id: int) -> models.TableMetadata | None:
 
 
 def _ensure_base_snapshot(db: Session, job: models.Job) -> None:
-    """Preserve the primary table CSV before the first join is applied."""
+    """Preserve the primary table snapshot before the first join is applied."""
+    from services.dataset_row_storage_service import (
+        has_base_backup,
+        load_snapshot_with_csv_fallback,
+        save_base_backup,
+    )
+
     primary = _primary_table(db, job.job_id)
     if not primary:
         raise ValueError("No primary table found on this dataset job.")
 
-    backup = base_snapshot_path(job.job_id)
-    if os.path.isfile(backup):
+    if has_base_backup(db, job.job_id):
         return
 
-    src = resolve_table_csv_path(job.job_id, primary.table_name)
-    if not src or not os.path.isfile(src):
+    df = load_snapshot_with_csv_fallback(db, job.job_id, primary.table_name, table_id=primary.table_id)
+    if df is None or df.empty:
         raise ValueError("Primary dataset has no loaded data. Upload or import base data before joining.")
 
-    shutil.copy2(src, backup)
+    save_base_backup(db, job.job_id, df)
     cfg = _job_cfg(job)
-    cfg["base_snapshot_path"] = backup
+    cfg["base_snapshot_in_db"] = True
     if not cfg.get("kind"):
         cfg["kind"] = _infer_kind(cfg)
     _save_job_cfg(db, job, cfg)
+    db.commit()
 
 
 def _load_base_dataframe(db: Session, job: models.Job) -> pd.DataFrame:
+    from services.dataset_row_storage_service import (
+        has_base_backup,
+        load_base_backup,
+        load_snapshot_with_csv_fallback,
+    )
+
     cfg = _job_cfg(job)
     primary = _primary_table(db, job.job_id)
     if not primary:
         raise ValueError("No primary table found on this dataset job.")
 
-    backup = cfg.get("base_snapshot_path") or base_snapshot_path(job.job_id)
+    if cfg.get("base_snapshot_in_db") or has_base_backup(db, job.job_id):
+        df = load_base_backup(db, job.job_id)
+        if df is not None:
+            return df
+
+    backup = cfg.get("base_snapshot_path") or legacy_base_snapshot_path(job.job_id)
     if os.path.isfile(backup):
         return pd.read_csv(backup)
 
@@ -134,10 +154,12 @@ def _load_base_dataframe(db: Session, job: models.Job) -> pd.DataFrame:
         finally:
             external_conn.close()
 
-    src = resolve_table_csv_path(job.job_id, primary.table_name)
-    if not src or not os.path.isfile(src):
+    from services.dataset_row_storage_service import load_snapshot_with_csv_fallback
+
+    df = load_snapshot_with_csv_fallback(db, job.job_id, primary.table_name, table_id=primary.table_id)
+    if df is None:
         raise ValueError("Primary dataset has no loaded data. Upload or import base data before joining.")
-    return pd.read_csv(src)
+    return df
 
 
 def _load_file_join_df(job_id: int, join_cfg: dict[str, Any]) -> pd.DataFrame:

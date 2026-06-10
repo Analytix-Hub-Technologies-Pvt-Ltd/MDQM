@@ -27,12 +27,10 @@ if True:
 
     import models  # noqa: E402 — must run after database.py configures the engine
 
-    os.makedirs("uploads", exist_ok=True)
     from utils.upload_paths import (
         job_temp_upload_path,
         rename_table_csv,
         resolve_table_csv_path,
-        table_csv_path,
     )
     from engine.orchestrator import run_data_quality_job
     from fastapi.responses import StreamingResponse
@@ -106,6 +104,11 @@ if True:
             conn.execute(
                 text(
                     "ALTER TABLE metadata.column_metadata ADD COLUMN IF NOT EXISTS description_generated_at TIMESTAMPTZ"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE metadata.table_metadata ADD COLUMN IF NOT EXISTS data_updated_at TIMESTAMPTZ"
                 )
             )
         print("[mdqm] Database schema ready.", file=sys.stderr, flush=True)
@@ -217,7 +220,6 @@ if True:
     scheduler.start()
     atexit.register(lambda: scheduler.shutdown(wait=False))
 
-
     def _run_scheduled_job(job_id: int):
         db = SessionLocal()
         try:
@@ -226,7 +228,39 @@ if True:
             db.close()
 
     def _run_scheduled_refresh(job_id: int):
-        _execute_import_for_job(job_id, body=None)
+        from services import job_schedule_service as jss
+        from services import enterprise_service as esvc
+
+        status = "success"
+        detail = None
+        try:
+            _execute_import_for_job(job_id, body=None)
+            check_db = SessionLocal()
+            try:
+                job_row = check_db.query(models.Job).filter(models.Job.job_id == job_id).first()
+                if job_row and "fail" in str(job_row.status or "").lower():
+                    status = "failed"
+                    detail = f"Job status: {job_row.status}"
+            finally:
+                check_db.close()
+        except Exception as exc:
+            status = "failed"
+            detail = str(exc)
+        finally:
+            db = SessionLocal()
+            try:
+                schedule_id = jss.get_persisted_refresh_schedule_id(db, job_id)
+                jss.deactivate_persisted_refresh_if_once(db, job_id)
+                esvc.notify_dataset_refresh_finished(
+                    db,
+                    job_id,
+                    status=status,
+                    message=detail,
+                    schedule_id=schedule_id,
+                    source="schedule",
+                )
+            finally:
+                db.close()
 
 
     def _scheduler_job_key(job_id: int) -> str:
@@ -466,47 +500,11 @@ if True:
         if not table:
             return
 
-        final_csv_path = table_csv_path(job_id, table.table_name)
-
         if source_path.lower().endswith((".xlsx", ".xls")):
             df = pd.read_excel(source_path)
         else:
             df = pd.read_csv(source_path)
-        df.to_csv(final_csv_path, index=False)
-
-        # Keep metadata aligned with latest source snapshot.
-        table.row_count = int(len(df))
-        db.query(models.ColumnMetadata).filter(
-            models.ColumnMetadata.job_id == job_id,
-            models.ColumnMetadata.table_id == table_id,
-        ).delete(synchronize_session=False)
-
-        for col_name, dtype in df.dtypes.items():
-            str_type = "String"
-            if "int" in str(dtype):
-                str_type = "Integer"
-            elif "float" in str(dtype):
-                str_type = "Float"
-            elif "datetime" in str(dtype):
-                str_type = "Date"
-            elif "bool" in str(dtype):
-                str_type = "Boolean"
-            db.add(
-                models.ColumnMetadata(
-                    job_id=job_id,
-                    table_id=table_id,
-                    column_name=col_name,
-                    data_type=str_type,
-                )
-            )
-
-        # Clear old stats so pre-run UI does not show stale totals.
-        db.query(models.TableStats).filter(
-            models.TableStats.job_id == job_id,
-            models.TableStats.table_id == table_id,
-        ).delete(synchronize_session=False)
-
-        db.commit()
+        _snapshot_dataframe_to_job_table(db, job_id, table_id, table.table_name, df)
 
 
     def _normalize_local_path(raw_path: str):
@@ -1358,9 +1356,10 @@ if True:
         return df
 
     def _snapshot_dataframe_to_job_table(db: Session, job_id: int, table_id: int, table_name: str, df):
-        """Write CSV snapshot and resync column metadata + clear stats (same idea as replace-from-path)."""
-        final_csv_path = table_csv_path(job_id, table_name)
-        df.to_csv(final_csv_path, index=False)
+        """Write DB snapshot and resync column metadata + clear stats (replaces uploads CSV)."""
+        from services.dataset_row_storage_service import save_dataframe
+
+        save_dataframe(db, job_id, table_id, df, commit=False)
         tbl = (
             db.query(models.TableMetadata)
             .filter(
@@ -1396,6 +1395,22 @@ if True:
             invalidate_eda_cache_for_job(job_id)
         except Exception:
             pass
+
+    def _load_job_table_df(db: Session, job_id: int, table_id: int, table_name: str):
+        from services.dataset_row_storage_service import load_snapshot_with_csv_fallback
+
+        df = load_snapshot_with_csv_fallback(db, job_id, table_name, table_id=table_id)
+        if df is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No dataset rows found for job {job_id} table {table_name}.",
+            )
+        return df
+
+    def _persist_job_table_df(db: Session, job_id: int, table_id: int, df):
+        from services.dataset_row_storage_service import persist_table_snapshot
+
+        persist_table_snapshot(db, job_id, table_id, df, commit=False)
 
     def _resolve_import_creds_from_job(db: Session, job: models.Job, body: dict | None = None):
         """Build Postgres creds + schema/tables from job.db_source_config (saved connection aware)."""
@@ -1662,7 +1677,7 @@ if True:
     @app.post("/db/connect")
     def connect_db_create_job(request: Request, payload: dict = Body(...), db: Session = Depends(get_db)):
         """
-        Create one job and register one or more tables by snapshotting rows from an external Postgres DB into CSV uploads.
+        Create one job and register one or more tables by snapshotting rows from an external DB into metadata.dataset_rows.
         Response shape matches the frontend (created_jobs[].job_id).
         """
         job_name = str(payload.get("job_name") or "").strip()
@@ -2790,8 +2805,6 @@ if True:
         # Clean the table name upfront by removing any extension
         table_name = file.filename.replace(".csv", "").replace(".xlsx", "").replace(".xls", "")
         
-        # Per-job CSV so the same filename on another job does not overwrite this one
-        final_csv_path = table_csv_path(job_id, table_name)
         temp_file_path = job_temp_upload_path(job_id, file.filename)
         
         # Save the uploaded file temporarily
@@ -2816,7 +2829,6 @@ if True:
                 except json.JSONDecodeError:
                     raise HTTPException(status_code=400, detail="selected_columns must be valid JSON array.")
             df = _apply_selected_columns_to_df(df, parsed_columns)
-            df.to_csv(final_csv_path, index=False)
 
             # ==========================================================
             # 3. FIX: THE MIXED-FORMAT DATE DETECTION MAGIC GOES HERE
@@ -2871,6 +2883,10 @@ if True:
             db.add(col_meta)
         db.commit()
 
+        from services.dataset_row_storage_service import save_dataframe
+
+        save_dataframe(db, job_id, next_table_id, df, commit=True)
+
         normalized_source_path = _normalize_local_path(source_path or "")
         if normalized_source_path and os.path.isfile(normalized_source_path):
             _save_table_source_path(job_id, next_table_id, normalized_source_path)
@@ -2891,7 +2907,6 @@ if True:
 
         file_name = os.path.basename(file_path)
         table_name = file_name.replace(".csv", "").replace(".xlsx", "").replace(".xls", "")
-        final_csv_path = table_csv_path(job_id, table_name)
 
         max_id = db.query(func.max(models.TableMetadata.table_id)).filter(models.TableMetadata.job_id == job_id).scalar()
         next_table_id = 1 if max_id is None else max_id + 1
@@ -2903,9 +2918,6 @@ if True:
                 df = pd.read_csv(file_path)
 
             df = _apply_selected_columns_to_df(df, payload.get("selected_columns"))
-
-            # Normalize to job-scoped CSV for downstream engine.
-            df.to_csv(final_csv_path, index=False)
 
             for col in df.columns:
                 if df[col].dtype == "object":
@@ -2951,6 +2963,9 @@ if True:
             )
             db.add(col_meta)
         db.commit()
+        from services.dataset_row_storage_service import save_dataframe
+
+        save_dataframe(db, job_id, next_table_id, df, commit=True)
         _save_table_source_path(job_id, next_table_id, file_path)
 
         return {"job_id": job_id, "message": "File Uploaded from path and Processed Successfully"}
@@ -2970,48 +2985,15 @@ if True:
         if not table:
             raise HTTPException(status_code=404, detail="Table not found for this job")
 
-        final_csv_path = table_csv_path(job_id, table.table_name)
-
         try:
             if file_path.lower().endswith((".xlsx", ".xls")):
                 df = pd.read_excel(file_path)
             else:
                 df = pd.read_csv(file_path)
-            df.to_csv(final_csv_path, index=False)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid file format: {str(e)}")
 
-        # Refresh table metadata and columns to match replaced source.
-        table.row_count = int(len(df))
-        db.query(models.ColumnMetadata).filter(
-            models.ColumnMetadata.job_id == job_id,
-            models.ColumnMetadata.table_id == table_id,
-        ).delete(synchronize_session=False)
-
-        for col_name, dtype in df.dtypes.items():
-            str_type = "String"
-            if "int" in str(dtype):
-                str_type = "Integer"
-            elif "float" in str(dtype):
-                str_type = "Float"
-            elif "datetime" in str(dtype):
-                str_type = "Date"
-            elif "bool" in str(dtype):
-                str_type = "Boolean"
-            db.add(models.ColumnMetadata(
-                job_id=job_id,
-                table_id=table_id,
-                column_name=col_name,
-                data_type=str_type,
-            ))
-
-        # Clear old computed stats so UI doesn't keep old totals before next run.
-        db.query(models.TableStats).filter(
-            models.TableStats.job_id == job_id,
-            models.TableStats.table_id == table_id,
-        ).delete(synchronize_session=False)
-
-        db.commit()
+        _snapshot_dataframe_to_job_table(db, job_id, table_id, table.table_name, df)
         _save_table_source_path(job_id, table_id, file_path)
         return {
             "message": "Table source file replaced successfully",
@@ -3036,7 +3018,6 @@ if True:
             raise HTTPException(status_code=404, detail="Table not found for this job")
 
         temp_file_path = job_temp_upload_path(job_id, file.filename)
-        final_csv_path = table_csv_path(job_id, table.table_name)
 
         with open(temp_file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -3046,46 +3027,18 @@ if True:
                 df = pd.read_excel(temp_file_path)
             else:
                 df = pd.read_csv(temp_file_path)
-            df.to_csv(final_csv_path, index=False)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid file format: {str(e)}")
         finally:
             if os.path.exists(temp_file_path):
                 os.remove(temp_file_path)
 
-        table.row_count = int(len(df))
-        db.query(models.ColumnMetadata).filter(
-            models.ColumnMetadata.job_id == job_id,
-            models.ColumnMetadata.table_id == table_id,
-        ).delete(synchronize_session=False)
-
-        for col_name, dtype in df.dtypes.items():
-            str_type = "String"
-            if "int" in str(dtype):
-                str_type = "Integer"
-            elif "float" in str(dtype):
-                str_type = "Float"
-            elif "datetime" in str(dtype):
-                str_type = "Date"
-            elif "bool" in str(dtype):
-                str_type = "Boolean"
-            db.add(models.ColumnMetadata(
-                job_id=job_id,
-                table_id=table_id,
-                column_name=col_name,
-                data_type=str_type,
-            ))
-
-        db.query(models.TableStats).filter(
-            models.TableStats.job_id == job_id,
-            models.TableStats.table_id == table_id,
-        ).delete(synchronize_session=False)
+        _snapshot_dataframe_to_job_table(db, job_id, table_id, table.table_name, df)
 
         normalized_source_path = _normalize_local_path(source_path or "")
         if normalized_source_path and os.path.isfile(normalized_source_path):
             _save_table_source_path(job_id, table_id, normalized_source_path)
 
-        db.commit()
         return {
             "message": "Table source file replaced successfully",
             "job_id": job_id,
@@ -3112,7 +3065,14 @@ if True:
 
 
     @app.post("/schedule-job/{job_id}")
-    def schedule_job(job_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
+    def schedule_job(
+        job_id: int,
+        request: Request,
+        data: dict = Body(...),
+        db: Session = Depends(get_db),
+    ):
+        from services import job_schedule_service as jss
+
         job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
@@ -3127,96 +3087,29 @@ if True:
         job_key = _scheduler_job_key(job_id)
         if action == "refresh":
             job_key = f"{job_key}_refresh"
-        try:
-            scheduler.remove_job(job_key)
-        except Exception:
-            pass
 
         try:
-            if schedule_type == "daily":
-                hour, minute = map(int, str(data.get("time", "")).split(":"))
-                scheduler.add_job(
-                    run_fn,
-                    "cron",
-                    id=job_key,
-                    replace_existing=True,
-                    hour=hour,
-                    minute=minute,
-                    args=[job_id],
-                )
-
-            elif schedule_type == "weekly":
-                hour, minute = map(int, str(data.get("time", "")).split(":"))
-                scheduler.add_job(
-                    run_fn,
-                    "cron",
-                    id=job_key,
-                    replace_existing=True,
-                    day_of_week=str(data.get("day", "0")),
-                    hour=hour,
-                    minute=minute,
-                    args=[job_id],
-                )
-
-            elif schedule_type == "hourly":
-                interval = max(int(data.get("interval", 1)), 1)
-                scheduler.add_job(
-                    run_fn,
-                    "interval",
-                    id=job_key,
-                    replace_existing=True,
-                    hours=interval,
-                    args=[job_id],
-                )
-
-            elif schedule_type == "once":
-                date_value = str(data.get("date", "")).strip()
-                time_value = str(data.get("time", "")).strip()
-                run_date = date_value
-                if date_value and time_value and "T" not in date_value:
-                    run_date = f"{date_value}T{time_value}:00"
-                if not run_date:
-                    raise HTTPException(status_code=400, detail="date is required for once schedule")
-                scheduler.add_job(
-                    run_fn,
-                    "date",
-                    id=job_key,
-                    replace_existing=True,
-                    run_date=run_date,
-                    args=[job_id],
-                )
-
-            elif schedule_type == "monthly":
-                day_of_month = int(data.get("date", 1))
-                hour, minute = map(int, str(data.get("time", "")).split(":"))
-                scheduler.add_job(
-                    run_fn,
-                    "cron",
-                    id=job_key,
-                    replace_existing=True,
-                    day=day_of_month,
-                    hour=hour,
-                    minute=minute,
-                    args=[job_id],
-                )
-
-            elif schedule_type == "cron":
-                expr = str(data.get("cron", "")).strip()
-                if not expr:
-                    raise HTTPException(status_code=400, detail="cron is required for cron schedule")
-                scheduler.add_job(
-                    run_fn,
-                    trigger=CronTrigger.from_crontab(expr),
-                    id=job_key,
-                    replace_existing=True,
-                    args=[job_id],
-                )
-            else:
-                raise HTTPException(status_code=400, detail="Unsupported schedule type")
-        except HTTPException:
-            raise
+            jss.apply_apscheduler_schedule(scheduler, job_id, data, run_fn, job_key)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to schedule job: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Failed to schedule job: {str(e)}") from e
+
+        if action == "refresh":
+            persist_payload = {**data, "action": action}
+            try:
+                jss.upsert_persisted_refresh_schedule(
+                    db,
+                    job_id,
+                    persist_payload,
+                    user_id=getattr(request.state, "user_id", None),
+                )
+            except ValueError as exc:
+                try:
+                    scheduler.remove_job(job_key)
+                except Exception:
+                    pass
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         return {"message": "Scheduled successfully", "action": action}
 
@@ -3240,35 +3133,73 @@ if True:
 
 
     @app.post("/schedules/{job_id}/pause")
-    def pause_schedule(job_id: int, action: str | None = None):
+    def pause_schedule(job_id: int, action: str | None = None, db: Session = Depends(get_db)):
+        from services import job_schedule_service as jss
+
         prefer_refresh = str(action or "").strip().lower() == "refresh"
         j, key = _find_scheduled_job(job_id, prefer_refresh=prefer_refresh)
         if not j:
             raise HTTPException(status_code=404, detail="Schedule not found")
         scheduler.pause_job(key)
         j = scheduler.get_job(key)
+        if prefer_refresh:
+            jss.set_persisted_refresh_active(db, job_id, False)
         return {"message": "Schedule paused", "schedule": _serialize_schedule_job(j)}
 
 
     @app.post("/schedules/{job_id}/resume")
-    def resume_schedule(job_id: int, action: str | None = None):
+    def resume_schedule(job_id: int, action: str | None = None, db: Session = Depends(get_db)):
+        from services import job_schedule_service as jss
+
         prefer_refresh = str(action or "").strip().lower() == "refresh"
         j, key = _find_scheduled_job(job_id, prefer_refresh=prefer_refresh)
         if not j:
             raise HTTPException(status_code=404, detail="Schedule not found")
         scheduler.resume_job(key)
         j = scheduler.get_job(key)
+        if prefer_refresh:
+            jss.set_persisted_refresh_active(db, job_id, True)
         return {"message": "Schedule resumed", "schedule": _serialize_schedule_job(j)}
 
 
     @app.delete("/schedules/{job_id}")
-    def delete_schedule(job_id: int, action: str | None = None):
+    def delete_schedule(job_id: int, action: str | None = None, db: Session = Depends(get_db)):
+        from services import job_schedule_service as jss
+
         prefer_refresh = str(action or "").strip().lower() == "refresh"
         j, key = _find_scheduled_job(job_id, prefer_refresh=prefer_refresh)
         if not j:
             raise HTTPException(status_code=404, detail="Schedule not found")
         scheduler.remove_job(key)
+        if prefer_refresh:
+            jss.delete_persisted_refresh_schedule(db, job_id)
         return {"message": "Schedule deleted", "job_id": job_id}
+
+    def _restore_persisted_refresh_schedules():
+        from services import job_schedule_service as jss
+
+        db = SessionLocal()
+        try:
+            for row in jss.list_active_persisted_refresh_schedules(db):
+                payload = jss.load_persisted_payload(row)
+                if not payload:
+                    continue
+                job_key = _scheduler_refresh_job_key(row.job_id)
+                try:
+                    jss.apply_apscheduler_schedule(
+                        scheduler,
+                        row.job_id,
+                        payload,
+                        _run_scheduled_refresh,
+                        job_key,
+                    )
+                except ValueError:
+                    if payload.get("type") == "once":
+                        jss.deactivate_persisted_refresh_if_once(db, row.job_id)
+        finally:
+            db.close()
+
+    _restore_persisted_refresh_schedules()
 
     # --- SMART GETTERS (WITH STATS) ---
 
@@ -4227,52 +4158,46 @@ if True:
         log.error_value = payload.new_value
         log.description = "Fixed Manually"
         
-        # 2. Find the exact file
-        file_path = resolve_table_csv_path(log.job_id, log.table_name)
-        
-        if not file_path:
-            raise HTTPException(status_code=404, detail=f"Source CSV not found for job {log.job_id} table {log.table_name}")
-            
+        table = (
+            db.query(models.TableMetadata)
+            .filter(
+                models.TableMetadata.job_id == log.job_id,
+                models.TableMetadata.table_name == log.table_name,
+            )
+            .first()
+        )
+        if not table:
+            raise HTTPException(status_code=404, detail=f"Table not found for job {log.job_id}")
+
         try:
-            # Read the file
-            df = pd.read_csv(file_path)
-            
+            df = _load_job_table_df(db, log.job_id, table.table_id, log.table_name)
             row_index = int(log.row_id)
-            
             if row_index >= len(df):
-                raise Exception(f"Row {row_index} is out of bounds for file with {len(df)} rows.")
-                
+                raise Exception(f"Row {row_index} is out of bounds for table with {len(df)} rows.")
             if log.column_name not in df.columns:
-                raise Exception(f"Column '{log.column_name}' not found in CSV.")
-                
-            # --- THE SMART TYPING FIX ---
+                raise Exception(f"Column '{log.column_name}' not found in dataset.")
+
             col_dtype = df[log.column_name].dtype
             new_val = payload.new_value
-            
             try:
-                # Dynamically cast the string to match the column's actual data type
                 if pd.api.types.is_integer_dtype(col_dtype):
                     new_val = int(new_val)
                 elif pd.api.types.is_float_dtype(col_dtype):
                     new_val = float(new_val)
                 elif pd.api.types.is_bool_dtype(col_dtype):
-                    new_val = str(new_val).lower() in ['true', '1', 'yes', 'y', 't']
+                    new_val = str(new_val).lower() in ["true", "1", "yes", "y", "t"]
             except ValueError:
-                # If they try to type "abc" into an integer column, catch it and warn them!
                 raise Exception(f"Invalid data type. Cannot save '{new_val}' into a numeric column.")
-                
-            # SURGERY: Overwrite the bad data safely
+
             df.loc[row_index, log.column_name] = new_val
-            # -----------------------------
-            
-            # Save it back to the file
-            df.to_csv(file_path, index=False)
-            
+            _persist_job_table_df(db, log.job_id, table.table_id, df)
+        except HTTPException:
+            raise
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to patch CSV: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to patch dataset row: {str(e)}")
 
         db.commit()
-        return {"message": "Error updated and source file patched successfully"}
+        return {"message": "Error updated and dataset row patched successfully"}
 
     @app.delete("/quarantine/errors/{log_id}")
     def delete_quarantine_error(log_id: int, db: Session = Depends(get_db)):
@@ -4324,10 +4249,6 @@ if True:
         masters = db.query(models.MasterTable).filter_by(job_id=job_id, table_id=table_id).all()
         master_list = [m.master_value for m in masters]
 
-        file_path = resolve_table_csv_path(job_id, table.table_name)
-        if not file_path:
-            raise HTTPException(status_code=404, detail="Source CSV not found for this job.")
-
         stat = (
             db.query(models.TableStats)
             .filter_by(job_id=job_id, table_id=table_id)
@@ -4336,7 +4257,7 @@ if True:
         )
         total_fuzzy_errors = int(stat.fuzzy_errors or 0) if stat else 0
 
-        df = pd.read_csv(file_path)
+        df = _load_job_table_df(db, job_id, table_id, table.table_name)
         all_columns = [str(c) for c in df.columns.tolist()]
 
         results = []
@@ -4422,20 +4343,18 @@ if True:
         table = db.query(models.TableMetadata).filter_by(table_id=table_id, job_id=job_id).first()
         if not table:
             raise HTTPException(status_code=404, detail="Table not found")
-        file_path = resolve_table_csv_path(job_id, table.table_name)
-        if not file_path:
-            raise HTTPException(status_code=404, detail="Source CSV not found for this job.")
-        
         try:
-            df = pd.read_csv(file_path)
-            # Bypass strict typing to safely inject the string alias
+            df = _load_job_table_df(db, job_id, table_id, table.table_name)
             df[payload.column_name] = df[payload.column_name].astype(object)
             df.loc[payload.row_id, payload.column_name] = payload.new_value
-            df.to_csv(table_csv_path(job_id, table.table_name), index=False)
+            _persist_job_table_df(db, job_id, table_id, df)
+            db.commit()
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
-            
-        return {"message": "Replaced in CSV"}
+
+        return {"message": "Replaced in dataset"}
 
     # --- DASHBOARD SUMMARY ENDPOINT ---
 
@@ -4567,12 +4486,10 @@ if True:
         if not table:
             raise HTTPException(status_code=404, detail="Table not found")
 
-        # 2. Read the Physical CSV to get the current headers
-        file_path = resolve_table_csv_path(table.job_id, table.table_name)
-        if not file_path:
+        try:
+            df = _load_job_table_df(db, table.job_id, table.table_id, table.table_name)
+        except HTTPException:
             return []
-
-        df = pd.read_csv(file_path)
         all_columns = df.columns.tolist()
         total_rows = len(df)
 
@@ -4645,29 +4562,21 @@ if True:
                 
                 print(f"DB SYNC: {actual_old_name} -> {new_name}")
 
-            # --- 2. PHYSICAL FILE SYNC ---
-            file_path = resolve_table_csv_path(table.job_id, table.table_name)
-            if file_path:
-                df = pd.read_csv(file_path)
-                
-                # Identify the column in CSV (case-insensitive)
+            # --- 2. DATASET ROW SYNC (PostgreSQL) ---
+            try:
+                df = _load_job_table_df(db, table.job_id, table_id, table.table_name)
                 csv_target = next((c for c in df.columns if c.lower() == old_name.lower()), None)
-                
                 if csv_target:
                     df.rename(columns={csv_target: new_name}, inplace=True)
-                    
-                    # REFINEMENT: Explicitly drop any garbage columns before saving
-                    # This removes 'job_id', 'table_id', and any 'Unnamed' columns created by index=True
                     cols_to_keep = [
-                        c for c in df.columns 
-                        if c not in ['job_id', 'table_id'] 
-                        and not c.startswith('Unnamed')
+                        c
+                        for c in df.columns
+                        if c not in ["job_id", "table_id"] and not str(c).startswith("Unnamed")
                     ]
-                    
-                    # Save only the legitimate data columns without index
-                    scoped_path = table_csv_path(table.job_id, table.table_name)
-                    df[cols_to_keep].to_csv(scoped_path, index=False)
-                    print(f"FILE SYNC: {csv_target} -> {new_name} (Cleaned)")
+                    _persist_job_table_df(db, table.job_id, table_id, df[cols_to_keep])
+                    print(f"DB SYNC: {csv_target} -> {new_name}")
+            except HTTPException:
+                pass
 
             db.commit()
             return {"message": "Sync complete", "new_name": new_name}
@@ -4692,12 +4601,7 @@ if True:
             raise HTTPException(status_code=400, detail="No active date rule")
 
         try:
-            file_path = resolve_table_csv_path(table.job_id, table.table_name)
-            if not file_path:
-                raise HTTPException(status_code=404, detail="Source CSV not found for this job")
-            
-            # 1. READ AS PURE TEXT (Prevents 00:00:00 on import)
-            df = pd.read_csv(file_path, dtype=str, keep_default_na=False)
+            df = _load_job_table_df(db, table.job_id, table_id, table.table_name).astype(str)
 
             def fix_date(val):
                 if not val or pd.isna(val): return val
@@ -4723,10 +4627,9 @@ if True:
 
             df[column_name] = df[column_name].apply(fix_date)
 
-            # 3. SAVE WITHOUT INDEX (Prevents row jumbling/ID columns)
-            # Only save columns that belong in the CSV
-            original_cols = [c for c in df.columns if c not in ['job_id', 'table_id']]
-            df[original_cols].to_csv(table_csv_path(table.job_id, table.table_name), index=False)
+            original_cols = [c for c in df.columns if c not in ["job_id", "table_id"]]
+            _persist_job_table_df(db, table.job_id, table_id, df[original_cols])
+            db.commit()
 
             return {"message": "Dates standardized successfully"}
         except Exception as e:

@@ -432,9 +432,35 @@ CREATE TABLE IF NOT EXISTS metadata.table_metadata (
     table_id INTEGER NOT NULL,
     table_name VARCHAR,
     row_count INTEGER,
+    data_updated_at TIMESTAMPTZ,
     PRIMARY KEY (job_id, table_id),
     FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
 );
+
+CREATE TABLE IF NOT EXISTS metadata.dataset_rows (
+    id BIGSERIAL NOT NULL,
+    job_id INTEGER NOT NULL,
+    table_id INTEGER NOT NULL,
+    row_index INTEGER NOT NULL,
+    row_data JSONB NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE (job_id, table_id, row_index),
+    FOREIGN KEY(job_id, table_id) REFERENCES metadata.table_metadata (job_id, table_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_metadata_dataset_rows_job_table ON metadata.dataset_rows (job_id, table_id);
+
+CREATE TABLE IF NOT EXISTS metadata.dataset_base_backup_rows (
+    id BIGSERIAL NOT NULL,
+    job_id INTEGER NOT NULL,
+    row_index INTEGER NOT NULL,
+    row_data JSONB NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE (job_id, row_index),
+    FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_metadata_dataset_base_backup_job ON metadata.dataset_base_backup_rows (job_id);
 
 CREATE TABLE IF NOT EXISTS quarantine.logs (
     log_id SERIAL NOT NULL,

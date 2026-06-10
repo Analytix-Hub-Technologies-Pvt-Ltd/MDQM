@@ -10,7 +10,11 @@ from .rule_library import RuleLibrary
 from utils.upload_paths import resolve_table_csv_path
 
 
-def load_real_csv(job_id: int, table_name: str):
+def load_real_csv(job_id: int, table_name: str, db: Session | None = None):
+    if db is not None:
+        from services.dataset_row_storage_service import load_snapshot_with_csv_fallback
+
+        return load_snapshot_with_csv_fallback(db, job_id, table_name)
     file_path = resolve_table_csv_path(job_id, table_name)
     return pd.read_csv(file_path) if file_path else None
 
@@ -40,7 +44,7 @@ def run_data_quality_job(job_id: int, db: Session):
         
         for table in tables:
             print(f"Processing {table.table_name}...")
-            df = load_real_csv(job_id, table.table_name)
+            df = load_real_csv(job_id, table.table_name, db)
             if df is None:
                 print(f"ERROR: Could not find CSV for job {job_id} table {table.table_name}")
                 continue
