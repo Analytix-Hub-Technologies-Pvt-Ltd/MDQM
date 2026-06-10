@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
-import { formatAccessType } from "../../../utils/formatRelativeTime";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { formatAccessType, formatRelativeTime } from "../../../utils/formatRelativeTime";
 import EnterpriseDataPanel, { StatusBadge, TableCellText } from "../../../components/enterprise/EnterpriseDataPanel";
 import ScoreRing from "../../../components/business/ScoreRing";
+import DatasetRefreshToastStack, { buildRefreshToast } from "../../../components/business/DatasetRefreshToastStack";
 import LineageGraphView from "../../../components/business/LineageGraphView";
 import CreateDatasetLightModal from "./CreateDatasetLightModal";
 import DatasetPreviewModal from "./DatasetPreviewModal";
@@ -13,6 +14,7 @@ import {
   enterpriseGovernanceAccessRequestApprove,
   enterpriseGovernanceAccessRequestReject,
   enterpriseGovernanceDatasets,
+  enterpriseNotifications,
   invalidateEdaReportCache,
   prefetchEdaReportHtml,
   enterpriseGovernanceGlossary,
@@ -27,6 +29,23 @@ import {
 
 /** Soft-refresh datasets table without remounting (avoids flicker during import polling). */
 const GOVERNANCE_DATASETS_REFRESH = "mdqm-governance-datasets-refresh";
+const REFRESH_NOTIF_SEEN_KEY = "mdqm-seen-refresh-notification-ids";
+
+function readSeenRefreshNotifIds() {
+  try {
+    const raw = sessionStorage.getItem(REFRESH_NOTIF_SEEN_KEY);
+    const parsed = JSON.parse(raw || "[]");
+    return new Set(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function persistSeenRefreshNotifId(id) {
+  const set = readSeenRefreshNotifIds();
+  set.add(id);
+  sessionStorage.setItem(REFRESH_NOTIF_SEEN_KEY, JSON.stringify([...set].slice(-300)));
+}
 
 function refreshDatasetsTable(silent = true) {
   window.dispatchEvent(new CustomEvent(GOVERNANCE_DATASETS_REFRESH, { detail: { silent } }));
@@ -266,33 +285,183 @@ function GovernanceDatasetSection() {
   const [refreshSchedules, setRefreshSchedules] = useState({});
   const [actionBusy, setActionBusy] = useState(null);
   const [importingJobIds, setImportingJobIds] = useState([]);
+  const [refreshToasts, setRefreshToasts] = useState([]);
+  const lastRefreshedRef = useRef({});
+  const seenNotifIdsRef = useRef(readSeenRefreshNotifIds());
+  const pollReadyRef = useRef(false);
+  const importingJobsRef = useRef(new Set());
+  const toastTimeoutsRef = useRef([]);
+
+  const dismissToast = useCallback((id) => {
+    setRefreshToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  const pushToast = useCallback(
+    (toast, autoDismissMs = 8000) => {
+      setRefreshToasts((prev) => {
+        let next = prev;
+        if (toast.jobId != null && toast.jobId !== 0 && toast.status !== "running") {
+          next = prev.filter((t) => !(t.jobId === toast.jobId && t.status === "running"));
+        } else if (toast.status === "running" && toast.jobId) {
+          next = prev.filter((t) => !(t.jobId === toast.jobId && t.status === "running"));
+        }
+        return [...next, toast].slice(-4);
+      });
+      if (autoDismissMs > 0 && toast.status !== "running") {
+        const tid = window.setTimeout(() => dismissToast(toast.id), autoDismissMs);
+        toastTimeoutsRef.current.push(tid);
+      }
+    },
+    [dismissToast],
+  );
 
   const bump = () => {
     setRefreshKey((k) => k + 1);
     refreshDatasetsTable();
   };
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await getAllSchedules();
-        const items = res?.data?.items ?? [];
-        const map = {};
-        for (const s of items) {
-          if (s?.job_id && s?.action === "refresh") {
-            map[s.job_id] = s;
-          }
+  const fetchGovernanceDatasetsPage = useCallback(
+    ({ page, pageSize, query }) =>
+      enterpriseGovernanceDatasets({
+        page,
+        page_size: pageSize,
+        ...(query ? { q: query } : {}),
+      }),
+    [],
+  );
+
+  const loadRefreshSchedules = async (cancelledRef) => {
+    try {
+      const res = await getAllSchedules();
+      const items = res?.data?.items ?? [];
+      const map = {};
+      for (const s of items) {
+        if (s?.job_id && s?.action === "refresh") {
+          map[s.job_id] = s;
         }
-        if (!cancelled) setRefreshSchedules(map);
-      } catch {
-        if (!cancelled) setRefreshSchedules({});
       }
-    })();
+      if (!cancelledRef?.current) setRefreshSchedules(map);
+    } catch {
+      if (!cancelledRef?.current) setRefreshSchedules({});
+    }
+  };
+
+  useEffect(() => {
+    const cancelled = { current: false };
+    loadRefreshSchedules(cancelled);
     return () => {
-      cancelled = true;
+      cancelled.current = true;
     };
   }, [refreshKey]);
+
+  useEffect(() => {
+    const onDatasetsRefresh = () => {
+      loadRefreshSchedules({ current: false });
+    };
+    window.addEventListener(GOVERNANCE_DATASETS_REFRESH, onDatasetsRefresh);
+    return () => window.removeEventListener(GOVERNANCE_DATASETS_REFRESH, onDatasetsRefresh);
+  }, []);
+
+  useEffect(() => {
+    const hasSchedules = Object.keys(refreshSchedules).length > 0;
+    const pollMs = hasSchedules ? 5000 : 20000;
+
+    const poll = async () => {
+      try {
+        const [dsRes, notifRes] = await Promise.all([
+          enterpriseGovernanceDatasets({ page: 1, page_size: 100 }),
+          enterpriseNotifications({ page: 1, page_size: 12, unread_only: true }),
+        ]);
+        const items = dsRes?.data?.items ?? [];
+        const notifications = notifRes?.data?.items ?? [];
+
+        for (const n of notifications) {
+          const subj = String(n.subject || "");
+          if (!subj.startsWith("Dataset refresh")) continue;
+          if (seenNotifIdsRef.current.has(n.id)) continue;
+
+          seenNotifIdsRef.current.add(n.id);
+          persistSeenRefreshNotifId(n.id);
+
+          // First poll after mount: record existing unread items without toasting (page reload).
+          if (!pollReadyRef.current) continue;
+
+          const failed = subj.toLowerCase().includes("failed");
+          const nameMatch = subj.match(/Dataset refresh(?:ed)?: (.+)/i);
+          const datasetName = nameMatch?.[1];
+          const matched = datasetName
+            ? items.find((i) => i.name === datasetName)
+            : null;
+          if (matched?.job_id) importingJobsRef.current.delete(matched.job_id);
+          pushToast(
+            buildRefreshToast({
+              status: failed ? "failed" : "completed",
+              datasetName,
+              jobId: matched?.job_id || 0,
+              source: "schedule",
+              message: n.body || undefined,
+              nextRunTime: matched?.job_id
+                ? refreshSchedules[matched.job_id]?.next_run_time
+                : null,
+            }),
+          );
+          refreshDatasetsTable();
+          loadRefreshSchedules({ current: false });
+          window.dispatchEvent(new CustomEvent("mdqm-notifications-refresh"));
+        }
+
+        pollReadyRef.current = true;
+
+        for (const item of items) {
+          if (!item.job_id) continue;
+          const jid = item.job_id;
+          const cur = item.last_refreshed_at;
+          const prev = lastRefreshedRef.current[jid];
+          const st = (item.import_status || "").toLowerCase();
+          const sched = refreshSchedules[jid];
+          const source = sched ? "schedule" : "manual";
+
+          if (st === "importing" && !importingJobsRef.current.has(jid)) {
+            importingJobsRef.current.add(jid);
+            pushToast(
+              buildRefreshToast({
+                status: "running",
+                datasetName: item.name,
+                jobId: jid,
+                source,
+                nextRunTime: sched?.next_run_time,
+              }),
+              0,
+            );
+          }
+
+          if (st === "import failed" && importingJobsRef.current.has(jid)) {
+            importingJobsRef.current.delete(jid);
+            pushToast(
+              buildRefreshToast({
+                status: "failed",
+                datasetName: item.name,
+                jobId: jid,
+                source,
+              }),
+            );
+          }
+
+          lastRefreshedRef.current[jid] = cur ?? prev ?? null;
+        }
+      } catch {
+        /* ignore poll errors */
+      }
+    };
+
+    poll();
+    const id = window.setInterval(poll, pollMs);
+    return () => {
+      window.clearInterval(id);
+      toastTimeoutsRef.current.forEach((tid) => window.clearTimeout(tid));
+      toastTimeoutsRef.current = [];
+    };
+  }, [refreshSchedules, pushToast]);
 
   useEffect(() => {
     if (!importingJobIds.length) return undefined;
@@ -357,12 +526,43 @@ function GovernanceDatasetSection() {
   const handleRefresh = async (row) => {
     if (!row.job_id) return;
     setActionBusy(`refresh-${row.id}`);
+    importingJobsRef.current.add(row.job_id);
+    pushToast(
+      buildRefreshToast({
+        status: "running",
+        datasetName: row.name,
+        jobId: row.job_id,
+        source: "manual",
+        nextRunTime: refreshSchedules[row.job_id]?.next_run_time,
+      }),
+      0,
+    );
     try {
       await refreshJobFromDb(row.job_id, {});
       invalidateEdaReportCache(row.id);
+      lastRefreshedRef.current[row.job_id] = null;
       bump();
+      pushToast(
+        buildRefreshToast({
+          status: "completed",
+          datasetName: row.name,
+          jobId: row.job_id,
+          source: "manual",
+        }),
+      );
+      importingJobsRef.current.delete(row.job_id);
+      window.dispatchEvent(new CustomEvent("mdqm-notifications-refresh"));
     } catch (e) {
-      alert(e?.response?.data?.detail || e?.message || "Refresh failed.");
+      importingJobsRef.current.delete(row.job_id);
+      pushToast(
+        buildRefreshToast({
+          status: "failed",
+          datasetName: row.name,
+          jobId: row.job_id,
+          source: "manual",
+          message: e?.response?.data?.detail || e?.message || "Refresh failed.",
+        }),
+      );
     } finally {
       setActionBusy(null);
     }
@@ -444,6 +644,47 @@ function GovernanceDatasetSection() {
       ),
     },
     {
+      key: "last_refreshed_at",
+      label: "Last refreshed",
+      render: (v, row) => {
+        if (!row.data_loaded || !v) {
+          return <span className="text-xs text-muted-foreground">—</span>;
+        }
+        return (
+          <span
+            className="text-xs text-muted-foreground whitespace-nowrap"
+            title={formatRegisteredAt(v)}
+          >
+            {formatRelativeTime(v)}
+          </span>
+        );
+      },
+    },
+    {
+      key: "next_schedule",
+      label: "Next schedule",
+      render: (_, row) => {
+        if (row.source_kind !== "table" || !row.job_id) {
+          return <span className="text-xs text-muted-foreground">—</span>;
+        }
+        const sched = refreshSchedules[row.job_id];
+        if (!sched) {
+          return <span className="text-xs text-muted-foreground">—</span>;
+        }
+        if (sched.paused) {
+          return <span className="text-xs text-amber-600 whitespace-nowrap">Paused</span>;
+        }
+        if (!sched.next_run_time) {
+          return <span className="text-xs text-muted-foreground">—</span>;
+        }
+        return (
+          <span className="text-xs text-muted-foreground whitespace-nowrap">
+            {formatRegisteredAt(sched.next_run_time)}
+          </span>
+        );
+      },
+    },
+    {
       key: "actions",
       label: "",
       render: (_, row) => {
@@ -513,6 +754,7 @@ function GovernanceDatasetSection() {
 
   return (
     <div className="space-y-4">
+      <DatasetRefreshToastStack toasts={refreshToasts} onDismiss={dismissToast} />
       <DatasetPreviewModal
         datasetId={previewDatasetId}
         open={previewDatasetId != null}
@@ -560,13 +802,7 @@ function GovernanceDatasetSection() {
         columns={dsCols}
         refreshEventName={GOVERNANCE_DATASETS_REFRESH}
         searchPlaceholder="Name contains…"
-        fetchPage={({ page, pageSize, query }) =>
-          enterpriseGovernanceDatasets({
-            page,
-            page_size: pageSize,
-            ...(query ? { q: query } : {}),
-          })
-        }
+        fetchPage={fetchGovernanceDatasetsPage}
       />
     </div>
   );

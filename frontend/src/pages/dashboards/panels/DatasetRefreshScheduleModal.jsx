@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { AppModal, modalInputClass, modalLabelClass } from "@/components/layout/AppModal";
+import { useEffect, useMemo, useState } from "react";
+import { AppModal, ModalAlert, modalInputClass, modalLabelClass } from "@/components/layout/AppModal";
 import { Button } from "@/components/ui/button";
 import {
   deleteSchedule,
@@ -28,13 +28,22 @@ export default function DatasetRefreshScheduleModal({ open, jobId, datasetName, 
   const [existing, setExisting] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  const todayLocal = useMemo(() => {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }, []);
 
   useEffect(() => {
     if (!open || !jobId) {
       setExisting(null);
       setError("");
+      setSuccess("");
       return;
     }
+    setSuccess("");
     let cancelled = false;
     (async () => {
       try {
@@ -48,6 +57,12 @@ export default function DatasetRefreshScheduleModal({ open, jobId, datasetName, 
       cancelled = true;
     };
   }, [open, jobId]);
+
+  useEffect(() => {
+    if (open && scheduleType === "once" && !scheduleDate) {
+      setScheduleDate(todayLocal);
+    }
+  }, [open, scheduleType, scheduleDate, todayLocal]);
 
   const buildPayload = () => {
     const payload = {
@@ -66,14 +81,28 @@ export default function DatasetRefreshScheduleModal({ open, jobId, datasetName, 
     if (!jobId) return;
     if (scheduleType === "once" && !scheduleDate) {
       setError("Pick a date for the one-time schedule.");
+      setSuccess("");
       return;
     }
     setBusy(true);
     setError("");
+    setSuccess("");
     try {
       await scheduleJob(jobId, buildPayload());
       const res = await getScheduleByJobId(jobId, "refresh");
-      setExisting(res?.data ?? null);
+      const saved = res?.data ?? null;
+      setExisting(saved);
+      if (!saved?.next_run_time && !saved?.paused) {
+        setError(
+          "Schedule was not activated. For a one-time run, choose a date and time in the future."
+        );
+        return;
+      }
+      setSuccess(
+        saved?.next_run_time
+          ? `Schedule saved. Next run: ${new Date(saved.next_run_time).toLocaleString()}`
+          : "Schedule saved."
+      );
       onSaved?.();
     } catch (err) {
       setError(formatAxiosDetail(err?.response?.data) || err?.message || "Failed to save schedule.");
@@ -175,6 +204,7 @@ export default function DatasetRefreshScheduleModal({ open, jobId, datasetName, 
             type="date"
             className={modalInputClass}
             value={scheduleDate}
+            min={todayLocal}
             onChange={(e) => setScheduleDate(e.target.value)}
           />
         ) : null}
@@ -209,7 +239,12 @@ export default function DatasetRefreshScheduleModal({ open, jobId, datasetName, 
           />
         )}
 
+        {success ? <ModalAlert variant="success">{success}</ModalAlert> : null}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
+
+        <p className="text-[11px] text-muted-foreground">
+          Schedules are stored in the database and restored when the API restarts.
+        </p>
 
         <div className="flex flex-wrap gap-2 justify-end pt-1">
           {existing ? (

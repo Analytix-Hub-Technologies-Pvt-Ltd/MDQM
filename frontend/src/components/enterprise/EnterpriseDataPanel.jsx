@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 
@@ -80,13 +80,41 @@ export default function EnterpriseDataPanel({
   emptyMessage = "No records match your filters.",
   refreshEventName,
 }) {
+  const pageStorageKey = title ? `mdqm-enterprise-panel-page:${title}` : null;
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
+  const [page, setPageState] = useState(() => {
+    if (!pageStorageKey) return 1;
+    try {
+      const n = parseInt(sessionStorage.getItem(pageStorageKey) || "1", 10);
+      return Number.isFinite(n) && n > 0 ? n : 1;
+    } catch {
+      return 1;
+    }
+  });
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const fetchPageRef = useRef(fetchPage);
+  fetchPageRef.current = fetchPage;
+
+  const setPage = useCallback(
+    (updater) => {
+      setPageState((prev) => {
+        const next = typeof updater === "function" ? updater(prev) : updater;
+        if (pageStorageKey) {
+          try {
+            sessionStorage.setItem(pageStorageKey, String(next));
+          } catch {
+            /* ignore quota */
+          }
+        }
+        return next;
+      });
+    },
+    [pageStorageKey],
+  );
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQuery(query.trim()), 350);
@@ -97,7 +125,7 @@ export default function EnterpriseDataPanel({
     if (!silent) setLoading(true);
     setError("");
     try {
-      const res = await fetchPage({ page, pageSize, query: debouncedQuery });
+      const res = await fetchPageRef.current({ page, pageSize, query: debouncedQuery });
       const body = res?.data ?? res;
       setItems(Array.isArray(body.items) ? body.items : []);
       setTotal(Number(body.total) || 0);
@@ -108,7 +136,10 @@ export default function EnterpriseDataPanel({
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [fetchPage, page, pageSize, debouncedQuery]);
+  }, [page, pageSize, debouncedQuery]);
+
+  const loadRef = useRef(load);
+  loadRef.current = load;
 
   useEffect(() => {
     load();
@@ -116,10 +147,10 @@ export default function EnterpriseDataPanel({
 
   useEffect(() => {
     if (!refreshEventName) return;
-    const onRefresh = (e) => load({ silent: Boolean(e?.detail?.silent) });
+    const onRefresh = (e) => loadRef.current({ silent: Boolean(e?.detail?.silent) });
     window.addEventListener(refreshEventName, onRefresh);
     return () => window.removeEventListener(refreshEventName, onRefresh);
-  }, [refreshEventName, load]);
+  }, [refreshEventName]);
 
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
 

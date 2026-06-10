@@ -8,6 +8,7 @@ import ScoreRing from "../../../components/business/ScoreRing";
 import { AppModal, ModalSection, ModalAlert } from "@/components/layout/AppModal";
 import { Button } from "@/components/ui/button";
 import DatasetTableInventoryBlock from "@/components/enterprise/DatasetTableInventoryBlock";
+import DatasetCatalogChartInsights from "@/components/enterprise/DatasetCatalogChartInsights";
 
 function formatDetail(d) {
   if (typeof d === "string") return d;
@@ -33,6 +34,7 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
   const [editOpen, setEditOpen] = useState(false);
   const [addSourceOpen, setAddSourceOpen] = useState(false);
   const [removeJoinBusy, setRemoveJoinBusy] = useState("");
+  const [chartRevision, setChartRevision] = useState(0);
 
   const loadPreview = useCallback(async () => {
     if (datasetId == null) return;
@@ -91,6 +93,7 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
       if (datasetId != null) invalidateEdaReportCache(datasetId);
       setRefreshOk("Snapshot updated from the database.");
       await loadPreview();
+      setChartRevision((n) => n + 1);
     } catch (e) {
       setRefreshErr(formatDetail(e?.response?.data) || e?.message || "Refresh failed.");
     } finally {
@@ -113,6 +116,7 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
       if (datasetId != null) invalidateEdaReportCache(datasetId);
       setRefreshOk("Join removed. Dataset restored without that source.");
       await loadPreview();
+      setChartRevision((n) => n + 1);
     } catch (e) {
       setRefreshErr(formatDetail(e?.response?.data) || e?.message || "Failed to remove join.");
     } finally {
@@ -156,7 +160,7 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
           </p>
         </div>
       }
-      maxWidth="max-w-4xl"
+      maxWidth="max-w-7xl"
       footer={
         <Button type="button" variant="outline" className="w-full" onClick={onClose}>
           Close
@@ -170,122 +174,128 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
       ) : err ? (
         <p className="text-sm text-destructive">{err}</p>
       ) : (
-        <div className="space-y-4">
-          <ModalSection title="Catalog">
-            <p className="text-lg font-semibold text-foreground">{ds?.name ?? "—"}</p>
-            <div className="flex flex-wrap items-center gap-4">
-              {ds?.eda_score != null ? (
-                <div className="flex items-center gap-2">
-                  <ScoreRing score={ds.eda_score} size={40} />
-                  <span className="text-xs text-muted-foreground">EDA score</span>
-                </div>
+        <div className="grid gap-4 lg:grid-cols-12 lg:items-start">
+          <div className="space-y-4 lg:col-span-7 xl:col-span-8">
+            <ModalSection title="Catalog">
+              <p className="text-lg font-semibold text-foreground">{ds?.name ?? "—"}</p>
+              <div className="flex flex-wrap items-center gap-4">
+                {ds?.eda_score != null ? (
+                  <div className="flex items-center gap-2">
+                    <ScoreRing score={ds.eda_score} size={40} />
+                    <span className="text-xs text-muted-foreground">EDA score</span>
+                  </div>
+                ) : null}
+                {ds?.dq_score != null ? (
+                  <div className="flex items-center gap-2">
+                    <ScoreRing score={ds.dq_score} size={40} />
+                    <span className="text-xs text-muted-foreground">DQ score</span>
+                  </div>
+                ) : null}
+              </div>
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                {ds?.classification ? <span>Class: {ds.classification}</span> : null}
+                {ds?.catalog_job_id != null ? <span>Linked job id: #{ds.catalog_job_id}</span> : null}
+              </div>
+              {ds?.description ? (
+                <p className="mt-2 whitespace-pre-wrap text-xs text-muted-foreground">{ds.description}</p>
               ) : null}
-              {ds?.dq_score != null ? (
-                <div className="flex items-center gap-2">
-                  <ScoreRing score={ds.dq_score} size={40} />
-                  <span className="text-xs text-muted-foreground">DQ score</span>
-                </div>
-              ) : null}
-            </div>
-            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-              {ds?.classification ? <span>Class: {ds.classification}</span> : null}
-              {ds?.catalog_job_id != null ? <span>Linked job id: #{ds.catalog_job_id}</span> : null}
-            </div>
-            {ds?.description ? (
-              <p className="mt-2 whitespace-pre-wrap text-xs text-muted-foreground">{ds.description}</p>
+            </ModalSection>
+
+            {payload?.hint ? <ModalAlert variant="warning">{payload.hint}</ModalAlert> : null}
+
+            {job ? (
+              <ModalAlert variant="success">
+                <span className="font-semibold text-success">DQ job </span>
+                <span className="font-mono">#{job.job_id}</span>
+                {job.job_name ? <span className="text-muted-foreground"> — {job.job_name}</span> : null}
+                {job.status ? <span className="text-muted-foreground"> ({job.status})</span> : null}
+              </ModalAlert>
             ) : null}
-          </ModalSection>
 
-          {payload?.hint ? <ModalAlert variant="warning">{payload.hint}</ModalAlert> : null}
-
-          {job ? (
-            <ModalAlert variant="success">
-              <span className="font-semibold text-success">DQ job </span>
-              <span className="font-mono">#{job.job_id}</span>
-              {job.job_name ? <span className="text-muted-foreground"> — {job.job_name}</span> : null}
-              {job.status ? <span className="text-muted-foreground"> ({job.status})</span> : null}
-            </ModalAlert>
-          ) : null}
-
-          {joinSources.length > 0 ? (
-            <ModalSection title="Joined data sources">
-              <div className="space-y-2">
-                {joinSources.map((j) => (
-                  <div key={j.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card px-3 py-2">
-                    <div className="min-w-0 text-xs">
-                      <p className="font-semibold text-foreground">{j.label || j.file_name || j.table_name || "Join source"}</p>
-                      <p className="text-muted-foreground">
-                        {(j.source_kind || "file").toUpperCase()} · {(j.join_type || "left").toUpperCase()} JOIN ·{" "}
-                        <span className="font-mono">{j.left_key}</span> = <span className="font-mono">{j.right_key}</span>
-                      </p>
-                      {j.selected_columns?.length ? (
-                        <p className="mt-1 text-[10px] text-muted-foreground line-clamp-2">
-                          Columns: {j.selected_columns.join(", ")}
+            {joinSources.length > 0 ? (
+              <ModalSection title="Joined data sources">
+                <div className="space-y-2">
+                  {joinSources.map((j) => (
+                    <div key={j.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card px-3 py-2">
+                      <div className="min-w-0 text-xs">
+                        <p className="font-semibold text-foreground">{j.label || j.file_name || j.table_name || "Join source"}</p>
+                        <p className="text-muted-foreground">
+                          {(j.source_kind || "file").toUpperCase()} · {(j.join_type || "left").toUpperCase()} JOIN ·{" "}
+                          <span className="font-mono">{j.left_key}</span> = <span className="font-mono">{j.right_key}</span>
                         </p>
-                      ) : null}
+                        {j.selected_columns?.length ? (
+                          <p className="mt-1 text-[10px] text-muted-foreground line-clamp-2">
+                            Columns: {j.selected_columns.join(", ")}
+                          </p>
+                        ) : null}
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={removeJoinBusy === j.id}
+                        onClick={() => handleRemoveJoin(j.id)}
+                        className="text-xs uppercase tracking-wide text-destructive hover:text-destructive"
+                      >
+                        {removeJoinBusy === j.id ? "Removing…" : "Remove join"}
+                      </Button>
                     </div>
+                  ))}
+                </div>
+              </ModalSection>
+            ) : null}
+
+            {canRefresh ? (
+              <ModalSection title="Database actions">
+                <div className="flex flex-wrap gap-2">
+                  {needsImport ? (
+                    <Button type="button" disabled={runBusy} onClick={handleRunImport} className="text-xs uppercase tracking-wide">
+                      {runBusy ? "Starting…" : "Run import"}
+                    </Button>
+                  ) : (
                     <Button
                       type="button"
                       variant="outline"
-                      size="sm"
-                      disabled={removeJoinBusy === j.id}
-                      onClick={() => handleRemoveJoin(j.id)}
-                      className="text-xs uppercase tracking-wide text-destructive hover:text-destructive"
+                      disabled={refreshBusy}
+                      onClick={handleRefresh}
+                      className="text-xs uppercase tracking-wide"
                     >
-                      {removeJoinBusy === j.id ? "Removing…" : "Remove join"}
+                      {refreshBusy ? "Refreshing…" : "Refresh"}
                     </Button>
-                  </div>
-                ))}
-              </div>
-            </ModalSection>
-          ) : null}
+                  )}
+                  {hasTableData ? (
+                    <Button type="button" variant="outline" onClick={handleEdaReport} className="text-xs uppercase tracking-wide">
+                      EDA report
+                    </Button>
+                  ) : null}
+                </div>
+                {refreshErr ? <p className="text-xs text-destructive mt-2">{refreshErr}</p> : null}
+                {refreshOk ? <p className="text-xs text-success mt-2">{refreshOk}</p> : null}
+              </ModalSection>
+            ) : job?.job_id && !refreshMeta.available ? (
+              <ModalAlert variant="info">
+                Refresh from database is only available for jobs created via <strong>Table (DB)</strong> in Data Owner.
+                File-based datasets: replace the file from the Jobs screen or re-upload.
+              </ModalAlert>
+            ) : null}
 
-          {canRefresh ? (
-            <ModalSection title="Database actions">
-              <div className="flex flex-wrap gap-2">
-                {needsImport ? (
-                  <Button type="button" disabled={runBusy} onClick={handleRunImport} className="text-xs uppercase tracking-wide">
-                    {runBusy ? "Starting…" : "Run import"}
-                  </Button>
-                ) : (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={refreshBusy}
-                    onClick={handleRefresh}
-                    className="text-xs uppercase tracking-wide"
-                  >
-                    {refreshBusy ? "Refreshing…" : "Refresh"}
-                  </Button>
-                )}
-                {hasTableData ? (
-                  <Button type="button" variant="outline" onClick={handleEdaReport} className="text-xs uppercase tracking-wide">
-                    EDA report
-                  </Button>
-                ) : null}
-              </div>
-              {refreshErr ? <p className="text-xs text-destructive mt-2">{refreshErr}</p> : null}
-              {refreshOk ? <p className="text-xs text-success mt-2">{refreshOk}</p> : null}
-            </ModalSection>
-          ) : job?.job_id && !refreshMeta.available ? (
-            <ModalAlert variant="info">
-              Refresh from database is only available for jobs created via <strong>Table (DB)</strong> in Data Owner.
-              File-based datasets: replace the file from the Jobs screen or re-upload.
-            </ModalAlert>
-          ) : null}
+            {(payload?.tables || []).map((t) => (
+              <DatasetTableInventoryBlock
+                key={`${t.table_id}-${t.table_name}`}
+                table={t}
+                maxSampleRows={15}
+                showSampleRows={dataLoaded}
+              />
+            ))}
 
-          {(payload?.tables || []).map((t) => (
-            <DatasetTableInventoryBlock
-              key={`${t.table_id}-${t.table_name}`}
-              table={t}
-              maxSampleRows={15}
-              showSampleRows={dataLoaded}
-            />
-          ))}
+            {!loading && !err && !(payload?.tables || []).length && !payload?.hint ? (
+              <p className="text-xs text-muted-foreground">No tables on the linked job yet.</p>
+            ) : null}
+          </div>
 
-          {!loading && !err && !(payload?.tables || []).length && !payload?.hint ? (
-            <p className="text-xs text-muted-foreground">No tables on the linked job yet.</p>
-          ) : null}
+          <div className="lg:col-span-5 xl:col-span-4 lg:sticky lg:top-0">
+            <DatasetCatalogChartInsights datasetId={datasetId} enabled={hasTableData} dataRevision={chartRevision} />
+          </div>
         </div>
       )}
     </AppModal>
@@ -314,6 +324,7 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
       onSaved={async () => {
         if (datasetId != null) invalidateEdaReportCache(datasetId);
         await loadPreview();
+        setChartRevision((n) => n + 1);
         setRefreshOk("Data source joined successfully. Preview updated with merged columns.");
       }}
     />

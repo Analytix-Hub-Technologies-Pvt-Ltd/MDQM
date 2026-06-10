@@ -1,8 +1,20 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+
+/** Dashboard pages scroll inside <main>, not window — lock/restore that element. */
+function getPageScrollElement() {
+  return document.querySelector("main.flex-1.overflow-y-auto") || document.documentElement;
+}
+
+function restoreScrollPosition(scrollEl, scrollTop) {
+  scrollEl.scrollTop = scrollTop;
+  requestAnimationFrame(() => {
+    scrollEl.scrollTop = scrollTop;
+  });
+}
 
 /**
  * Theme-aware modal shell (light + dark). Portaled to document.body so fixed
@@ -21,29 +33,54 @@ export function AppModal({
   bodyClassName,
   showDefaultFooter = true,
 }) {
+  const triggerRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
   useEffect(() => {
     if (!open) return undefined;
 
-    const prevOverflow = document.body.style.overflow;
+    triggerRef.current = document.activeElement;
+    const scrollEl = getPageScrollElement();
+    const scrollTop = scrollEl.scrollTop;
+
+    const prevScrollOverflow = scrollEl.style.overflow;
+    const prevBodyOverflow = document.body.style.overflow;
     const prevPaddingRight = document.body.style.paddingRight;
     const scrollbar = window.innerWidth - document.documentElement.clientWidth;
 
+    scrollEl.style.overflow = "hidden";
     document.body.style.overflow = "hidden";
     if (scrollbar > 0) {
       document.body.style.paddingRight = `${scrollbar}px`;
     }
 
     const onKey = (e) => {
-      if (e.key === "Escape") onClose?.();
+      if (e.key === "Escape") onCloseRef.current?.();
     };
     window.addEventListener("keydown", onKey);
 
     return () => {
-      document.body.style.overflow = prevOverflow;
-      document.body.style.paddingRight = prevPaddingRight;
       window.removeEventListener("keydown", onKey);
+      scrollEl.style.overflow = prevScrollOverflow;
+      document.body.style.overflow = prevBodyOverflow;
+      document.body.style.paddingRight = prevPaddingRight;
+      restoreScrollPosition(scrollEl, scrollTop);
+      const trigger = triggerRef.current;
+      if (trigger && typeof trigger.focus === "function") {
+        try {
+          trigger.focus({ preventScroll: true });
+        } catch {
+          trigger.focus();
+        }
+      }
+      if (trigger && typeof trigger.scrollIntoView === "function") {
+        trigger.scrollIntoView({ block: "nearest", inline: "nearest" });
+      } else {
+        restoreScrollPosition(scrollEl, scrollTop);
+      }
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 

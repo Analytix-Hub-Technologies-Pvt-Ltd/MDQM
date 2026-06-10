@@ -96,6 +96,11 @@ export async function enterpriseGovernanceDatasetPreview(datasetId) {
   return apiClient.get(`/api/enterprise/governance/datasets/${datasetId}/preview`);
 }
 
+export async function enterpriseGovernanceDatasetChartInsights(datasetId, { refresh = false } = {}) {
+  const q = refresh ? "?refresh=true" : "";
+  return apiClient.get(`/api/enterprise/governance/datasets/${datasetId}/chart-insights${q}`);
+}
+
 /** In-memory EDA HTML cache (per browser tab) for instant re-open. */
 const edaReportHtmlCache = new Map();
 
