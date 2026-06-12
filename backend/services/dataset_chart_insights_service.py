@@ -65,14 +65,15 @@ Chart type guide (pick the best fit — use different types across charts):
 - scatter: relationship between two numeric columns (group_by/x_column + value_column)
 - radar: compare up to 6 category buckets on one metric
 - composed: category bars for count plus line for avg of a numeric value_column
-- histogram: distribution of one numeric column
-- bar: general categorical comparison
+- histogram: distribution of one continuous numeric column (amounts, scores, ages)
+- bar: general categorical comparison, or count per distinct ID/code value
 - line: simple time series when area is not ideal
 - pie: only when 3–8 categories
 Rules:
 - Use only column names from the schema.
 - Suggest 3-4 charts with varied chart_type values (avoid repeating the same type).
-- aggregation count needs no value_column; sum/avg/scatter/composed need a numeric value_column."""
+- aggregation count needs no value_column; sum/avg/scatter/composed need a numeric value_column.
+- Never use histogram on ID columns (id, job_id, *_id). Use bar + count for those instead."""
 
 
 def _cache_key(dataset_id: int, cache_token: str | None) -> str:
@@ -86,6 +87,48 @@ def _cache_key(dataset_id: int, cache_token: str | None) -> str:
     elif cache_token and str(cache_token).startswith("db:"):
         mtime = hash(cache_token) % 10_000_000
     return f"{dataset_id}:{cache_token}:{mtime}"
+
+
+def _looks_like_id_column(col_name: str) -> bool:
+    normalized = re.sub(r"[\s-]+", "_", str(col_name).strip().lower())
+    if normalized in ("id", "job_id", "jobid", "uuid", "guid", "pk"):
+        return True
+    return normalized.endswith("_id") or normalized.endswith("_uuid")
+
+
+def _format_number_label(n: float) -> str:
+    if pd.isna(n):
+        return "?"
+    value = float(n)
+    if abs(value - round(value)) < 1e-9:
+        rounded = int(round(value))
+        return f"{rounded:,}" if abs(rounded) >= 1000 else str(rounded)
+    text = f"{value:,.4f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _format_bin_label(left: float, right: float) -> str:
+    if pd.isna(left) or pd.isna(right):
+        return str(left)
+    l_val, r_val = float(left), float(right)
+    left_text = _format_number_label(l_val)
+    right_text = _format_number_label(r_val)
+    if left_text == right_text:
+        if abs(l_val - r_val) < 1e-9:
+            return left_text
+        return f"{l_val:.1f} – {r_val:.1f}"
+    return f"{left_text} – {right_text}"
+
+
+def _is_discrete_numeric(series: pd.Series) -> bool:
+    numeric = pd.to_numeric(series, errors="coerce").dropna()
+    if numeric.empty:
+        return False
+    unique = int(numeric.nunique())
+    rows = len(numeric)
+    if unique <= min(25, max(1, rows // 3)):
+        return True
+    return unique <= 50 and unique / rows <= 0.2
 
 
 def _looks_like_date(series: pd.Series) -> bool:
@@ -108,7 +151,11 @@ def _column_stats(df: pd.DataFrame) -> list[dict[str, Any]]:
             "null_pct": round(float(s.isna().mean() * 100), 1),
         }
         if pd.api.types.is_numeric_dtype(s):
-            entry["kind"] = "numeric"
+            entry["unique"] = int(s.nunique(dropna=True))
+            if _looks_like_id_column(str(col)):
+                entry["kind"] = "identifier"
+            else:
+                entry["kind"] = "numeric"
             if s.notna().any():
                 entry["min"] = float(s.min())
                 entry["max"] = float(s.max())
@@ -260,17 +307,22 @@ def _heuristic_specs(col_stats: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     elif nums and len(specs) < MAX_CHARTS:
-        col = nums[0]["name"]
+        hist_col = next(
+            (c["name"] for c in nums if c.get("kind") == "numeric" and not _looks_like_id_column(c["name"])),
+            None,
+        )
+        pick = hist_col or nums[0]["name"]
+        is_id = _looks_like_id_column(pick) or nums[0].get("kind") == "identifier"
         specs.append(
             {
-                "title": f"Distribution of {col}",
-                "chart_type": "histogram",
-                "group_by": col,
+                "title": f"Records by {pick}" if is_id else f"Distribution of {pick}",
+                "chart_type": "bar" if is_id else "histogram",
+                "group_by": pick,
                 "aggregation": "count",
-                "value_column": col,
+                "value_column": pick if not is_id else None,
                 "x_column": None,
                 "time_grain": None,
-                "insight": f"Spread of values in {col}.",
+                "insight": f"How many rows per {pick}." if is_id else f"Spread of values in {pick}.",
             }
         )
     if cats and nums and len(specs) < MAX_CHARTS:
@@ -406,16 +458,30 @@ def _execute_spec(df: pd.DataFrame, spec: dict[str, Any], colnames: set[str]) ->
         numeric = pd.to_numeric(df[col], errors="coerce").dropna()
         if numeric.empty:
             return None
-        bins = min(12, max(5, len(numeric) // 8))
+
+        use_value_counts = _looks_like_id_column(col) or _is_discrete_numeric(numeric)
+        if use_value_counts:
+            spec["chart_type"] = "bar"
+            if "Distribution" in str(spec.get("title") or ""):
+                spec["title"] = f"Records by {col}"
+            labels = numeric.map(lambda v: _format_number_label(float(v)))
+            grouped = labels.value_counts().sort_values(ascending=False)
+            points = [{"label": str(key), "value": int(val)} for key, val in grouped.head(MAX_POINTS).items()]
+            return points or None
+
+        if float(numeric.min()) == float(numeric.max()):
+            return [{"label": _format_number_label(float(numeric.min())), "value": int(len(numeric))}]
+
+        bins = min(10, max(4, len(numeric) // 10))
         intervals = pd.cut(numeric, bins=bins)
         grouped = intervals.value_counts().sort_index()
-        points: list[dict[str, Any]] = []
+        points = []
         for interval, count in grouped.items():
-            left = interval.left
-            right = interval.right
-            label = f"{left:.2g}–{right:.2g}" if pd.notna(left) and pd.notna(right) else str(interval)
+            if not count:
+                continue
+            label = _format_bin_label(interval.left, interval.right)
             points.append({"label": label, "value": int(count)})
-        return points[:MAX_POINTS]
+        return points[:MAX_POINTS] or None
 
     group_by = spec.get("group_by")
     if not group_by or group_by not in colnames:
