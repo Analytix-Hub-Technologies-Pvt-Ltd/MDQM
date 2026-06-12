@@ -67,7 +67,7 @@ function DimensionSparkline({ values, gradientId }) {
                 <stop offset="100%" stopColor={lineColor} stopOpacity={0.02} />
               </linearGradient>
             </defs>
-            <ReTooltip content={<RechartsTooltip />} />
+            <ReTooltip content={<RechartsTooltip valueUnit="%" />} />
             <Area type="monotone" dataKey="value" stroke="none" fill={`url(#${gradientId})`} />
             <Line type="monotone" dataKey="value" stroke={lineColor} strokeWidth={2} dot={false} isAnimationActive animationDuration={800} />
           </AreaChart>

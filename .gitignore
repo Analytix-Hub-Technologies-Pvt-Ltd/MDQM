@@ -53,6 +53,7 @@ backend/MDQM/
 # Ignore local test data and results
 backend/uploads/
 backend/uploads/*.csv
+backend/.cache/
 
 # Node modules (if you haven't already)
 node_modules/

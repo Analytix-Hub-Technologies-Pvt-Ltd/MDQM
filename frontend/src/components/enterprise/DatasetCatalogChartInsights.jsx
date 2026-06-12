@@ -68,12 +68,79 @@ function AxisTicks(colors) {
   return { fill: colors.muted, fontSize: 10 };
 }
 
+function metricLabel(aggregation, valueColumn) {
+  const agg = String(aggregation || "count").toLowerCase();
+  if (agg === "avg") return valueColumn ? `Avg ${valueColumn}` : "Average";
+  if (agg === "sum") return valueColumn ? `Sum ${valueColumn}` : "Total";
+  return "Count";
+}
+
+function metricCaption(query) {
+  if (!query) return null;
+  const parts = [];
+  if (query.group_by) parts.push(`By ${query.group_by}`);
+  const agg = String(query.aggregation || "count").toLowerCase();
+  if (agg === "count") parts.push("Count");
+  else if (agg === "sum") parts.push(query.value_column ? `Sum of ${query.value_column}` : "Sum");
+  else if (agg === "avg") parts.push(query.value_column ? `Avg of ${query.value_column}` : "Average");
+  return parts.length ? parts.join(" · ") : null;
+}
+
+function TreemapTooltip({ active, payload, valueName }) {
+  if (!active || !payload?.length) return null;
+  const node = payload[0]?.payload ?? payload[0];
+  const name = node?.name ?? node?.label ?? "—";
+  const count = node?.size ?? node?.value ?? 0;
+  return (
+    <RechartsTooltip
+      active
+      label={name}
+      payload={[{ name: valueName, value: count, dataKey: "value" }]}
+      integerKeys={["value"]}
+    />
+  );
+}
+
+function renderTreemapCell({ colors, palette }) {
+  return function TreemapCell({ x, y, width, height, name, index, value }) {
+    if (width <= 0 || height <= 0) return null;
+    const fill = palette[(index ?? 0) % palette.length];
+    const showLabel = width > 28 && height > 14;
+    const maxChars = Math.max(3, Math.floor((width - 8) / 6));
+    return (
+      <g>
+        <rect x={x} y={y} width={width} height={height} fill={fill} stroke={colors.card} strokeWidth={1} rx={2} />
+        {showLabel ? (
+          <>
+            <text x={x + 4} y={y + 11} fill={colors.foreground} fontSize={8} fontWeight={600}>
+              {String(name ?? "").slice(0, maxChars)}
+            </text>
+            {height > 26 ? (
+              <text x={x + 4} y={y + 22} fill={colors.muted} fontSize={7}>
+                {value}
+              </text>
+            ) : null}
+          </>
+        ) : null}
+      </g>
+    );
+  };
+}
+
 function ChartBody({ chart, colors }) {
   const rows = chart.data || [];
   const gridStroke = colors.border + "80";
   const type = chart.chart_type || "bar";
   const palette = chartPalette(colors);
   const tick = AxisTicks(colors);
+  const query = chart.query || {};
+  const aggregation = String(query.aggregation || "count").toLowerCase();
+  const valueName = metricLabel(aggregation, query.value_column);
+  const isCount = aggregation === "count" || type === "histogram";
+  const tooltipProps = {
+    integerKeys: isCount ? ["value"] : undefined,
+  };
+  const ChartTooltip = (props) => <RechartsTooltip {...tooltipProps} {...props} />;
 
   if (!rows.length) {
     return <p className="py-6 text-center text-[11px] text-muted-foreground">No data points.</p>;
@@ -81,27 +148,44 @@ function ChartBody({ chart, colors }) {
 
   if (type === "treemap") {
     const treemapData = rows.map((r) => ({ name: r.label, size: r.value }));
+    const total = treemapData.reduce((sum, item) => sum + (Number(item.size) || 0), 0);
     return (
-      <div className="h-44">
-        <ResponsiveContainer width="100%" height="100%">
-          <Treemap
-            data={treemapData}
-            dataKey="size"
-            nameKey="name"
-            stroke={colors.border}
-            fill={colors.primary}
-            content={({ x, y, width, height, name, index }) =>
-              width > 36 && height > 22 ? (
-                <g>
-                  <rect x={x} y={y} width={width} height={height} fill={palette[index % palette.length]} stroke={colors.card} strokeWidth={2} rx={4} />
-                  <text x={x + 6} y={y + 14} fill={colors.foreground} fontSize={9} fontWeight={600}>
-                    {String(name).slice(0, 12)}
-                  </text>
-                </g>
-              ) : null
-            }
-          />
-        </ResponsiveContainer>
+      <div className="space-y-2">
+        <div className="h-44">
+          <ResponsiveContainer width="100%" height="100%">
+            <Treemap
+              data={treemapData}
+              dataKey="size"
+              nameKey="name"
+              type="flat"
+              aspectRatio={4 / 3}
+              stroke={colors.border}
+              fill={colors.primary}
+              isAnimationActive={false}
+              content={renderTreemapCell({ colors, palette })}
+            >
+              <Tooltip content={<TreemapTooltip valueName={valueName} />} />
+            </Treemap>
+          </ResponsiveContainer>
+        </div>
+        <div className="space-y-1">
+          {treemapData.slice(0, 8).map((item, i) => {
+            const pct = total > 0 ? Math.round((Number(item.size) / total) * 100) : 0;
+            return (
+              <div key={`${item.name}-${i}`} className="flex items-center gap-2 text-[9px]">
+                <span
+                  className="h-2 w-2 shrink-0 rounded-sm"
+                  style={{ backgroundColor: palette[i % palette.length] }}
+                  aria-hidden
+                />
+                <span className="min-w-0 flex-1 truncate font-medium text-foreground">{item.name}</span>
+                <span className="shrink-0 tabular-nums text-muted-foreground">
+                  {item.size} ({pct}%)
+                </span>
+              </div>
+            );
+          })}
+        </div>
       </div>
     );
   }
@@ -112,12 +196,12 @@ function ChartBody({ chart, colors }) {
       <div className="h-40">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
-            <Pie data={rows} dataKey="value" nameKey="label" cx="50%" cy="50%" innerRadius={inner} outerRadius={58} paddingAngle={2}>
+            <Pie data={rows} dataKey="value" nameKey="label" cx="50%" cy="50%" innerRadius={inner} outerRadius={58} paddingAngle={2} name={valueName}>
               {rows.map((_, i) => (
                 <Cell key={i} fill={palette[i % palette.length]} />
               ))}
             </Pie>
-            <Tooltip content={<RechartsTooltip />} />
+            <Tooltip content={<ChartTooltip />} />
           </PieChart>
         </ResponsiveContainer>
       </div>
@@ -133,8 +217,8 @@ function ChartBody({ chart, colors }) {
             <PolarGrid stroke={gridStroke} />
             <PolarAngleAxis dataKey="subject" tick={{ ...tick, fontSize: 8 }} />
             <PolarRadiusAxis tick={false} axisLine={false} />
-            <Radar dataKey="value" stroke={colors.primary} fill={colors.primary + "55"} strokeWidth={2} />
-            <Tooltip content={<RechartsTooltip />} />
+            <Radar dataKey="value" name={valueName} stroke={colors.primary} fill={colors.primary + "55"} strokeWidth={2} />
+            <Tooltip content={<ChartTooltip />} />
           </RadarChart>
         </ResponsiveContainer>
       </div>
@@ -147,8 +231,8 @@ function ChartBody({ chart, colors }) {
       <div className="h-44">
         <ResponsiveContainer width="100%" height="100%">
           <RadialBarChart innerRadius="28%" outerRadius="95%" data={radialData} startAngle={180} endAngle={0}>
-            <RadialBar background dataKey="value" cornerRadius={6} />
-            <Tooltip content={<RechartsTooltip />} />
+            <RadialBar background dataKey="value" name={valueName} cornerRadius={6} />
+            <Tooltip content={<ChartTooltip />} />
           </RadialBarChart>
         </ResponsiveContainer>
       </div>
@@ -164,7 +248,7 @@ function ChartBody({ chart, colors }) {
             <XAxis type="number" dataKey="x" name="x" tick={tick} axisLine={false} tickLine={false} />
             <YAxis type="number" dataKey="y" name="y" tick={tick} axisLine={false} tickLine={false} width={36} />
             <ZAxis range={[40, 40]} />
-            <Tooltip cursor={{ strokeDasharray: "3 3" }} content={<RechartsTooltip />} />
+            <Tooltip cursor={{ strokeDasharray: "3 3" }} content={<ChartTooltip />} />
             <Scatter data={rows} fill={colors.primary} />
           </ScatterChart>
         </ResponsiveContainer>
@@ -181,9 +265,9 @@ function ChartBody({ chart, colors }) {
             <XAxis dataKey="label" tick={tick} axisLine={false} tickLine={false} interval={0} angle={-20} textAnchor="end" height={44} />
             <YAxis yAxisId="left" tick={tick} axisLine={false} tickLine={false} width={32} />
             <YAxis yAxisId="right" orientation="right" tick={tick} axisLine={false} tickLine={false} width={32} />
-            <Tooltip content={<RechartsTooltip />} />
+            <Tooltip content={<ChartTooltip integerKeys={["value"]} />} />
             <Bar yAxisId="left" dataKey="value" fill={colors.primary} radius={[4, 4, 0, 0]} name="Count" />
-            <Line yAxisId="right" type="monotone" dataKey="secondary" stroke={colors.accent} strokeWidth={2} dot={{ r: 2 }} name="Average" />
+            <Line yAxisId="right" type="monotone" dataKey="secondary" stroke={colors.accent} strokeWidth={2} dot={{ r: 2 }} name={query.value_column ? `Avg ${query.value_column}` : "Average"} />
           </ComposedChart>
         </ResponsiveContainer>
       </div>
@@ -204,8 +288,8 @@ function ChartBody({ chart, colors }) {
             <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" vertical={false} />
             <XAxis dataKey="label" tick={tick} axisLine={false} tickLine={false} interval="preserveStartEnd" />
             <YAxis tick={tick} axisLine={false} tickLine={false} width={36} />
-            <Tooltip content={<RechartsTooltip />} />
-            <Area type="monotone" dataKey="value" stroke={colors.primary} fill={`url(#area-${chart.id})`} strokeWidth={2} />
+            <Tooltip content={<ChartTooltip />} />
+            <Area type="monotone" dataKey="value" name={valueName} stroke={colors.primary} fill={`url(#area-${chart.id})`} strokeWidth={2} />
           </AreaChart>
         </ResponsiveContainer>
       </div>
@@ -220,8 +304,8 @@ function ChartBody({ chart, colors }) {
             <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" vertical={false} />
             <XAxis dataKey="label" tick={tick} axisLine={false} tickLine={false} interval="preserveStartEnd" />
             <YAxis tick={tick} axisLine={false} tickLine={false} width={36} />
-            <Tooltip content={<RechartsTooltip />} />
-            <Line type="monotone" dataKey="value" stroke={colors.primary} strokeWidth={2} dot={{ r: 2, fill: colors.primary }} />
+            <Tooltip content={<ChartTooltip />} />
+            <Line type="monotone" dataKey="value" name={valueName} stroke={colors.primary} strokeWidth={2} dot={{ r: 2, fill: colors.primary }} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -245,8 +329,8 @@ function ChartBody({ chart, colors }) {
               <YAxis tick={tick} axisLine={false} tickLine={false} width={36} />
             </>
           )}
-          <Tooltip content={<RechartsTooltip />} />
-          <Bar dataKey="value" fill={colors.primary} radius={[4, 4, 0, 0]} />
+          <Tooltip content={<ChartTooltip />} />
+          <Bar dataKey="value" name={valueName} fill={colors.primary} radius={[4, 4, 0, 0]} />
         </BarChart>
       </ResponsiveContainer>
     </div>
@@ -330,6 +414,11 @@ export default function DatasetCatalogChartInsights({ datasetId, enabled = true,
                   {CHART_TYPE_LABELS[chart.chart_type] || chart.chart_type}
                 </span>
               </div>
+              {metricCaption(chart.query) ? (
+                <p className="mt-0.5 text-[9px] font-medium uppercase tracking-wide text-muted-foreground/90">
+                  {metricCaption(chart.query)}
+                </p>
+              ) : null}
               {chart.insight ? <p className="mt-0.5 text-[10px] text-muted-foreground line-clamp-2">{chart.insight}</p> : null}
               <div className="mt-2">
                 <ChartBody chart={chart} colors={colors} />

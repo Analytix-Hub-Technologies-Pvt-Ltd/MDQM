@@ -54,26 +54,27 @@ export default function TrendChart({ title, data = [] }) {
                 <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="label" tick={{ fill: colors.muted, fontSize: 11 }} axisLine={false} tickLine={false} />
                 <YAxis domain={[0, 100]} tick={{ fill: colors.muted, fontSize: 11 }} axisLine={false} tickLine={false} />
-                <Tooltip content={<RechartsTooltip />} />
-                <Bar dataKey="value" fill={colors.primary} radius={[6, 6, 0, 0]} />
+                <Tooltip content={<RechartsTooltip valueUnit="%" />} />
+                <Bar dataKey="value" name="Score" fill={colors.primary} radius={[6, 6, 0, 0]} />
               </BarChart>
             ) : chartType === "area" ? (
               <AreaChart data={rows}>
                 <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="label" tick={{ fill: colors.muted, fontSize: 11 }} axisLine={false} tickLine={false} />
                 <YAxis domain={[0, 100]} tick={{ fill: colors.muted, fontSize: 11 }} axisLine={false} tickLine={false} />
-                <Tooltip content={<RechartsTooltip />} />
-                <Area type="monotone" dataKey="value" stroke={colors.primary} fill={colors.primary + "33"} strokeWidth={2} />
+                <Tooltip content={<RechartsTooltip valueUnit="%" />} />
+                <Area type="monotone" dataKey="value" name="Score" stroke={colors.primary} fill={colors.primary + "33"} strokeWidth={2} />
               </AreaChart>
             ) : (
               <LineChart data={rows}>
                 <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="label" tick={{ fill: colors.muted, fontSize: 11 }} axisLine={false} tickLine={false} />
                 <YAxis domain={[0, 100]} tick={{ fill: colors.muted, fontSize: 11 }} axisLine={false} tickLine={false} />
-                <Tooltip content={<RechartsTooltip />} />
+                <Tooltip content={<RechartsTooltip valueUnit="%" />} />
                 <Line
                   type="monotone"
                   dataKey="value"
+                  name="Score"
                   stroke={colors.primary}
                   strokeWidth={2.5}
                   dot={{ r: 2, fill: colors.primary }}
