@@ -8,7 +8,11 @@ import {
   enterpriseStewardshipIssues,
   enterpriseValidationResults,
   enterpriseValidationRun,
+  STEWARDSHIP_REFRESH_EVENT,
 } from "../enterpriseApi";
+import StewardshipTasksTable from "@/components/stewardship/StewardshipTasksTable";
+import { useAuth } from "@/auth/AuthContext";
+import { ROLES } from "@/auth/rolePermissions";
 
 const btnOutline =
   "inline-flex items-center rounded border border-border bg-card px-3 py-2 text-xs font-medium uppercase tracking-wider text-foreground hover:bg-muted";
@@ -109,6 +113,38 @@ function ValidationRunPanel() {
   );
 }
 
+function StewardTasksTab() {
+  const { role, isAdmin } = useAuth();
+  const canManage = isAdmin || role === ROLES.DATA_STEWARD;
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    const onRefresh = () => setRefreshKey((k) => k + 1);
+    window.addEventListener(STEWARDSHIP_REFRESH_EVENT, onRefresh);
+    return () => window.removeEventListener(STEWARDSHIP_REFRESH_EVENT, onRefresh);
+  }, []);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs text-muted-foreground">
+          Full task board with filters, create, and assign actions.
+        </p>
+        <Link to="/stewardship" className={btnLink}>
+          Open Stewardship →
+        </Link>
+      </div>
+      <StewardshipTasksTable
+        refreshKey={refreshKey}
+        canManage={canManage}
+        pageSize={8}
+        title="Recent stewardship tasks"
+        emptyMessage="No tasks yet. Open Stewardship to create one."
+      />
+    </div>
+  );
+}
+
 export function renderStewardTab(tabId) {
   switch (tabId) {
     case "rules":
@@ -203,15 +239,7 @@ export function renderStewardTab(tabId) {
         </div>
       );
     case "tasks":
-      return (
-        <div className="enterprise-card p-5 text-sm text-muted-foreground">
-          <h3 className="enterprise-title mb-2">Tasks</h3>
-          <p>Stewardship task queue is listed under Issues; detailed board lives under Stewardship.</p>
-          <Link to="/stewardship" className="text-primary font-medium hover:underline">
-            Stewardship →
-          </Link>
-        </div>
-      );
+      return <StewardTasksTab />;
     case "reports":
       return (
         <div className="enterprise-card p-5 text-sm text-muted-foreground">

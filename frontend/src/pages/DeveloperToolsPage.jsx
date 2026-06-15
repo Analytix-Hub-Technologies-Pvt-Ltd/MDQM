@@ -1,20 +1,16 @@
 import { useState } from "react";
 import { Code2 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useOpenApiSchema } from "@/hooks/useOpenApiSchema";
 import { useSystemHealth } from "@/hooks/useSystemHealth";
 import { useDatabaseStatus } from "@/hooks/useDatabaseStatus";
-import { useDeveloperMetrics } from "@/hooks/useDeveloperMetrics";
 import DeveloperToolsOverviewTab from "@/components/developer-tools/DeveloperToolsOverviewTab";
-import ApiExplorerTab from "@/components/developer-tools/ApiExplorerTab";
 import SystemHealthTab from "@/components/developer-tools/SystemHealthTab";
 import DatabaseStatusTab from "@/components/developer-tools/DatabaseStatusTab";
 import DeveloperUtilitiesTab from "@/components/developer-tools/DeveloperUtilitiesTab";
 import SwaggerLinks from "@/components/developer-tools/SwaggerLinks";
 
 const TABS = [
-  { id: "overview", label: "Overview" },
-  { id: "explorer", label: "API Explorer" },
+  { id: "overview", label: "API Docs" },
   { id: "health", label: "System Health" },
   { id: "database", label: "Database Status" },
   { id: "utilities", label: "Developer Utilities" },
@@ -22,12 +18,8 @@ const TABS = [
 
 export default function DeveloperToolsPage() {
   const [activeTab, setActiveTab] = useState("overview");
-  const { endpoints, info, loading: schemaLoading, error: schemaError, refresh: refreshSchema } =
-    useOpenApiSchema();
   const { health, loading: healthLoading, error: healthError, refresh: refreshHealth } = useSystemHealth();
   const { status: dbStatus, loading: dbLoading, error: dbError, refresh: refreshDb } = useDatabaseStatus();
-  const metrics = useDeveloperMetrics(endpoints);
-
   return (
     <div className="space-y-6">
       <div className="overflow-hidden rounded-2xl border border-border bg-gradient-to-r from-primary/10 via-card to-accent/10 p-6 shadow-[var(--shadow-card)]">
@@ -58,22 +50,7 @@ export default function DeveloperToolsPage() {
         </TabsList>
 
         <TabsContent value="overview">
-          <DeveloperToolsOverviewTab
-            info={info}
-            metrics={metrics}
-            loading={schemaLoading}
-            error={schemaError}
-            onExplore={() => setActiveTab("explorer")}
-          />
-        </TabsContent>
-
-        <TabsContent value="explorer">
-          <ApiExplorerTab
-            endpoints={endpoints}
-            loading={schemaLoading}
-            error={schemaError}
-            onRefresh={refreshSchema}
-          />
+          <DeveloperToolsOverviewTab />
         </TabsContent>
 
         <TabsContent value="health">

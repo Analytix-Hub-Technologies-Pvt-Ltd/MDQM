@@ -64,6 +64,28 @@ export async function enterpriseStewardshipIssues(params) {
   return { data: unwrapList(res) };
 }
 
+export async function enterpriseStewardshipSummary() {
+  return apiClient.get("/api/enterprise/stewardship/summary");
+}
+
+export async function enterpriseStewardshipAssignees() {
+  return apiClient.get("/api/enterprise/stewardship/assignees");
+}
+
+export async function enterpriseStewardshipCreate(body) {
+  return apiClient.post("/api/enterprise/stewardship/tasks", body);
+}
+
+export async function enterpriseStewardshipUpdate(taskId, body) {
+  return apiClient.patch(`/api/enterprise/stewardship/tasks/${taskId}`, body);
+}
+
+export const STEWARDSHIP_REFRESH_EVENT = "mdqm-stewardship-refresh";
+
+export function notifyStewardshipRefresh() {
+  window.dispatchEvent(new CustomEvent(STEWARDSHIP_REFRESH_EVENT));
+}
+
 export async function enterpriseAuditAccess(params) {
   const res = await apiClient.get("/api/enterprise/audit/access", { params });
   return { data: unwrapList(res) };

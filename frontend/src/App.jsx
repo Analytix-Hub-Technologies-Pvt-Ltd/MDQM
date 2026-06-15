@@ -14,6 +14,7 @@ import AdminAccessRequestsPage from "./pages/admin/AdminAccessRequestsPage";
 import DbConnectionsPage from "./pages/DbConnectionsPage";
 import LineagePage from "./pages/LineagePage";
 import AuditLogsPage from "./pages/AuditLogsPage";
+import StewardshipPage from "./pages/StewardshipPage";
 import DeveloperToolsPage from "./pages/DeveloperToolsPage";
 import ProtectedRoute from "./auth/ProtectedRoute";
 import PermissionGuard from "./auth/PermissionGuard";
@@ -105,7 +106,9 @@ function AppShell() {
         <Route
           path="/stewardship"
           element={
-            <PlaceholderPage title="Stewardship" description="Steward tasks and remediation assignments." />
+            <PermissionGuard require={PERMISSIONS.STEWARDSHIP_VIEW}>
+              <StewardshipPage />
+            </PermissionGuard>
           }
         />
         <Route

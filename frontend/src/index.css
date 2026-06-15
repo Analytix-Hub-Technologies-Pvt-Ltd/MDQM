@@ -340,3 +340,29 @@ table tbody tr:hover > th {
     transform: translateY(0);
   }
 }
+
+/* Embedded Swagger UI inside Developer Tools */
+.embedded-swagger .swagger-ui {
+  font-family: inherit;
+}
+
+.embedded-swagger .swagger-ui .topbar {
+  display: none;
+}
+
+.embedded-swagger .swagger-ui .information-container {
+  padding: 1.25rem 1.5rem 0;
+}
+
+.embedded-swagger .swagger-ui .wrapper {
+  padding: 0 1.5rem 1.5rem;
+}
+
+.embedded-swagger .swagger-ui .scheme-container {
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem;
+  box-shadow: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--muted) 40%, transparent);
+}
