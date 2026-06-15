@@ -315,6 +315,24 @@ def build_business_catalog_dataset_detail(
     return preview
 
 
+def build_business_catalog_chart_insights(
+    db: Session,
+    dataset_id: int,
+    *,
+    username: str | None = None,
+    refresh: bool = False,
+) -> dict[str, Any]:
+    """Chart insights for business catalog detail (requires approved data access)."""
+    row = db.query(models.EnterpriseDataset).filter(models.EnterpriseDataset.id == dataset_id).first()
+    if not row:
+        return {"ok": False, "error": "Dataset not found"}
+    if not _has_approved_access(db, username or "", row.name):
+        return {"ok": False, "error": "Access not granted for this dataset"}
+    from services.dataset_chart_insights_service import build_dataset_chart_insights
+
+    return build_dataset_chart_insights(db, dataset_id, refresh=refresh)
+
+
 def list_catalog(db: Session, page: int, page_size: int, q: str | None = None, username: str | None = None):
     offset, page_size = _page_bounds(page, page_size)
     query = db.query(models.EnterpriseDataset).order_by(models.EnterpriseDataset.name.asc())

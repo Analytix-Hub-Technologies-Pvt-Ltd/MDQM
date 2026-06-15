@@ -426,6 +426,30 @@ def governance_dataset_preview(
     return preview
 
 
+@router.get("/governance/datasets/{dataset_id}/tables/{table_id}/rows")
+def governance_dataset_table_rows(
+    dataset_id: int,
+    table_id: int,
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """Paginated dataset rows for server-side data grids."""
+    require_any_permission(
+        _role(request),
+        Permissions.DASHBOARD_OWNER,
+        Permissions.DASHBOARD_CDO,
+        Permissions.GOVERNANCE_VIEW,
+        Permissions.ADMIN_VIEW,
+    )
+    result = esvc.build_dataset_table_rows_page(db, dataset_id, table_id, offset=offset, limit=limit)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Dataset or table not found")
+    return result
+
+
 @router.get("/governance/datasets/{dataset_id}/chart-insights")
 def governance_dataset_chart_insights(
     dataset_id: int,
@@ -1108,6 +1132,29 @@ def business_catalog_dataset_detail(
     if not detail:
         raise HTTPException(status_code=404, detail="Dataset not found")
     return detail
+
+
+@router.get("/business/catalog/{dataset_id}/chart-insights")
+def business_catalog_chart_insights(
+    dataset_id: int,
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Smart charts for business users with approved access to the dataset."""
+    require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
+    refresh = (request.query_params.get("refresh") or "").strip().lower() in ("1", "true", "yes")
+    result = busvc.build_business_catalog_chart_insights(
+        db, dataset_id, username=user.username, refresh=refresh
+    )
+    if result.get("ok") is False:
+        err = result.get("error") or "Request failed"
+        if err == "Dataset not found":
+            raise HTTPException(status_code=404, detail=err)
+        if err == "Access not granted for this dataset":
+            raise HTTPException(status_code=403, detail=err)
+        raise HTTPException(status_code=400, detail=err)
+    return result
 
 
 @router.get("/business/quality-scores")

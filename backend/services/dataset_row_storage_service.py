@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 import models
@@ -165,6 +166,108 @@ def load_dataframe_for_table_name(
     if not tbl:
         return None
     return load_dataframe(db, job_id, tbl.table_id, nrows=nrows)
+
+
+def _normalize_row_dict(row: dict[str, Any]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for key, value in row.items():
+        if value is None:
+            out[str(key)] = ""
+        else:
+            try:
+                if pd.isna(value):
+                    out[str(key)] = ""
+                    continue
+            except (TypeError, ValueError):
+                pass
+            out[str(key)] = str(value)
+    return out
+
+
+def load_table_rows_page(
+    db: Session,
+    job_id: int,
+    table_name: str,
+    *,
+    table_id: int | None = None,
+    offset: int = 0,
+    limit: int = 50,
+) -> tuple[list[dict[str, str]], int]:
+    """Paginated row slice for a job table (DB snapshot preferred, CSV fallback)."""
+    offset = max(0, int(offset))
+    limit = max(1, min(int(limit), 200))
+
+    tid = table_id
+    tbl_meta = None
+    if tid is None:
+        tbl_meta = (
+            db.query(models.TableMetadata)
+            .filter(
+                models.TableMetadata.job_id == job_id,
+                models.TableMetadata.table_name == table_name,
+            )
+            .first()
+        )
+        tid = tbl_meta.table_id if tbl_meta else None
+    else:
+        tbl_meta = (
+            db.query(models.TableMetadata)
+            .filter(
+                models.TableMetadata.job_id == job_id,
+                models.TableMetadata.table_id == tid,
+            )
+            .first()
+        )
+
+    if tid is not None and has_db_snapshot(db, job_id, tid):
+        total = (
+            db.query(func.count(models.DatasetRow.id))
+            .filter(
+                models.DatasetRow.job_id == job_id,
+                models.DatasetRow.table_id == tid,
+            )
+            .scalar()
+            or 0
+        )
+        page = (
+            db.query(models.DatasetRow.row_data)
+            .filter(
+                models.DatasetRow.job_id == job_id,
+                models.DatasetRow.table_id == tid,
+            )
+            .order_by(models.DatasetRow.row_index.asc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        rows = [_normalize_row_dict(r[0]) for r in page]
+        return rows, int(total)
+
+    from utils.upload_paths import resolve_table_csv_path
+
+    csv_path = resolve_table_csv_path(job_id, table_name)
+    if not csv_path:
+        return [], 0
+
+    total = int(tbl_meta.row_count or 0) if tbl_meta and tbl_meta.row_count else 0
+    if total <= 0:
+        try:
+            with open(csv_path, "rb") as fh:
+                total = max(sum(1 for _ in fh) - 1, 0)
+        except OSError:
+            total = 0
+
+    skip = range(1, offset + 1) if offset > 0 else None
+    try:
+        df = pd.read_csv(csv_path, skiprows=skip, nrows=limit)
+    except Exception as exc:
+        logger.warning("CSV page read failed job=%s table=%s: %s", job_id, table_name, exc)
+        return [], total
+
+    if df.empty:
+        return [], total
+    rows = [_normalize_row_dict(r) for r in df.fillna("").to_dict(orient="records")]
+    return rows, total
 
 
 def load_snapshot_with_csv_fallback(

@@ -956,6 +956,68 @@ def build_dataset_inventory_preview(
     }
 
 
+def build_dataset_table_rows_page(
+    db: Session,
+    dataset_id: int,
+    table_id: int,
+    *,
+    offset: int = 0,
+    limit: int = 50,
+) -> dict[str, Any] | None:
+    """Server-paginated dataset rows for interactive grids (Data Owner preview)."""
+    row = db.query(models.EnterpriseDataset).filter(models.EnterpriseDataset.id == dataset_id).first()
+    if not row:
+        return None
+
+    from services import business_user_service as busvc
+    from services.dataset_row_storage_service import load_table_rows_page, snapshot_exists
+
+    job_id = row.job_id or busvc._resolve_job_id(db, row)
+    if not job_id:
+        return None
+
+    tbl = (
+        db.query(models.TableMetadata)
+        .filter(
+            models.TableMetadata.job_id == job_id,
+            models.TableMetadata.table_id == table_id,
+        )
+        .first()
+    )
+    if not tbl:
+        return None
+
+    if not snapshot_exists(db, job_id, tbl.table_name, table_id=tbl.table_id):
+        return {
+            "dataset_id": dataset_id,
+            "table_id": table_id,
+            "table_name": tbl.table_name,
+            "offset": max(0, int(offset)),
+            "limit": max(1, min(int(limit), 200)),
+            "total": 0,
+            "rows": [],
+            "message": "No loaded data for this table yet.",
+        }
+
+    rows, total = load_table_rows_page(
+        db,
+        job_id,
+        tbl.table_name,
+        table_id=tbl.table_id,
+        offset=offset,
+        limit=limit,
+    )
+    return {
+        "dataset_id": dataset_id,
+        "table_id": table_id,
+        "table_name": tbl.table_name,
+        "offset": max(0, int(offset)),
+        "limit": max(1, min(int(limit), 200)),
+        "total": total,
+        "rows": rows,
+    }
+
+
 def list_glossary(db: Session, page: int, page_size: int, q: str | None):
     offset, page_size = _page_bounds(page, page_size)
     query = db.query(models.EnterpriseGlossaryTerm).order_by(models.EnterpriseGlossaryTerm.term.asc())
