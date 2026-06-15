@@ -941,14 +941,32 @@ def business_create_data_request(
 # --- Steward issues (from stewardship_tasks) ---
 
 
-@router.get("/stewardship/issues")
-def stewardship_issues(
+def _require_stewardship_manage(request: Request) -> None:
+    require_any_permission(
+        _role(request),
+        Permissions.DASHBOARD_STEWARD,
+        Permissions.ADMIN_VIEW,
+    )
+
+
+class StewardshipTaskCreateBody(BaseModel):
+    dataset_name: str = Field(min_length=1, max_length=255)
+    severity: Literal["low", "medium", "high"] = "medium"
+    assigned_to_user_id: int | None = None
+    status: Literal["open", "in_progress"] = "open"
+
+
+class StewardshipTaskUpdateBody(BaseModel):
+    status: Literal["open", "in_progress", "resolved", "closed"] | None = None
+    severity: Literal["low", "medium", "high"] | None = None
+    assigned_to_user_id: int | None = None
+
+
+@router.get("/stewardship/summary")
+def stewardship_summary(
     request: Request,
     db: Session = Depends(_db),
     user: models.User = Depends(get_current_user),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=200),
-    q: str | None = None,
 ):
     require_any_permission(
         _role(request),
@@ -957,7 +975,99 @@ def stewardship_issues(
         Permissions.STEWARDSHIP_VIEW,
         Permissions.ADMIN_VIEW,
     )
-    return esvc.list_stewardship_tasks(db, page, page_size, q)
+    return esvc.stewardship_summary(db)
+
+
+@router.get("/stewardship/assignees")
+def stewardship_assignees(
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    _require_stewardship_manage(request)
+    return esvc.list_stewardship_assignees(db)
+
+
+@router.get("/stewardship/issues")
+def stewardship_issues(
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    q: str | None = None,
+    status: str | None = None,
+    severity: str | None = None,
+    open_only: bool = False,
+):
+    require_any_permission(
+        _role(request),
+        Permissions.DASHBOARD_STEWARD,
+        Permissions.DASHBOARD_BUSINESS_USER,
+        Permissions.STEWARDSHIP_VIEW,
+        Permissions.ADMIN_VIEW,
+    )
+    return esvc.list_stewardship_tasks(db, page, page_size, q, status, severity, open_only)
+
+
+@router.post("/stewardship/tasks")
+def stewardship_task_create(
+    request: Request,
+    body: StewardshipTaskCreateBody,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    _require_stewardship_manage(request)
+    try:
+        row = esvc.create_stewardship_task(
+            db,
+            dataset_name=body.dataset_name,
+            severity=body.severity,
+            assigned_to_user_id=body.assigned_to_user_id,
+            status=body.status,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    write_audit_log(
+        db,
+        user_id=user.id,
+        action="stewardship_task_created",
+        entity_type="stewardship_task",
+        entity_id=str(row["id"]),
+        ip_address=request.client.host if request.client else None,
+        new_values={"dataset_name": row["dataset_name"], "severity": row["severity"]},
+    )
+    return row
+
+
+@router.patch("/stewardship/tasks/{task_id}")
+def stewardship_task_update(
+    request: Request,
+    task_id: int,
+    body: StewardshipTaskUpdateBody,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    _require_stewardship_manage(request)
+    updates = body.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    try:
+        row = esvc.update_stewardship_task(db, task_id, updates)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not row:
+        raise HTTPException(status_code=404, detail="Task not found")
+    write_audit_log(
+        db,
+        user_id=user.id,
+        action="stewardship_task_updated",
+        entity_type="stewardship_task",
+        entity_id=str(task_id),
+        ip_address=request.client.host if request.client else None,
+        new_values=updates,
+    )
+    return row
 
 
 # --- Business user workspace (catalog, quality, overview, reports, alerts) ---

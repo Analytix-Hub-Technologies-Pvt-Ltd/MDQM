@@ -1229,24 +1229,190 @@ def list_access_requests(db: Session, page: int, page_size: int, status: str | N
     return paginated_response(items, total, page, page_size)
 
 
-def list_stewardship_tasks(db: Session, page: int, page_size: int, q: str | None = None):
+def _stewardship_assignee_label(db: Session, user_id: int | None) -> str | None:
+    if not user_id:
+        return None
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        return None
+    return (user.full_name or user.username or user.email or "").strip() or None
+
+
+def _stewardship_task_item(db: Session, row: models.StewardshipTask) -> dict:
+    return {
+        "id": row.id,
+        "dataset_name": row.dataset_name,
+        "status": row.status,
+        "severity": row.severity,
+        "assigned_to_user_id": row.assigned_to_user_id,
+        "assigned_to_name": _stewardship_assignee_label(db, row.assigned_to_user_id),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+_STEWARDSHIP_STATUSES = frozenset({"open", "in_progress", "resolved", "closed"})
+_STEWARDSHIP_SEVERITIES = frozenset({"low", "medium", "high"})
+
+
+def _validate_stewardship_assignee(db: Session, user_id: int | None) -> None:
+    if user_id is None:
+        return
+    from permissions.role_map import Roles, normalize_role
+
+    user = db.query(models.User).filter(models.User.id == user_id, models.User.is_active.is_(True)).first()
+    if not user:
+        raise ValueError("Assignee not found or inactive")
+    role = normalize_role(user.role)
+    if role not in (Roles.DATA_STEWARD, Roles.ADMIN, Roles.CDO):
+        raise ValueError("Assignee must be a data steward, CDO, or admin")
+
+
+def list_stewardship_assignees(db: Session) -> list[dict]:
+    from permissions.role_map import Roles, normalize_role
+
+    allowed = {Roles.DATA_STEWARD, Roles.ADMIN, Roles.CDO}
+    rows = (
+        db.query(models.User)
+        .filter(models.User.is_active.is_(True))
+        .order_by(models.User.full_name.asc(), models.User.id.asc())
+        .all()
+    )
+    out = []
+    for u in rows:
+        if normalize_role(u.role) not in allowed:
+            continue
+        out.append(
+            {
+                "id": u.id,
+                "full_name": u.full_name,
+                "username": u.username,
+                "email": u.email,
+                "role": normalize_role(u.role),
+                "label": (u.full_name or u.username or u.email or f"User #{u.id}").strip(),
+            }
+        )
+    return out
+
+
+def create_stewardship_task(
+    db: Session,
+    *,
+    dataset_name: str,
+    severity: str = "medium",
+    assigned_to_user_id: int | None = None,
+    status: str = "open",
+) -> dict:
+    name = (dataset_name or "").strip()
+    if not name:
+        raise ValueError("Dataset name is required")
+    sev = (severity or "medium").strip().lower()
+    if sev not in _STEWARDSHIP_SEVERITIES:
+        raise ValueError("Invalid severity")
+    st = (status or "open").strip().lower()
+    if st not in _STEWARDSHIP_STATUSES:
+        raise ValueError("Invalid status")
+    _validate_stewardship_assignee(db, assigned_to_user_id)
+    row = models.StewardshipTask(
+        dataset_name=name,
+        severity=sev,
+        status=st,
+        assigned_to_user_id=assigned_to_user_id,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _stewardship_task_item(db, row)
+
+
+def update_stewardship_task(db: Session, task_id: int, updates: dict) -> dict | None:
+    row = db.query(models.StewardshipTask).filter(models.StewardshipTask.id == task_id).first()
+    if not row:
+        return None
+    if "status" in updates and updates["status"] is not None:
+        st = str(updates["status"]).strip().lower()
+        if st not in _STEWARDSHIP_STATUSES:
+            raise ValueError("Invalid status")
+        row.status = st
+    if "severity" in updates and updates["severity"] is not None:
+        sev = str(updates["severity"]).strip().lower()
+        if sev not in _STEWARDSHIP_SEVERITIES:
+            raise ValueError("Invalid severity")
+        row.severity = sev
+    if "assigned_to_user_id" in updates:
+        assignee = updates["assigned_to_user_id"]
+        if assignee is not None:
+            _validate_stewardship_assignee(db, int(assignee))
+            row.assigned_to_user_id = int(assignee)
+        else:
+            row.assigned_to_user_id = None
+    db.commit()
+    db.refresh(row)
+    return _stewardship_task_item(db, row)
+
+
+def list_stewardship_tasks(
+    db: Session,
+    page: int,
+    page_size: int,
+    q: str | None = None,
+    status: str | None = None,
+    severity: str | None = None,
+    open_only: bool = False,
+):
+    from sqlalchemy import func
+
     offset, page_size = _page_bounds(page, page_size)
     query = db.query(models.StewardshipTask).order_by(models.StewardshipTask.id.desc())
     if q:
         query = query.filter(models.StewardshipTask.dataset_name.ilike(f"%{q}%"))
+    if open_only:
+        query = query.filter(func.lower(models.StewardshipTask.status).in_(("open", "in_progress")))
+    elif status and str(status).strip().lower() not in ("", "all"):
+        query = query.filter(models.StewardshipTask.status == str(status).strip().lower())
+    if severity and str(severity).strip().lower() not in ("", "all"):
+        query = query.filter(models.StewardshipTask.severity == str(severity).strip().lower())
     total = query.count()
     rows = query.offset(offset).limit(page_size).all()
-    items = [
-        {
-            "id": r.id,
-            "dataset_name": r.dataset_name,
-            "status": r.status,
-            "severity": r.severity,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
-        }
-        for r in rows
-    ]
+    items = [_stewardship_task_item(db, r) for r in rows]
     return paginated_response(items, total, page, page_size)
+
+
+def stewardship_summary(db: Session) -> dict:
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import func
+
+    open_statuses = ("open", "in_progress")
+    resolved_statuses = ("resolved", "closed")
+    thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+
+    open_count = (
+        db.query(func.count(models.StewardshipTask.id))
+        .filter(func.lower(models.StewardshipTask.status).in_(open_statuses))
+        .scalar()
+        or 0
+    )
+    high_severity_count = (
+        db.query(func.count(models.StewardshipTask.id))
+        .filter(func.lower(models.StewardshipTask.severity) == "high")
+        .filter(func.lower(models.StewardshipTask.status).in_(open_statuses))
+        .scalar()
+        or 0
+    )
+    resolved_recent = (
+        db.query(func.count(models.StewardshipTask.id))
+        .filter(func.lower(models.StewardshipTask.status).in_(resolved_statuses))
+        .filter(models.StewardshipTask.created_at >= thirty_days_ago)
+        .scalar()
+        or 0
+    )
+    total = db.query(func.count(models.StewardshipTask.id)).scalar() or 0
+    return {
+        "open_tasks": int(open_count),
+        "high_severity_open": int(high_severity_count),
+        "resolved_last_30_days": int(resolved_recent),
+        "total_tasks": int(total),
+    }
 
 
 def list_my_auth_access_requests(db: Session, username: str, page: int, page_size: int, q: str | None = None):
