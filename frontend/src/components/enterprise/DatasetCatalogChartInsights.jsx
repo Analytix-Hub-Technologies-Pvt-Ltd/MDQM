@@ -31,7 +31,7 @@ import { Sparkles, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import RechartsTooltip from "@/components/charts/RechartsTooltip";
 import { getChartColors } from "@/lib/chartTheme";
-import { enterpriseGovernanceDatasetChartInsights } from "@/pages/dashboards/enterpriseApi";
+import { enterpriseGovernanceDatasetChartInsights, enterpriseBusinessCatalogChartInsights } from "@/pages/dashboards/enterpriseApi";
 import { cn } from "@/lib/utils";
 
 const CHART_TYPE_LABELS = {
@@ -337,11 +337,20 @@ function ChartBody({ chart, colors }) {
   );
 }
 
-export default function DatasetCatalogChartInsights({ datasetId, enabled = true, dataRevision = 0, className }) {
+export default function DatasetCatalogChartInsights({
+  datasetId,
+  enabled = true,
+  dataRevision = 0,
+  className,
+  audience = "governance",
+}) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [payload, setPayload] = useState(null);
   const colors = useMemo(() => getChartColors(), []);
+
+  const fetchInsights =
+    audience === "business" ? enterpriseBusinessCatalogChartInsights : enterpriseGovernanceDatasetChartInsights;
 
   const load = useCallback(
     async (refresh = false) => {
@@ -349,7 +358,7 @@ export default function DatasetCatalogChartInsights({ datasetId, enabled = true,
       setLoading(true);
       setErr("");
       try {
-        const res = await enterpriseGovernanceDatasetChartInsights(datasetId, { refresh });
+        const res = await fetchInsights(datasetId, { refresh });
         setPayload(res?.data ?? res);
       } catch (e) {
         setPayload(null);
@@ -358,7 +367,7 @@ export default function DatasetCatalogChartInsights({ datasetId, enabled = true,
         setLoading(false);
       }
     },
-    [datasetId, enabled],
+    [datasetId, enabled, fetchInsights],
   );
 
   useEffect(() => {

@@ -1,4 +1,5 @@
 import { modalLabelClass } from "@/components/layout/AppModal";
+import DatasetSampleRowsGrid from "@/components/enterprise/DatasetSampleRowsGrid";
 import { cn } from "@/lib/utils";
 
 export function resolveTableColumns(table) {
@@ -21,9 +22,12 @@ export default function DatasetTableInventoryBlock({
   maxSampleRows = 15,
   showSampleRows = true,
   embedded = false,
+  datasetId = null,
+  serverSideSampleRows = false,
 }) {
   const columns = resolveTableColumns(table);
   const sampleRows = (table?.sample_rows || []).slice(0, maxSampleRows);
+  const useServerGrid = Boolean(serverSideSampleRows && datasetId != null && table?.table_id != null);
 
   const columnsTable = (
     <div>
@@ -59,8 +63,14 @@ export default function DatasetTableInventoryBlock({
     </div>
   );
 
-  const sampleSection =
-    showSampleRows && sampleRows.length ? (
+  const sampleSection = useServerGrid ? (
+    <DatasetSampleRowsGrid
+      datasetId={datasetId}
+      tableId={table.table_id}
+      columns={columns}
+      enabled={showSampleRows}
+    />
+  ) : showSampleRows && sampleRows.length ? (
       <div>
         <p className={cn(modalLabelClass, "mb-1.5")}>Sample rows (first {sampleRows.length})</p>
         <div className="mdqm-scroll-x max-h-56 overflow-auto rounded-lg border border-border">

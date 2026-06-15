@@ -283,6 +283,8 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
               <DatasetTableInventoryBlock
                 key={`${t.table_id}-${t.table_name}`}
                 table={t}
+                datasetId={datasetId}
+                serverSideSampleRows
                 maxSampleRows={15}
                 showSampleRows={dataLoaded}
               />

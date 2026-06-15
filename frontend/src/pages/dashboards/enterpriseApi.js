@@ -118,6 +118,12 @@ export async function enterpriseGovernanceDatasetPreview(datasetId) {
   return apiClient.get(`/api/enterprise/governance/datasets/${datasetId}/preview`);
 }
 
+export async function enterpriseGovernanceDatasetTableRows(datasetId, tableId, { offset = 0, limit = 50 } = {}) {
+  return apiClient.get(`/api/enterprise/governance/datasets/${datasetId}/tables/${tableId}/rows`, {
+    params: { offset, limit },
+  });
+}
+
 export async function enterpriseGovernanceDatasetChartInsights(datasetId, { refresh = false } = {}) {
   const q = refresh ? "?refresh=true" : "";
   return apiClient.get(`/api/enterprise/governance/datasets/${datasetId}/chart-insights${q}`);
@@ -244,6 +250,11 @@ export async function enterpriseBusinessCatalog(params) {
 
 export async function enterpriseBusinessCatalogDetail(datasetId) {
   return apiClient.get(`/api/enterprise/business/catalog/${datasetId}/detail`);
+}
+
+export async function enterpriseBusinessCatalogChartInsights(datasetId, { refresh = false } = {}) {
+  const q = refresh ? "?refresh=true" : "";
+  return apiClient.get(`/api/enterprise/business/catalog/${datasetId}/chart-insights${q}`);
 }
 
 export async function enterpriseBusinessQualityScores(params) {

@@ -366,3 +366,30 @@ table tbody tr:hover > th {
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--muted) 40%, transparent);
 }
+
+/* react-data-grid — match MDQM table styling in dataset preview */
+.mdqm-data-grid .rdg {
+  --rdg-font-size: 11px;
+  --rdg-color: var(--foreground);
+  --rdg-border-color: var(--border);
+  --rdg-background-color: var(--card);
+  --rdg-header-background-color: var(--table-header-bg, var(--muted));
+  --rdg-header-draggable-background-color: color-mix(in srgb, var(--muted) 80%, var(--border));
+  --rdg-row-hover-background-color: color-mix(in srgb, var(--primary) 8%, var(--card));
+  --rdg-row-selected-background-color: color-mix(in srgb, var(--primary) 14%, var(--card));
+  --rdg-selection-color: var(--primary);
+  block-size: 320px;
+  border: none;
+}
+
+.mdqm-data-grid .rdg-header-row {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 10px;
+  color: var(--table-header-fg, var(--foreground));
+}
+
+.mdqm-data-grid .rdg-row:nth-child(even) .rdg-cell {
+  background-color: color-mix(in srgb, var(--muted) 35%, var(--card));
+}
