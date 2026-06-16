@@ -8,6 +8,8 @@ if True:
     from pydantic import BaseModel
     from typing import List, Optional
     import shutil
+    import logging
+    import traceback
     import os
     import json
     import time
@@ -61,6 +63,7 @@ if True:
     from routers.enterprise.router import router as enterprise_router
     from auth.deps import get_current_user
     app = FastAPI(title="Data Quality Engine")
+    logger = logging.getLogger("mdqm.backend")
 
 
     # Create required schemas + tables
@@ -2892,19 +2895,28 @@ if True:
         selected_columns: Optional[str] = Form(None),
         db: Session = Depends(get_db),
     ):
-        # Clean the table name upfront by removing any extension
-        table_name = file.filename.replace(".csv", "").replace(".xlsx", "").replace(".xls", "")
-        
-        temp_file_path = job_temp_upload_path(job_id, file.filename)
-        
-        # Save the uploaded file temporarily
-        with open(temp_file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        max_id = db.query(func.max(models.TableMetadata.table_id)).filter(models.TableMetadata.job_id == job_id).scalar()
-        next_table_id = 1 if max_id is None else max_id + 1
-
+        temp_file_path = ""
+        started_at = time.perf_counter()
+        logger.info(
+            "Upload start: job_id=%s filename=%s source_path=%s selected_columns=%s",
+            job_id,
+            getattr(file, "filename", None),
+            bool((source_path or "").strip()),
+            bool(selected_columns),
+        )
         try:
+            # Clean the table name upfront by removing any extension
+            table_name = file.filename.replace(".csv", "").replace(".xlsx", "").replace(".xls", "")
+
+            temp_file_path = job_temp_upload_path(job_id, file.filename)
+
+            # Save the uploaded file temporarily
+            with open(temp_file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+
+            max_id = db.query(func.max(models.TableMetadata.table_id)).filter(models.TableMetadata.job_id == job_id).scalar()
+            next_table_id = 1 if max_id is None else max_id + 1
+
             if file.filename.endswith(".xlsx") or file.filename.endswith(".xls"):
                 df = pd.read_excel(temp_file_path)
             else:
@@ -2938,50 +2950,77 @@ if True:
 
             row_count = len(df)
             columns = df.dtypes.items()
-        except HTTPException:
-            raise
-        except Exception as e:
+            new_table = models.TableMetadata(
+                job_id=job_id,
+                table_id=next_table_id,
+                table_name=table_name,
+                row_count=row_count 
+            )
+            db.add(new_table)
+            db.commit()
+
+            for col_name, dtype in columns:
+                str_type = "String"
+                if "int" in str(dtype): str_type = "Integer"
+                elif "float" in str(dtype): str_type = "Float"
+                elif "datetime" in str(dtype): str_type = "Date"
+                elif "bool" in str(dtype): str_type = "Boolean"
+
+                col_meta = models.ColumnMetadata(
+                    job_id=job_id,
+                    table_id=next_table_id,
+                    column_name=col_name,
+                    data_type=str_type
+                )
+                db.add(col_meta)
+            db.commit()
+
+            from services.dataset_row_storage_service import save_dataframe
+
+            save_dataframe(db, job_id, next_table_id, df, commit=True)
+
+            normalized_source_path = _normalize_local_path(source_path or "")
+            if normalized_source_path and os.path.isfile(normalized_source_path):
+                _save_table_source_path(job_id, next_table_id, normalized_source_path)
+
+            elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+            logger.info(
+                "Upload success: job_id=%s table_id=%s table_name=%s row_count=%s elapsed_ms=%s",
+                job_id,
+                next_table_id,
+                table_name,
+                row_count,
+                elapsed_ms,
+            )
+            return {"job_id": job_id, "message": "File Uploaded and Processed Successfully"}
+        except HTTPException as exc:
             if os.path.exists(temp_file_path):
                 try:
                     os.remove(temp_file_path)
                 except OSError:
                     pass
-            raise HTTPException(status_code=400, detail=f"Invalid File format: {str(e)}")
-
-        new_table = models.TableMetadata(
-            job_id=job_id,
-            table_id=next_table_id,
-            table_name=table_name,
-            row_count=row_count 
-        )
-        db.add(new_table)
-        db.commit()
-
-        for col_name, dtype in columns:
-            str_type = "String"
-            if "int" in str(dtype): str_type = "Integer"
-            elif "float" in str(dtype): str_type = "Float"
-            elif "datetime" in str(dtype): str_type = "Date"
-            elif "bool" in str(dtype): str_type = "Boolean"
-
-            col_meta = models.ColumnMetadata(
-                job_id=job_id,
-                table_id=next_table_id,
-                column_name=col_name,
-                data_type=str_type
+            logger.error(
+                "Upload HTTPException: job_id=%s status_code=%s detail=%s traceback=%s",
+                job_id,
+                exc.status_code,
+                exc.detail,
+                traceback.format_exc(),
             )
-            db.add(col_meta)
-        db.commit()
-
-        from services.dataset_row_storage_service import save_dataframe
-
-        save_dataframe(db, job_id, next_table_id, df, commit=True)
-
-        normalized_source_path = _normalize_local_path(source_path or "")
-        if normalized_source_path and os.path.isfile(normalized_source_path):
-            _save_table_source_path(job_id, next_table_id, normalized_source_path)
-
-        return {"job_id": job_id, "message": "File Uploaded and Processed Successfully"}
+            raise HTTPException(status_code=exc.status_code, detail=str(exc.detail))
+        except Exception as exc:
+            if os.path.exists(temp_file_path):
+                try:
+                    os.remove(temp_file_path)
+                except OSError:
+                    pass
+            logger.error(
+                "Upload unhandled exception: job_id=%s error=%s traceback=%s",
+                job_id,
+                str(exc),
+                traceback.format_exc(),
+            )
+            # Temporary debugging response detail for production investigation.
+            raise HTTPException(status_code=500, detail=f"Upload failed: {str(exc)}")
 
 
     @app.post("/jobs/{job_id}/upload-from-path")
