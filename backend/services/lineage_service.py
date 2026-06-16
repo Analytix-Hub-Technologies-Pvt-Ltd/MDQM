@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 import models
+from services.job_source_config_service import read_job_source_config
 
 # Reference-style default graph when DB has no datasets
 _DEFAULT_NODES = [
@@ -111,21 +112,22 @@ def seed_lineage_from_datasets(db: Session, *, force: bool = False) -> dict[str,
             sources = []
             if ds.job_id:
                 job_row = db.query(models.Job).filter(models.Job.job_id == ds.job_id).first()
-                if job_row and job_row.db_source_config:
-                    cfg = job_row.db_source_config
-                    conn_id = cfg.get("connection_id")
-                    conn_name = None
-                    if conn_id:
-                        conn_row = db.query(models.DbConnection).filter(models.DbConnection.connection_id == conn_id).first()
-                        if conn_row:
-                            conn_name = conn_row.connection_name
-                    
-                    if not conn_name:
-                        db_type = cfg.get("db_type") or "database"
-                        dbname = cfg.get("dbname") or "default"
-                        conn_name = f"{db_type.upper()}: {dbname}"
-                    
-                    sources.append((f"src:{conn_name}", conn_name))
+                if job_row:
+                    cfg = read_job_source_config(job_row)
+                    if cfg:
+                        conn_id = cfg.get("connection_id")
+                        conn_name = None
+                        if conn_id:
+                            conn_row = db.query(models.DbConnection).filter(models.DbConnection.connection_id == conn_id).first()
+                            if conn_row:
+                                conn_name = conn_row.connection_name
+
+                        if not conn_name:
+                            db_type = cfg.get("db_type") or "database"
+                            dbname = cfg.get("dbname") or "default"
+                            conn_name = f"{db_type.upper()}: {dbname}"
+
+                        sources.append((f"src:{conn_name}", conn_name))
             
             if not sources:
                 # Fallback based on domain

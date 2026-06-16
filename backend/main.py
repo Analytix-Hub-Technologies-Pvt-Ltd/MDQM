@@ -86,6 +86,20 @@ if True:
                     "ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS db_source_config JSONB"
                 )
             )
+            for col_def in (
+                "source_kind VARCHAR(64)",
+                "source_connection_id INTEGER",
+                "source_host VARCHAR(255)",
+                "source_port VARCHAR(16)",
+                "source_db_user VARCHAR(128)",
+                "source_dbname VARCHAR(128)",
+                "source_db_type VARCHAR(32)",
+                "source_schema_name VARCHAR(128)",
+                "source_table_names TEXT",
+                "source_selected_columns TEXT",
+                "source_encrypted_db_pass TEXT",
+            ):
+                conn.execute(text(f"ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS {col_def}"))
             conn.execute(
                 text(
                     "ALTER TABLE metadata.db_connections ADD COLUMN IF NOT EXISTS user_id INTEGER"
@@ -111,7 +125,23 @@ if True:
                     "ALTER TABLE metadata.table_metadata ADD COLUMN IF NOT EXISTS data_updated_at TIMESTAMPTZ"
                 )
             )
+            conn.execute(
+                text(
+                    "ALTER TABLE metadata.dataset_rows ADD COLUMN IF NOT EXISTS golden_remarks TEXT"
+                )
+            )
         print("[mdqm] Database schema ready.", file=sys.stderr, flush=True)
+
+    def _migrate_job_source_config():
+        from services.job_source_config_service import migrate_job_source_json_to_columns
+
+        db = SessionLocal()
+        try:
+            n = migrate_job_source_json_to_columns(db)
+            if n:
+                print(f"[mdqm] Migrated {n} job(s) from db_source_config JSON to relational columns.", file=sys.stderr, flush=True)
+        finally:
+            db.close()
 
     def _seed_users():
         from auth.seed import seed_users_on_startup
@@ -124,6 +154,7 @@ if True:
 
     try:
         _init_database_schema()
+        _migrate_job_source_config()
         _seed_users()
     except Exception as exc:
         print(f"[mdqm] FATAL: Database startup failed: {exc}", file=sys.stderr, flush=True)
@@ -1413,9 +1444,11 @@ if True:
         persist_table_snapshot(db, job_id, table_id, df, commit=False)
 
     def _resolve_import_creds_from_job(db: Session, job: models.Job, body: dict | None = None):
-        """Build Postgres creds + schema/tables from job.db_source_config (saved connection aware)."""
+        """Build Postgres creds + schema/tables from job source config (saved connection aware)."""
+        from services.job_source_config_service import read_job_source_config
+
         body = body or {}
-        cfg = job.db_source_config
+        cfg = read_job_source_config(job)
         if not cfg or not isinstance(cfg, dict) or cfg.get("kind") != "postgres_tables":
             raise HTTPException(
                 status_code=400,
@@ -1495,6 +1528,7 @@ if True:
 
     def _execute_import_for_job(job_id: int, body: dict | None = None):
         from services.dataset_db_import import import_tables_into_job
+        from services.job_source_config_service import read_job_source_config
 
         db = SessionLocal()
         external_conn = None
@@ -1511,7 +1545,7 @@ if True:
             job.status = "Importing"
             db.commit()
             external_conn = _connect_db(creds)
-            cfg = job.db_source_config if isinstance(job.db_source_config, dict) else {}
+            cfg = read_job_source_config(job)
             from services.dataset_db_import import normalize_selected_columns
 
             selected_columns = normalize_selected_columns(cfg.get("selected_columns"))
@@ -1604,7 +1638,9 @@ if True:
         cfg_dict = build_db_source_config(payload, creds, schema_name, [table_name])
         jr = db.query(models.Job).filter(models.Job.job_id == job_id).first()
         if jr:
-            jr.db_source_config = cfg_dict
+            from services.job_source_config_service import write_job_source_config
+
+            write_job_source_config(jr, cfg_dict)
             db.commit()
 
         from services.dataset_db_import import (
@@ -1658,8 +1694,10 @@ if True:
         if job.status == "Importing":
             raise HTTPException(status_code=409, detail="Import already in progress for this job.")
 
-        cfg = job.db_source_config
-        if not cfg or not isinstance(cfg, dict) or cfg.get("kind") != "postgres_tables":
+        from services.job_source_config_service import read_job_source_config
+
+        cfg = read_job_source_config(job)
+        if not cfg or cfg.get("kind") != "postgres_tables":
             raise HTTPException(
                 status_code=400,
                 detail="Import is only available for database-backed datasets.",
@@ -1803,7 +1841,9 @@ if True:
                 enc = encrypt_db_password_optional(creds.get("pass") or "")
                 if enc:
                     cfg_dict["encrypted_db_pass"] = enc
-                jr.db_source_config = cfg_dict
+                from services.job_source_config_service import write_job_source_config
+
+                write_job_source_config(jr, cfg_dict)
                 try:
                     db.commit()
                 except Exception as cfg_exc:
@@ -1845,8 +1885,10 @@ if True:
         job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
-        cfg = job.db_source_config
-        if not cfg or not isinstance(cfg, dict) or cfg.get("kind") != "postgres_tables":
+        from services.job_source_config_service import read_job_source_config
+
+        cfg = read_job_source_config(job)
+        if not cfg or cfg.get("kind") != "postgres_tables":
             # File/server-path datasets: refresh from saved local source paths.
             tms = db.query(models.TableMetadata).filter(models.TableMetadata.job_id == job_id).all()
             refreshed = []
@@ -2036,7 +2078,9 @@ if True:
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
 
-        cfg = job.db_source_config if isinstance(job.db_source_config, dict) else {}
+        from services.job_source_config_service import read_job_source_config, write_job_source_config
+
+        cfg = read_job_source_config(job)
         if cfg.get("kind") != "postgres_tables":
             raise HTTPException(
                 status_code=400,
@@ -2151,11 +2195,14 @@ if True:
             "connection_id": base_payload.get("connection_id"),
             "selected_columns": [c.get("name") for c in filtered_columns],
         }
-        job.db_source_config = build_db_source_config(
-            cfg_payload,
-            creds,
-            schema_name,
-            [table_name],
+        write_job_source_config(
+            job,
+            build_db_source_config(
+                cfg_payload,
+                creds,
+                schema_name,
+                [table_name],
+            ),
         )
         job.status = "Registered"
         db.commit()

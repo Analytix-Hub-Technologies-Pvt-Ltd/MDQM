@@ -17,6 +17,7 @@ from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session
 
 import models
+from services.job_source_config_service import read_job_source_config
 
 
 def _page_bounds(page: int, page_size: int) -> tuple[int, int]:
@@ -524,7 +525,7 @@ def dataset_source_kind(
     if job_id:
         job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
         if job:
-            cfg = getattr(job, "db_source_config", None) or {}
+            cfg = read_job_source_config(job)
             if isinstance(cfg, dict):
                 joins = cfg.get("join_sources") or []
                 if isinstance(joins, list) and len(joins) > 0:
@@ -545,7 +546,7 @@ def format_dataset_source_details(
     kind = dataset_source_kind(db, row, job_id)
     if kind == "join":
         job = db.query(models.Job).filter(models.Job.job_id == job_id).first() if job_id else None
-        cfg = getattr(job, "db_source_config", None) or {} if job else {}
+        cfg = read_job_source_config(job) if job else {}
         joins = cfg.get("join_sources") or [] if isinstance(cfg, dict) else []
         join_count = len(joins) if isinstance(joins, list) else 0
         base_hint = "table" if isinstance(cfg, dict) and cfg.get("kind") == "postgres_tables" else "CSV"
@@ -574,7 +575,7 @@ def format_dataset_source_details(
     if not job:
         return row.classification or "—"
 
-    cfg = getattr(job, "db_source_config", None) or {}
+    cfg = read_job_source_config(job)
     if isinstance(cfg, dict) and cfg.get("kind") == "postgres_tables":
         host = str(cfg.get("host") or "").strip() or "—"
         dbname = str(cfg.get("dbname") or "").strip() or "—"
@@ -604,8 +605,8 @@ def dataset_has_loaded_data(db: Session, job_id: int | None) -> bool:
     from services.dataset_row_storage_service import has_db_snapshot, snapshot_exists
 
     job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
-    cfg = getattr(job, "db_source_config", None) if job else None
-    is_db_table = isinstance(cfg, dict) and cfg.get("kind") == "postgres_tables"
+    cfg = read_job_source_config(job) if job else {}
+    is_db_table = bool(cfg.get("kind") == "postgres_tables")
     if job and is_db_table:
         status = (job.status or "").strip().lower()
         if status in ("registered", "importing"):
@@ -728,7 +729,7 @@ def _dataset_refresh_meta(job_row: models.Job | None) -> dict[str, Any]:
             "stored_password_available": False,
             "encryption_configured": False,
         }
-    cfg = getattr(job_row, "db_source_config", None) or {}
+    cfg = read_job_source_config(job_row)
     if not isinstance(cfg, dict) or cfg.get("kind") != "postgres_tables":
         return {
             "available": False,
@@ -923,7 +924,7 @@ def build_dataset_inventory_preview(
             }
         )
 
-    src_cfg = job.db_source_config if job and isinstance(job.db_source_config, dict) else {}
+    src_cfg = read_job_source_config(job) if job else {}
     from services.dataset_join_service import list_join_sources
 
     return {

@@ -60,7 +60,78 @@ def has_db_snapshot(db: Session, job_id: int, table_id: int) -> bool:
     )
 
 
+def _has_row_cells(db: Session, job_id: int, table_id: int) -> bool:
+    return (
+        db.query(models.DatasetRowCell.id)
+        .filter(
+            models.DatasetRowCell.job_id == job_id,
+            models.DatasetRowCell.table_id == table_id,
+        )
+        .first()
+        is not None
+    )
+
+
+def materialize_legacy_rows_to_cells(db: Session, job_id: int, table_id: int) -> None:
+    """One-time: split legacy JSON row_data into per-column cells."""
+    if _has_row_cells(db, job_id, table_id):
+        return
+    headers = (
+        db.query(models.DatasetRow)
+        .filter(
+            models.DatasetRow.job_id == job_id,
+            models.DatasetRow.table_id == table_id,
+        )
+        .order_by(models.DatasetRow.row_index.asc())
+        .all()
+    )
+    cell_mappings: list[dict[str, Any]] = []
+    reserved = _reserved_row_columns()
+    for header in headers:
+        row_data = header.row_data or {}
+        if not isinstance(row_data, dict) or not row_data:
+            continue
+        for col, val in row_data.items():
+            col_name = str(col)
+            if col_name in reserved:
+                continue
+            cell_mappings.append(
+                {
+                    "job_id": job_id,
+                    "table_id": table_id,
+                    "row_index": header.row_index,
+                    "column_name": col_name,
+                    "value_text": _cell_value_text(val),
+                    "dq_passed": None,
+                    "dq_remark": None,
+                }
+            )
+    if cell_mappings:
+        for start in range(0, len(cell_mappings), INSERT_CHUNK):
+            db.bulk_insert_mappings(models.DatasetRowCell, cell_mappings[start : start + INSERT_CHUNK])
+        db.commit()
+
+
+def _cell_value_text(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(_json_cell(value) if _json_cell(value) is not None else "")
+
+
+def _reserved_row_columns() -> frozenset[str]:
+    return frozenset({"job_id", "table_id"})
+
+
 def delete_snapshot(db: Session, job_id: int, table_id: int) -> None:
+    db.query(models.DatasetRowCell).filter(
+        models.DatasetRowCell.job_id == job_id,
+        models.DatasetRowCell.table_id == table_id,
+    ).delete(synchronize_session=False)
     db.query(models.DatasetRow).filter(
         models.DatasetRow.job_id == job_id,
         models.DatasetRow.table_id == table_id,
@@ -75,7 +146,7 @@ def save_dataframe(
     *,
     commit: bool = False,
 ) -> int:
-    """Replace all rows for a job/table with the dataframe contents."""
+    """Replace all rows for a job/table — one DB cell per column (CSV/DB style)."""
     delete_snapshot(db, job_id, table_id)
     row_count = int(len(df))
     if row_count == 0:
@@ -95,18 +166,41 @@ def save_dataframe(
         return 0
 
     records = _row_dicts(df)
+    reserved = _reserved_row_columns()
     for start in range(0, len(records), INSERT_CHUNK):
         chunk = records[start : start + INSERT_CHUNK]
-        mappings = [
-            {
-                "job_id": job_id,
-                "table_id": table_id,
-                "row_index": start + i,
-                "row_data": row,
-            }
-            for i, row in enumerate(chunk)
-        ]
-        db.bulk_insert_mappings(models.DatasetRow, mappings)
+        row_mappings: list[dict[str, Any]] = []
+        cell_mappings: list[dict[str, Any]] = []
+        for i, row in enumerate(chunk):
+            row_index = start + i
+            row_mappings.append(
+                {
+                    "job_id": job_id,
+                    "table_id": table_id,
+                    "row_index": row_index,
+                    "row_data": {},
+                    "is_golden_record": False,
+                    "dq_remarks": None,
+                }
+            )
+            for col, val in row.items():
+                col_name = str(col)
+                if col_name in reserved:
+                    continue
+                cell_mappings.append(
+                    {
+                        "job_id": job_id,
+                        "table_id": table_id,
+                        "row_index": row_index,
+                        "column_name": col_name,
+                        "value_text": _cell_value_text(val),
+                        "dq_passed": None,
+                        "dq_remark": None,
+                    }
+                )
+        db.bulk_insert_mappings(models.DatasetRow, row_mappings)
+        if cell_mappings:
+            db.bulk_insert_mappings(models.DatasetRowCell, cell_mappings)
 
     tbl = (
         db.query(models.TableMetadata)
@@ -125,6 +219,129 @@ def save_dataframe(
     return row_count
 
 
+def _flatten_row_from_cells(
+    header: models.DatasetRow,
+    cells: list[models.DatasetRowCell],
+) -> dict[str, str]:
+    flat: dict[str, str] = {}
+    for cell in cells:
+        col = cell.column_name
+        flat[col] = cell.value_text or ""
+        if cell.dq_passed is not None:
+            flat[f"{col}__dq_pass"] = "true" if cell.dq_passed else "false"
+        if cell.dq_remark:
+            flat[f"{col}__dq_remark"] = cell.dq_remark
+    flat["job_id"] = str(header.job_id)
+    flat["table_id"] = str(header.table_id)
+    flat["is_golden_record"] = "true" if header.is_golden_record else "false"
+    if header.dq_remarks:
+        flat["dq_remarks"] = header.dq_remarks
+    if header.golden_remarks:
+        flat["golden_remarks"] = header.golden_remarks
+    return flat
+
+
+def _load_flat_rows_page(
+    db: Session,
+    job_id: int,
+    table_id: int,
+    *,
+    offset: int = 0,
+    limit: int | None = None,
+) -> list[dict[str, str]]:
+    q = (
+        db.query(models.DatasetRow)
+        .filter(
+            models.DatasetRow.job_id == job_id,
+            models.DatasetRow.table_id == table_id,
+        )
+        .order_by(models.DatasetRow.row_index.asc())
+    )
+    if offset > 0:
+        q = q.offset(offset)
+    if limit is not None and limit > 0:
+        q = q.limit(limit)
+    headers = q.all()
+    if not headers:
+        return []
+
+    row_indices = [h.row_index for h in headers]
+    cells = (
+        db.query(models.DatasetRowCell)
+        .filter(
+            models.DatasetRowCell.job_id == job_id,
+            models.DatasetRowCell.table_id == table_id,
+            models.DatasetRowCell.row_index.in_(row_indices),
+        )
+        .all()
+    )
+    by_row: dict[int, list[models.DatasetRowCell]] = {}
+    for cell in cells:
+        by_row.setdefault(cell.row_index, []).append(cell)
+
+    rows_out: list[dict[str, str]] = []
+    for header in headers:
+        row_cells = by_row.get(header.row_index, [])
+        if row_cells:
+            rows_out.append(_flatten_row_from_cells(header, row_cells))
+            continue
+        legacy = _normalize_row_dict(header.row_data or {})
+        if legacy:
+            legacy.setdefault("job_id", str(header.job_id))
+            legacy.setdefault("table_id", str(header.table_id))
+            legacy["is_golden_record"] = "true" if header.is_golden_record else "false"
+            if header.dq_remarks:
+                legacy["dq_remarks"] = header.dq_remarks
+            if header.golden_remarks:
+                legacy["golden_remarks"] = header.golden_remarks
+            rows_out.append(legacy)
+    return rows_out
+
+
+def apply_dq_results(
+    db: Session,
+    job_id: int,
+    table_id: int,
+    results: list[dict[str, Any]],
+) -> None:
+    """Persist per-column DQ pass/fail flags and row-level golden record remarks."""
+    for item in results:
+        row_index = int(item["row_index"])
+        header = (
+            db.query(models.DatasetRow)
+            .filter(
+                models.DatasetRow.job_id == job_id,
+                models.DatasetRow.table_id == table_id,
+                models.DatasetRow.row_index == row_index,
+            )
+            .first()
+        )
+        if not header:
+            continue
+        header.is_golden_record = bool(item.get("is_golden_record"))
+        header.dq_remarks = item.get("dq_remarks") or None
+        header.golden_remarks = item.get("golden_remarks") or None
+        column_flags: dict[str, Any] = item.get("column_flags") or {}
+        merged_values: dict[str, Any] = item.get("merged_values") or {}
+        for col, flag in column_flags.items():
+            cell = (
+                db.query(models.DatasetRowCell)
+                .filter(
+                    models.DatasetRowCell.job_id == job_id,
+                    models.DatasetRowCell.table_id == table_id,
+                    models.DatasetRowCell.row_index == row_index,
+                    models.DatasetRowCell.column_name == col,
+                )
+                .first()
+            )
+            if not cell:
+                continue
+            cell.dq_passed = bool(flag.get("passed"))
+            cell.dq_remark = flag.get("remark") or None
+            if col in merged_values:
+                cell.value_text = str(merged_values[col])
+
+
 def load_dataframe(
     db: Session,
     job_id: int,
@@ -132,20 +349,16 @@ def load_dataframe(
     *,
     nrows: int | None = None,
 ) -> pd.DataFrame | None:
-    q = (
-        db.query(models.DatasetRow.row_data)
-        .filter(
-            models.DatasetRow.job_id == job_id,
-            models.DatasetRow.table_id == table_id,
-        )
-        .order_by(models.DatasetRow.row_index.asc())
-    )
-    if nrows is not None and nrows > 0:
-        q = q.limit(nrows)
-    rows = q.all()
-    if not rows:
+    flat_rows = _load_flat_rows_page(db, job_id, table_id, offset=0, limit=nrows)
+    if not flat_rows:
         return None
-    return pd.DataFrame([r[0] for r in rows])
+    df = pd.DataFrame(flat_rows)
+    drop_cols = [
+        c
+        for c in df.columns
+        if "__dq_" in c or c in ("is_golden_record", "dq_remarks", "golden_remarks", "job_id", "table_id")
+    ]
+    return df.drop(columns=drop_cols, errors="ignore")
 
 
 def load_dataframe_for_table_name(
@@ -220,6 +433,7 @@ def load_table_rows_page(
         )
 
     if tid is not None and has_db_snapshot(db, job_id, tid):
+        materialize_legacy_rows_to_cells(db, job_id, tid)
         total = (
             db.query(func.count(models.DatasetRow.id))
             .filter(
@@ -229,18 +443,7 @@ def load_table_rows_page(
             .scalar()
             or 0
         )
-        page = (
-            db.query(models.DatasetRow.row_data)
-            .filter(
-                models.DatasetRow.job_id == job_id,
-                models.DatasetRow.table_id == tid,
-            )
-            .order_by(models.DatasetRow.row_index.asc())
-            .offset(offset)
-            .limit(limit)
-            .all()
-        )
-        rows = [_normalize_row_dict(r[0]) for r in page]
+        rows = _load_flat_rows_page(db, job_id, tid, offset=offset, limit=limit)
         return rows, int(total)
 
     from utils.upload_paths import resolve_table_csv_path
@@ -267,6 +470,10 @@ def load_table_rows_page(
     if df.empty:
         return [], total
     rows = [_normalize_row_dict(r) for r in df.fillna("").to_dict(orient="records")]
+    if tid is not None:
+        for row in rows:
+            row.setdefault("job_id", str(job_id))
+            row.setdefault("table_id", str(tid))
     return rows, total
 
 
@@ -292,6 +499,7 @@ def load_snapshot_with_csv_fallback(
         tid = tbl.table_id if tbl else None
 
     if tid is not None and has_db_snapshot(db, job_id, tid):
+        materialize_legacy_rows_to_cells(db, job_id, tid)
         return load_dataframe(db, job_id, tid, nrows=nrows)
 
     from utils.upload_paths import resolve_table_csv_path
@@ -343,7 +551,7 @@ def snapshot_exists(
 
 def storage_label(job_id: int, table_name: str, *, db_stored: bool) -> str:
     if db_stored:
-        return f"db://metadata.dataset_rows/job_{job_id}/{table_name}"
+        return f"db://metadata.dataset_row_cells/job_{job_id}/{table_name}"
     return f"legacy://uploads/job_{job_id}/{table_name}.csv"
 
 

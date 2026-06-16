@@ -1,7 +1,6 @@
 """
-AES-based encryption for external DB passwords stored on metadata.jobs.db_source_config.
-
-Secrets are ciphertext only in Postgres (metadata.jobs.db_source_config and metadata.db_connections.password);
+AES-based encryption for external DB passwords stored on metadata.jobs.source_encrypted_db_pass
+(and metadata.db_connections.password).
 decryption requires MDQM_DB_SOURCE_MASTER_SECRET on the API host.
 Never log decrypted values.
 """

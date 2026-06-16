@@ -119,6 +119,19 @@ CREATE TABLE IF NOT EXISTS metadata.jobs (
 
 CREATE INDEX IF NOT EXISTS ix_metadata_jobs_job_id ON metadata.jobs (job_id);
 
+ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS db_source_config JSONB;
+ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_kind VARCHAR(64);
+ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_connection_id INTEGER;
+ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_host VARCHAR(255);
+ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_port VARCHAR(16);
+ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_db_user VARCHAR(128);
+ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_dbname VARCHAR(128);
+ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_db_type VARCHAR(32);
+ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_schema_name VARCHAR(128);
+ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_table_names TEXT;
+ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_selected_columns TEXT;
+ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_encrypted_db_pass TEXT;
+
 CREATE TABLE IF NOT EXISTS auth.role_permissions (
     id SERIAL NOT NULL,
     role_id INTEGER NOT NULL,
@@ -449,6 +462,32 @@ CREATE TABLE IF NOT EXISTS metadata.dataset_rows (
 );
 
 CREATE INDEX IF NOT EXISTS ix_metadata_dataset_rows_job_table ON metadata.dataset_rows (job_id, table_id);
+
+ALTER TABLE metadata.dataset_rows
+    ADD COLUMN IF NOT EXISTS is_golden_record BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE metadata.dataset_rows
+    ADD COLUMN IF NOT EXISTS dq_remarks TEXT;
+
+ALTER TABLE metadata.dataset_rows
+    ADD COLUMN IF NOT EXISTS golden_remarks TEXT;
+
+CREATE TABLE IF NOT EXISTS metadata.dataset_row_cells (
+    id BIGSERIAL NOT NULL,
+    job_id INTEGER NOT NULL,
+    table_id INTEGER NOT NULL,
+    row_index INTEGER NOT NULL,
+    column_name VARCHAR NOT NULL,
+    value_text TEXT,
+    dq_passed BOOLEAN,
+    dq_remark TEXT,
+    PRIMARY KEY (id),
+    UNIQUE (job_id, table_id, row_index, column_name),
+    FOREIGN KEY(job_id, table_id) REFERENCES metadata.table_metadata (job_id, table_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_metadata_dataset_row_cells_job_table_row
+    ON metadata.dataset_row_cells (job_id, table_id, row_index);
 
 CREATE TABLE IF NOT EXISTS metadata.dataset_base_backup_rows (
     id BIGSERIAL NOT NULL,

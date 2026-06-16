@@ -13,8 +13,19 @@ class Job(Base):
     start_time = Column(DateTime)
     end_time = Column(DateTime)
     created_at = Column(DateTime, default=func.now())
-    """Stored when job is created from Postgres (see /db/connect); used by refresh-from-db."""
+    """Legacy JSON snapshot — use relational source_* columns instead."""
     db_source_config = Column(JSON, nullable=True)
+    source_kind = Column(String(64), nullable=True)
+    source_connection_id = Column(Integer, nullable=True)
+    source_host = Column(String(255), nullable=True)
+    source_port = Column(String(16), nullable=True)
+    source_db_user = Column(String(128), nullable=True)
+    source_dbname = Column(String(128), nullable=True)
+    source_db_type = Column(String(32), nullable=True)
+    source_schema_name = Column(String(128), nullable=True)
+    source_table_names = Column(Text, nullable=True)
+    source_selected_columns = Column(Text, nullable=True)
+    source_encrypted_db_pass = Column(Text, nullable=True)
 
     tables = relationship("TableMetadata", back_populates="job")
     # FIX: Added overlaps to silence warning
@@ -71,6 +82,34 @@ class DatasetRow(Base):
     table_id = Column(Integer, nullable=False)
     row_index = Column(Integer, nullable=False)
     row_data = Column(JSON, nullable=False)
+    is_golden_record = Column(Boolean, nullable=False, default=False)
+    dq_remarks = Column(Text, nullable=True)
+    golden_remarks = Column(Text, nullable=True)
+
+
+class DatasetRowCell(Base):
+    """Per-column cell storage (CSV/DB style) with optional DQ pass flag and remark."""
+    __tablename__ = "dataset_row_cells"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["job_id", "table_id"],
+            ["metadata.table_metadata.job_id", "metadata.table_metadata.table_id"],
+        ),
+        UniqueConstraint(
+            "job_id", "table_id", "row_index", "column_name",
+            name="uq_metadata_dataset_row_cells_job_table_row_col",
+        ),
+        {"schema": "metadata"},
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    job_id = Column(Integer, nullable=False, index=True)
+    table_id = Column(Integer, nullable=False)
+    row_index = Column(Integer, nullable=False)
+    column_name = Column(String, nullable=False)
+    value_text = Column(Text, nullable=True)
+    dq_passed = Column(Boolean, nullable=True)
+    dq_remark = Column(Text, nullable=True)
 
 
 class DatasetBaseBackupRow(Base):

@@ -96,7 +96,7 @@ class RuleLibrary:
             threshold = int(rule_value) if rule_value else 80
             match = process.extractOne(str(value), master_data, scorer=fuzz.ratio)
             if match and match[1] >= threshold:
-                return True, None
+                return True, str(match[0])
             return False, f"Low Confidence ({match[1] if match else 0}%)"
 
         # B. Delegate EVERYTHING else to validation.py

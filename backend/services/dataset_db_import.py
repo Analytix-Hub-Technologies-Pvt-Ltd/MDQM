@@ -11,6 +11,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 import models
+from services.job_source_config_service import read_job_source_config
 
 
 def sql_type_to_mdqm(sql_type: str) -> str:
@@ -227,9 +228,11 @@ def _stored_connection_password_plain(row: models.DbConnection) -> str:
 
 
 def resolve_creds_from_job_config(db: Session, job: models.Job, body: dict | None = None) -> dict[str, Any]:
-    """Resolve external DB credentials from job.db_source_config."""
+    """Resolve external DB credentials from job source config."""
+    from services.job_source_config_service import read_job_source_config
+
     body = body or {}
-    cfg = job.db_source_config
+    cfg = read_job_source_config(job)
     if not cfg or not isinstance(cfg, dict) or cfg.get("kind") != "postgres_tables":
         raise ValueError("Dataset is not database-backed.")
 
@@ -316,7 +319,7 @@ def sync_registered_table_columns_from_source(
         )
         return [{"name": c.column_name, "data_type": c.data_type or "String"} for c in rows]
 
-    cfg = job.db_source_config if isinstance(job.db_source_config, dict) else {}
+    cfg = read_job_source_config(job) if job else {}
     schema_name = str(cfg.get("schema_name") or "").strip()
     if not schema_name:
         return []

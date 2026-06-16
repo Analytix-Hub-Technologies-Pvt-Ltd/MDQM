@@ -14,9 +14,11 @@ DEFAULT_CORS_ORIGINS = [
     "http://127.0.0.1:3000",
     "http://127.0.0.1:5173",
     "https://analytix-hub-technologies-pvt-ltd.github.io",
+    "https://mdqm-app.sundarlingam-rajasekar.workers.dev",
 ]
 
 GITHUB_PAGES_FRONTEND = "https://analytix-hub-technologies-pvt-ltd.github.io/MDQM/"
+CLOUDFLARE_WORKERS_FRONTEND = "https://mdqm-app.sundarlingam-rajasekar.workers.dev"
 
 _DEV_DEFAULT_HOST = "127.0.0.1"
 _DEV_DEFAULT_PORT = "5432"
@@ -207,15 +209,12 @@ def demo_users_seed_enabled() -> bool:
 
 
 def get_cors_origins() -> list[str]:
-    """Allowed browser origins. Always includes local dev hosts when not in production."""
+    """Allowed browser origins. Merges CORS_ORIGINS env with DEFAULT_CORS_ORIGINS."""
     raw = (os.getenv("CORS_ORIGINS") or "").strip()
     origins = [origin.strip() for origin in raw.split(",") if origin.strip()] if raw else []
-    if not is_production():
-        for origin in DEFAULT_CORS_ORIGINS:
-            if origin not in origins:
-                origins.append(origin)
-    elif not origins:
-        origins = list(DEFAULT_CORS_ORIGINS)
+    for origin in DEFAULT_CORS_ORIGINS:
+        if origin not in origins:
+            origins.append(origin)
     return origins
 
 
@@ -224,5 +223,5 @@ def get_frontend_base_url() -> str:
     if explicit:
         return explicit.rstrip("/")
     if is_production():
-        return GITHUB_PAGES_FRONTEND.rstrip("/")
+        return CLOUDFLARE_WORKERS_FRONTEND
     return "http://localhost:5173"

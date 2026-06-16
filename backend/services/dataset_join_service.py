@@ -24,13 +24,15 @@ from utils.upload_paths import join_source_cache_path, resolve_table_csv_path
 JOIN_TYPES = {"left", "inner", "right", "outer"}
 
 
+from services.job_source_config_service import read_job_source_config, write_job_source_config
+
+
 def _job_cfg(job: models.Job) -> dict[str, Any]:
-    cfg = job.db_source_config if isinstance(job.db_source_config, dict) else {}
-    return dict(cfg)
+    return dict(read_job_source_config(job))
 
 
 def _save_job_cfg(db: Session, job: models.Job, cfg: dict[str, Any]) -> None:
-    job.db_source_config = cfg
+    write_job_source_config(job, cfg)
     db.commit()
 
 
