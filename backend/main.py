@@ -9,7 +9,6 @@ if True:
     from typing import List, Optional
     import shutil
     import logging
-    import traceback
     import os
     import json
     import time
@@ -2999,12 +2998,11 @@ if True:
                     os.remove(temp_file_path)
                 except OSError:
                     pass
-            logger.error(
-                "Upload HTTPException: job_id=%s status_code=%s detail=%s traceback=%s",
+            logger.exception(
+                "Upload HTTPException: job_id=%s status_code=%s detail=%s",
                 job_id,
                 exc.status_code,
                 exc.detail,
-                traceback.format_exc(),
             )
             raise HTTPException(status_code=exc.status_code, detail=str(exc.detail))
         except Exception as exc:
@@ -3013,11 +3011,10 @@ if True:
                     os.remove(temp_file_path)
                 except OSError:
                     pass
-            logger.error(
-                "Upload unhandled exception: job_id=%s error=%s traceback=%s",
+            logger.exception(
+                "Upload unhandled exception: job_id=%s error=%s",
                 job_id,
                 str(exc),
-                traceback.format_exc(),
             )
             # Temporary debugging response detail for production investigation.
             raise HTTPException(status_code=500, detail=f"Upload failed: {str(exc)}")
