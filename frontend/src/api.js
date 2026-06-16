@@ -3,6 +3,9 @@ import { API_BASE_URL } from './config/apiConfig';
 
 const apiClient = axios.create({ baseURL: API_BASE_URL });
 
+/** Let the browser set multipart boundary; long-running ingest (large CSV → Postgres). */
+const MULTIPART_UPLOAD_CONFIG = { timeout: 300_000 };
+
 export { apiClient, API_BASE_URL as API_URL };
 
 export const setAuthToken = (token) => {
@@ -174,17 +177,13 @@ export const uploadCsvToJob = async (jobId, file, previewEdits = [], sourcePath 
     if (Array.isArray(selectedColumns) && selectedColumns.length > 0) {
         formData.append("selected_columns", JSON.stringify(selectedColumns));
     }
-    return apiClient.post(`/jobs/${jobId}/upload`, formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-    });
+    return apiClient.post(`/jobs/${jobId}/upload`, formData, MULTIPART_UPLOAD_CONFIG);
 };
 
 export const previewCsvFile = async (file) => {
     const formData = new FormData();
     formData.append("file", file);
-    return apiClient.post(`/files/preview`, formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-    });
+    return apiClient.post(`/files/preview`, formData, MULTIPART_UPLOAD_CONFIG);
 };
 
 export const previewCsvFileFromPath = async (filePath) => {
@@ -215,9 +214,7 @@ export const replaceTableFileUpload = async (jobId, tableId, file, sourcePath = 
     if (String(sourcePath || "").trim()) {
         formData.append("source_path", String(sourcePath).trim());
     }
-    return apiClient.post(`/jobs/${jobId}/tables/${tableId}/replace-file`, formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-    });
+    return apiClient.post(`/jobs/${jobId}/tables/${tableId}/replace-file`, formData, MULTIPART_UPLOAD_CONFIG);
 };
 
 // Note: DB Connection and Download endpoints will require specific backend logic
@@ -254,9 +251,7 @@ export const addJobJoinSource = async (jobId, payload, file = null) => {
         const formData = new FormData();
         formData.append("payload_json", JSON.stringify(payload));
         formData.append("file", file);
-        return apiClient.post(`/jobs/${jobId}/join-sources`, formData, {
-            headers: { "Content-Type": "multipart/form-data" },
-        });
+        return apiClient.post(`/jobs/${jobId}/join-sources`, formData, MULTIPART_UPLOAD_CONFIG);
     }
     return apiClient.post(`/jobs/${jobId}/join-sources`, payload);
 };
