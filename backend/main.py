@@ -130,6 +130,49 @@ if True:
                     "ALTER TABLE metadata.dataset_rows ADD COLUMN IF NOT EXISTS golden_remarks TEXT"
                 )
             )
+            for col_def in (
+                "job_id INTEGER",
+                "tier VARCHAR(32)",
+                "quality_score INTEGER",
+                "record_count_label VARCHAR(64)",
+                "pii BOOLEAN NOT NULL DEFAULT false",
+                "steward_name VARCHAR(255)",
+            ):
+                conn.execute(
+                    text(f"ALTER TABLE enterprise.datasets ADD COLUMN IF NOT EXISTS {col_def}")
+                )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_enterprise_datasets_job_id "
+                    "ON enterprise.datasets (job_id)"
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_constraint
+                            WHERE conname = 'fk_enterprise_datasets_job_id'
+                              AND conrelid = 'enterprise.datasets'::regclass
+                        ) THEN
+                            ALTER TABLE enterprise.datasets
+                                ADD CONSTRAINT fk_enterprise_datasets_job_id
+                                FOREIGN KEY (job_id) REFERENCES metadata.jobs (job_id);
+                        END IF;
+                    END $$
+                    """
+                )
+            )
+            for col_def in (
+                "tags JSONB",
+                "related_terms JSONB",
+                "owner_user_id INTEGER",
+            ):
+                conn.execute(
+                    text(f"ALTER TABLE enterprise.glossary ADD COLUMN IF NOT EXISTS {col_def}")
+                )
         print("[mdqm] Database schema ready.", file=sys.stderr, flush=True)
 
     def _migrate_job_source_config():
