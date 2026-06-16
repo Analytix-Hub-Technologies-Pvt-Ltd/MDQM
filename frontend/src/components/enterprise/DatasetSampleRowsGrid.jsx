@@ -150,26 +150,77 @@ export default function DatasetSampleRowsGrid({
   const rangeStart = total === 0 ? 0 : safePageIndex * pageSize + 1;
   const rangeEnd = Math.min((safePageIndex + 1) * pageSize, total);
 
-  const gridColumns = useMemo(
-    () =>
-      columns.map((c) => ({
-        key: c.name,
-        name: c.name.replace(/_/g, " ").toUpperCase(),
-        resizable: true,
-        sortable: true,
-        minWidth: 110,
-        renderCell({ row }) {
-          const value = row[c.name];
-          const text = value != null && value !== "" ? String(value) : "—";
-          return (
-            <span className="block truncate px-1.5 text-[11px] text-foreground" title={text}>
-              {text}
-            </span>
-          );
-        },
-      })),
-    [columns],
-  );
+  const gridColumns = useMemo(() => {
+    const cols = columns.map((c) => ({
+      key: c.name,
+      name: c.name.replace(/_/g, " ").toUpperCase(),
+      resizable: true,
+      sortable: true,
+      minWidth: 110,
+      renderCell({ row }) {
+        const value = row[c.name];
+        const text = value != null && value !== "" ? String(value) : "—";
+        const passFlag = row[`${c.name}__dq_pass`];
+        const remark = row[`${c.name}__dq_remark`];
+        const title = remark ? `${text} — ${remark}` : text;
+        return (
+          <span
+            className={cn(
+              "block truncate border-l-2 px-1.5 text-[11px] text-foreground",
+              passFlag === "false" && "border-l-destructive bg-destructive/5",
+              passFlag === "true" && "border-l-success bg-success/5",
+              passFlag !== "true" && passFlag !== "false" && "border-l-transparent",
+            )}
+            title={title}
+          >
+            {text}
+          </span>
+        );
+      },
+    }));
+
+    cols.push({
+      key: "dq_remarks",
+      name: "DQ REMARKS",
+      resizable: true,
+      sortable: false,
+      minWidth: 180,
+      renderCell({ row }) {
+        const text = row.dq_remarks || "";
+        if (!text) return <span className="block px-1.5 text-[11px] text-muted-foreground/40"> </span>;
+        return (
+          <span
+            className="block truncate px-1.5 text-[11px] text-destructive"
+            title={text}
+          >
+            {text}
+          </span>
+        );
+      },
+    });
+
+    cols.push({
+      key: "golden_remarks",
+      name: "GOLDEN RECORD",
+      resizable: true,
+      sortable: false,
+      minWidth: 200,
+      renderCell({ row }) {
+        const text = row.golden_remarks || "";
+        if (!text) return <span className="block px-1.5 text-[11px] text-muted-foreground/40"> </span>;
+        return (
+          <span
+            className="block truncate px-1.5 text-[11px] font-medium text-success"
+            title={text}
+          >
+            {text}
+          </span>
+        );
+      },
+    });
+
+    return cols;
+  }, [columns]);
 
   const loadPage = useCallback(async () => {
     if (!enabled || datasetId == null || tableId == null) return;
