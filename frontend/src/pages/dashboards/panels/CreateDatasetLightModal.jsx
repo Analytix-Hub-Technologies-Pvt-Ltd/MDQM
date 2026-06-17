@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { AppModal, ModalAlert, modalInputClass, modalLabelClass } from "@/components/layout/AppModal";
+import { AppModal, ModalAlert, ModalFileInput, modalInputClass, modalLabelClass } from "@/components/layout/AppModal";
 import ColumnSelector from "@/components/enterprise/ColumnSelector";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -510,13 +510,12 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
           <form onSubmit={onSubmitFile} className="space-y-3">
             <div>
               <label className={modalLabelClass}>Upload CSV</label>
-              <input
-                type="file"
+              <ModalFileInput
                 accept=".csv"
-                className="mt-1 w-full text-xs"
-                onChange={(e) => {
-                  setFile(e.target.files?.[0] || null);
-                  if (e.target.files?.[0]) setFilePath("");
+                file={file}
+                onFileChange={(selected) => {
+                  setFile(selected);
+                  if (selected) setFilePath("");
                   setColumnsFromList([]);
                 }}
               />

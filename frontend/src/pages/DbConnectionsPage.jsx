@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   listSavedConnections,
   getSavedConnectionCredentials,
@@ -6,17 +6,38 @@ import {
   updateSavedConnection,
   deleteSavedConnection,
   shareSavedConnection,
+  testDbConnection,
 } from "@/api";
+import { cn } from "@/lib/utils";
+
+const inputClass =
+  "mt-1 w-full rounded-xl border border-border bg-input px-3 py-2 text-sm text-input-foreground shadow-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20";
+
+const actionBtnClass =
+  "inline-flex w-full items-center justify-center rounded-xl px-4 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto";
+
+function formatApiError(err, fallback = "Request failed.") {
+  const detail = err?.response?.data?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((item) => item?.msg || item?.message || JSON.stringify(item)).join("; ");
+  }
+  if (detail && typeof detail === "object") {
+    return detail.message || JSON.stringify(detail);
+  }
+  return err?.message || fallback;
+}
 
 export default function DbConnectionsPage() {
   const [connections, setConnections] = useState([]);
   const [form, setForm] = useState({
     connection_name: "",
     host: "",
-    port: "5432",
+    port: "",
     user: "",
     pass: "",
     db_type: "postgres",
+    dbname: "",
   });
   const [editingId, setEditingId] = useState(null);
   const [editingOwned, setEditingOwned] = useState(false);
@@ -24,6 +45,57 @@ export default function DbConnectionsPage() {
   const [shareMessage, setShareMessage] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testPassed, setTestPassed] = useState(false);
+  const [testMessage, setTestMessage] = useState("");
+  const [lastTestedFingerprint, setLastTestedFingerprint] = useState("");
+
+  const connectionFingerprint = useMemo(
+    () =>
+      JSON.stringify({
+        host: form.host.trim(),
+        port: form.port.trim(),
+        user: form.user.trim(),
+        pass: form.pass,
+        db_type: form.db_type,
+        dbname: form.dbname.trim(),
+        editingId: editingId || null,
+      }),
+    [form.host, form.port, form.user, form.pass, form.db_type, form.dbname, editingId],
+  );
+
+  const canTestConnection = Boolean(
+    form.connection_name.trim() &&
+      form.host.trim() &&
+      form.port.trim() &&
+      form.user.trim() &&
+      form.dbname.trim() &&
+      form.pass.trim(),
+  );
+
+  const canSaveConnection =
+    testPassed && lastTestedFingerprint === connectionFingerprint && !loading && !testing;
+
+  const invalidateTest = () => {
+    setTestPassed(false);
+    setTestMessage("");
+    setLastTestedFingerprint("");
+  };
+
+  const buildTestPayload = () => {
+    const payload = {
+      host: form.host.trim(),
+      port: form.port.trim() || "5432",
+      user: form.user.trim(),
+      pass: form.pass || "",
+      db_type: form.db_type || "postgres",
+      dbname: form.dbname.trim() || "postgres",
+    };
+    if (editingId) {
+      payload.connection_id = editingId;
+    }
+    return payload;
+  };
 
   const fetchConnections = async () => {
     try {
@@ -44,12 +116,58 @@ export default function DbConnectionsPage() {
     setEditingOwned(false);
     setShareWith("");
     setShareMessage("");
-    setForm({ connection_name: "", host: "", port: "5432", user: "", pass: "", db_type: "postgres" });
+    setForm({
+      connection_name: "",
+      host: "",
+      port: "",
+      user: "",
+      pass: "",
+      db_type: "postgres",
+      dbname: "",
+    });
     setMessage("");
+    invalidateTest();
   };
 
   const handleChange = (field, value) => {
     setForm((prev) => ({ ...prev, [field]: value }));
+    if (["host", "port", "user", "pass", "db_type", "dbname"].includes(field)) {
+      invalidateTest();
+    }
+  };
+
+  const buildSavePayload = () => ({
+    connection_name: form.connection_name.trim(),
+    host: form.host.trim(),
+    port: form.port.trim() || "5432",
+    user: form.user.trim(),
+    pass: form.pass || "",
+    db_type: form.db_type || "postgres",
+    dbname: form.dbname.trim() || "",
+  });
+
+  const handleTestConnection = async () => {
+    if (!canTestConnection) {
+      setMessage(
+        "Fill connection name, host, port, username, database name, and password before testing.",
+      );
+      return;
+    }
+
+    setTesting(true);
+    setTestMessage("");
+    setMessage("");
+    try {
+      await testDbConnection(buildTestPayload());
+      setTestPassed(true);
+      setLastTestedFingerprint(connectionFingerprint);
+      setTestMessage("Connection successful. You can save now.");
+    } catch (err) {
+      invalidateTest();
+      setTestMessage(formatApiError(err, "Connection test failed."));
+    } finally {
+      setTesting(false);
+    }
   };
 
   const handleSubmit = async (event) => {
@@ -58,20 +176,28 @@ export default function DbConnectionsPage() {
       setMessage("Connection name, host, and username are required.");
       return;
     }
+    if (!editingId && !form.pass.trim()) {
+      setMessage("Password is required for new connections.");
+      return;
+    }
+    if (!canSaveConnection) {
+      setMessage("Test the connection successfully before saving.");
+      return;
+    }
 
     setLoading(true);
     try {
       if (editingId) {
-        await updateSavedConnection(editingId, form);
+        await updateSavedConnection(editingId, buildSavePayload());
         setMessage("Saved connection updated.");
       } else {
-        await saveDbConnection(form);
+        await saveDbConnection(buildSavePayload());
         setMessage("Saved connection created.");
       }
       resetForm();
       await fetchConnections();
     } catch (err) {
-      setMessage(err?.response?.data?.detail || "Failed to save connection.");
+      setMessage(formatApiError(err, "Failed to save connection."));
     } finally {
       setLoading(false);
     }
@@ -88,14 +214,20 @@ export default function DbConnectionsPage() {
         user: data.user || "",
         pass: data.password || "",
         db_type: data.db_type || "postgres",
+        dbname: data.dbname || "",
       });
       setEditingId(connection.connection_id);
       setEditingOwned(connection.owned);
       setShareWith("");
       setShareMessage("");
-      setMessage("");
+      setMessage(
+        data.password
+          ? ""
+          : "No saved password found for this profile. Enter the database password, then test again.",
+      );
+      invalidateTest();
     } catch (err) {
-      setMessage(err?.response?.data?.detail || "Failed to load connection details.");
+      setMessage(formatApiError(err, "Failed to load connection details."));
     }
   };
 
@@ -147,111 +279,31 @@ export default function DbConnectionsPage() {
       </div>
 
       {message ? (
-        <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100">
           {message}
         </div>
       ) : null}
 
-      <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-        <section className="rounded-2xl border border-border bg-card p-6 shadow-sm">
-          <div className="mb-4 flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-semibold">Saved connections</h2>
-              <p className="text-sm text-muted-foreground">Your personal connection profiles appear here.</p>
-            </div>
+      <div className="space-y-6">
+        <section className="rounded-2xl border border-border bg-card p-4 shadow-sm sm:p-6">
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold">{editingId ? "Edit connection" : "New connection"}</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {editingId
+                ? "Update your saved database profile. Test the connection before saving changes."
+                : "Fill in all fields, test the connection, then save the profile for reuse."}
+            </p>
           </div>
 
-          <div className="overflow-hidden rounded-xl border border-border bg-card">
-            <table className="min-w-full divide-y divide-border text-left text-sm">
-              <thead className="bg-muted">
-                <tr>
-                  <th className="px-4 py-3 font-semibold text-muted-foreground">Name</th>
-                  <th className="px-4 py-3 font-semibold text-muted-foreground">Type</th>
-                  <th className="px-4 py-3 font-semibold text-muted-foreground">Host</th>
-                  <th className="px-4 py-3 font-semibold text-muted-foreground">Port</th>
-                  <th className="px-4 py-3 font-semibold text-muted-foreground">User</th>
-                  <th className="px-4 py-3 font-semibold text-muted-foreground">Source</th>
-                  <th className="px-4 py-3 font-semibold text-muted-foreground">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border bg-card">
-                {connections.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                      No saved connections yet. Create one using the form.
-                    </td>
-                  </tr>
-                ) : (
-                  connections.map((connection) => (
-                    <tr key={connection.connection_id}>
-                      <td className="px-4 py-3 text-foreground">{connection.connection_name}</td>
-                      <td className="px-4 py-3 text-muted-foreground capitalize">
-                        {connection.db_type === "sqlserver"
-                          ? "SQL Server"
-                          : connection.db_type === "postgres"
-                          ? "PostgreSQL"
-                          : connection.db_type || "PostgreSQL"}
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">{connection.host}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{connection.port}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{connection.user}</td>
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {connection.owned ? "Mine" : "Shared"}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => handleEdit(connection)}
-                            className="rounded-lg bg-muted px-3 py-1 text-sm font-medium text-foreground hover:bg-muted-foreground/10"
-                          >
-                            Edit
-                          </button>
-                          {connection.owned ? (
-                            <button
-                              type="button"
-                              onClick={() => handleDelete(connection)}
-                              className="rounded-lg bg-destructive/10 px-3 py-1 text-sm font-medium text-destructive hover:bg-destructive/20"
-                            >
-                              Delete
-                            </button>
-                          ) : null}
-                        </div>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section className="rounded-2xl border border-border bg-card p-6 shadow-sm">
-          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold">{editingId ? "Edit connection" : "New connection"}</h2>
-              <p className="text-sm text-muted-foreground">
-                {editingId ? "Update your saved database profile." : "Save a new connection profile for reuse."}
-              </p>
-            </div>
-            <button
-              type="submit"
-              form="db-connection-form"
-              disabled={loading}
-              className="inline-flex items-center justify-center rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {editingId ? "Update connection" : "Save connection"}
-            </button>
-          </div>
-
-          <form id="db-connection-form" className="space-y-4" onSubmit={handleSubmit}>
+          <form id="db-connection-form" className="space-y-4" onSubmit={handleSubmit} autoComplete="off">
              <label className="block text-sm font-medium text-foreground">
                Connection name
                <input
                  value={form.connection_name}
                  onChange={(event) => handleChange("connection_name", event.target.value)}
-                 className="mt-1 w-full rounded-xl border border-border bg-input px-3 py-2 text-sm text-input-foreground shadow-sm focus:border-primary focus:outline-none"
+                 className={inputClass}
                  placeholder="e.g. analytics-db"
+                 autoComplete="off"
                />
              </label>
              <label className="block text-sm font-medium text-foreground">
@@ -266,9 +318,10 @@ export default function DbConnectionsPage() {
                    else if (type === "oracle") defPort = "1521";
                    else if (type === "snowflake") defPort = "443";
                    else if (type === "databricks") defPort = "443";
-                   setForm((prev) => ({ ...prev, db_type: type, port: defPort }));
+                   handleChange("db_type", type);
+                   handleChange("port", defPort);
                  }}
-                 className="mt-1 w-full rounded-xl border border-border bg-input px-3 py-2 text-sm text-input-foreground shadow-sm focus:border-primary focus:outline-none"
+                 className={inputClass}
                >
                  <option value="postgres">PostgreSQL</option>
                  <option value="sqlserver">Microsoft SQL Server</option>
@@ -283,18 +336,20 @@ export default function DbConnectionsPage() {
               <input
                 value={form.host}
                 onChange={(event) => handleChange("host", event.target.value)}
-                className="mt-1 w-full rounded-xl border border-border bg-input px-3 py-2 text-sm text-input-foreground shadow-sm focus:border-primary focus:outline-none"
+                className={inputClass}
                 placeholder="db.company.local"
+                autoComplete="off"
               />
             </label>
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 2xl:grid-cols-2">
               <label className="block text-sm font-medium text-foreground">
                 Port
                 <input
                   value={form.port}
                   onChange={(event) => handleChange("port", event.target.value)}
-                  className="mt-1 w-full rounded-xl border border-border bg-input px-3 py-2 text-sm text-input-foreground shadow-sm focus:border-primary focus:outline-none"
+                  className={inputClass}
                   placeholder="5432"
+                  autoComplete="off"
                 />
               </label>
               <label className="block text-sm font-medium text-foreground">
@@ -302,8 +357,9 @@ export default function DbConnectionsPage() {
                 <input
                   value={form.user}
                   onChange={(event) => handleChange("user", event.target.value)}
-                  className="mt-1 w-full rounded-xl border border-border bg-input px-3 py-2 text-sm text-input-foreground shadow-sm focus:border-primary focus:outline-none"
+                  className={inputClass}
                   placeholder="db_user"
+                  autoComplete="off"
                 />
               </label>
             </div>
@@ -313,10 +369,64 @@ export default function DbConnectionsPage() {
                 value={form.pass}
                 onChange={(event) => handleChange("pass", event.target.value)}
                 type="password"
-                className="mt-1 w-full rounded-xl border border-border bg-input px-3 py-2 text-sm text-input-foreground shadow-sm focus:border-primary focus:outline-none"
-                placeholder="Leave blank to keep current password"
+                className={inputClass}
+                placeholder={editingId ? "Re-enter password to test and save" : "Enter database password"}
+                autoComplete="new-password"
               />
             </label>
+            <label className="block text-sm font-medium text-foreground">
+              Database name
+              <input
+                value={form.dbname}
+                onChange={(event) => handleChange("dbname", event.target.value)}
+                className={inputClass}
+                placeholder="postgres"
+                autoComplete="off"
+              />
+            </label>
+
+            {testMessage ? (
+              <div
+                className={cn(
+                  "rounded-xl border px-4 py-3 text-sm",
+                  testPassed
+                    ? "border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-100"
+                    : "border-destructive/30 bg-destructive/10 text-destructive",
+                )}
+              >
+                {testMessage}
+              </div>
+            ) : null}
+
+            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
+              {editingId ? (
+                <button
+                  type="button"
+                  onClick={resetForm}
+                  className={cn(actionBtnClass, "border border-border bg-card text-foreground hover:bg-muted sm:mr-auto")}
+                >
+                  Cancel edit
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={handleTestConnection}
+                disabled={!canTestConnection || testing || loading}
+                className={cn(
+                  actionBtnClass,
+                  "border border-primary bg-card text-primary hover:bg-primary/5",
+                )}
+              >
+                {testing ? "Testing…" : "Test connection"}
+              </button>
+              <button
+                type="submit"
+                disabled={!canSaveConnection}
+                className={cn(actionBtnClass, "bg-primary text-primary-foreground hover:bg-primary/90")}
+              >
+                {loading ? "Saving…" : editingId ? "Update connection" : "Save connection"}
+              </button>
+            </div>
 
             {editingOwned ? (
               <div className="rounded-2xl border border-border bg-muted p-4">
@@ -345,19 +455,80 @@ export default function DbConnectionsPage() {
                 ) : null}
               </div>
             ) : null}
-
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              {editingId ? (
-                <button
-                  type="button"
-                  onClick={resetForm}
-                  className="inline-flex items-center justify-center rounded-xl border border-border bg-card px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted"
-                >
-                  Cancel edit
-                </button>
-              ) : null}
-            </div>
           </form>
+        </section>
+
+        <section className="rounded-2xl border border-border bg-card p-4 shadow-sm sm:p-6">
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-semibold">Saved connections</h2>
+              <p className="text-sm text-muted-foreground">Your personal connection profiles appear here.</p>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border border-border bg-card">
+            <table className="min-w-[720px] w-full divide-y divide-border text-left text-sm">
+              <thead className="bg-muted">
+                <tr>
+                  <th className="px-3 py-3 font-semibold text-muted-foreground sm:px-4">Name</th>
+                  <th className="px-3 py-3 font-semibold text-muted-foreground sm:px-4">Type</th>
+                  <th className="hidden px-3 py-3 font-semibold text-muted-foreground md:table-cell sm:px-4">Host</th>
+                  <th className="px-3 py-3 font-semibold text-muted-foreground sm:px-4">Port</th>
+                  <th className="hidden px-3 py-3 font-semibold text-muted-foreground lg:table-cell sm:px-4">User</th>
+                  <th className="px-3 py-3 font-semibold text-muted-foreground sm:px-4">Source</th>
+                  <th className="px-3 py-3 font-semibold text-muted-foreground sm:px-4">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border bg-card">
+                {connections.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                      No saved connections yet. Create one using the form.
+                    </td>
+                  </tr>
+                ) : (
+                  connections.map((connection) => (
+                    <tr key={connection.connection_id}>
+                      <td className="px-3 py-3 text-foreground sm:px-4">{connection.connection_name}</td>
+                      <td className="px-3 py-3 text-muted-foreground capitalize sm:px-4">
+                        {connection.db_type === "sqlserver"
+                          ? "SQL Server"
+                          : connection.db_type === "postgres"
+                          ? "PostgreSQL"
+                          : connection.db_type || "PostgreSQL"}
+                      </td>
+                      <td className="hidden px-3 py-3 text-muted-foreground md:table-cell sm:px-4">{connection.host}</td>
+                      <td className="px-3 py-3 text-muted-foreground sm:px-4">{connection.port}</td>
+                      <td className="hidden px-3 py-3 text-muted-foreground lg:table-cell sm:px-4">{connection.user}</td>
+                      <td className="px-3 py-3 text-muted-foreground sm:px-4">
+                        {connection.owned ? "Mine" : "Shared"}
+                      </td>
+                      <td className="px-3 py-3 sm:px-4">
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleEdit(connection)}
+                            className="rounded-lg bg-muted px-3 py-1 text-sm font-medium text-foreground hover:bg-muted-foreground/10"
+                          >
+                            Edit
+                          </button>
+                          {connection.owned ? (
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(connection)}
+                              className="rounded-lg bg-destructive/10 px-3 py-1 text-sm font-medium text-destructive hover:bg-destructive/20"
+                            >
+                              Delete
+                            </button>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </section>
       </div>
     </div>

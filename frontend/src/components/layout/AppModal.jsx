@@ -1,6 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
-import { X } from "lucide-react";
+import { Upload, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
@@ -179,3 +179,37 @@ export const modalInputClass =
   "mt-1 w-full rounded-lg border border-[var(--input-border)] bg-[var(--input-bg)] px-3 py-2 text-sm font-medium text-[var(--input-foreground)] placeholder:font-normal placeholder:text-[var(--placeholder)] focus-visible:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40";
 
 export const modalLabelClass = "text-[10px] font-bold uppercase tracking-wider text-muted-foreground";
+
+export function ModalFileInput({ id, accept = ".csv", file, onFileChange, className }) {
+  const autoId = useId();
+  const inputId = id || autoId;
+
+  return (
+    <div className={cn("mt-1", className)}>
+      <input
+        id={inputId}
+        key={file ? file.name : "empty"}
+        type="file"
+        accept={accept}
+        className="sr-only"
+        onChange={(e) => onFileChange?.(e.target.files?.[0] || null)}
+      />
+      <label
+        htmlFor={inputId}
+        className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-primary bg-primary px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-primary-foreground shadow-sm transition-opacity hover:opacity-90"
+      >
+        <Upload className="h-4 w-4 shrink-0" strokeWidth={2} />
+        {file ? "Change file" : "Choose CSV file"}
+      </label>
+      <p className="mt-2 truncate text-xs text-muted-foreground">
+        {file ? (
+          <>
+            <span className="font-medium text-foreground">Selected:</span> {file.name}
+          </>
+        ) : (
+          "No file chosen"
+        )}
+      </p>
+    </div>
+  );
+}

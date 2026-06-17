@@ -34,7 +34,7 @@ function isSidebarItemActive(location, to) {
 
 export default function AppSidebar({ mobileOpen, onMobileClose, collapsed, onCollapsedChange }) {
   const location = useLocation();
-  const [internalCollapsed, setInternalCollapsed] = useState(false);
+  const [internalCollapsed, setInternalCollapsed] = useState(true);
   const isCollapsed = collapsed ?? internalCollapsed;
   const setCollapsed = onCollapsedChange ?? setInternalCollapsed;
 

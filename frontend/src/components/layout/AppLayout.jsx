@@ -7,7 +7,7 @@ import TopNavbar from "@/components/layout/TopNavbar";
 export default function AppLayout({ children }) {
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
