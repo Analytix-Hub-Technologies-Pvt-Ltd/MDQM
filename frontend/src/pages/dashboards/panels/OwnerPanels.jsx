@@ -14,6 +14,9 @@ import {
   enterpriseGovernanceAccessRequestApprove,
   enterpriseGovernanceAccessRequestReject,
   enterpriseGovernanceDatasets,
+  enterpriseGovernanceDatasetsRecycleBin,
+  enterpriseGovernanceDatasetDelete,
+  enterpriseGovernanceDatasetRestore,
   enterpriseNotifications,
   invalidateEdaReportCache,
   prefetchEdaReportHtml,
@@ -279,6 +282,9 @@ function sourceKindLabel(kind) {
 function GovernanceDatasetSection() {
   const [createOpen, setCreateOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [recycleBinKey, setRecycleBinKey] = useState(0);
+  const [recycleBinOpen, setRecycleBinOpen] = useState(false);
+  const [recycleBusy, setRecycleBusy] = useState(null);
   const [previewDatasetId, setPreviewDatasetId] = useState(null);
   const [edaReport, setEdaReport] = useState(null);
   const [scheduleRow, setScheduleRow] = useState(null);
@@ -317,8 +323,92 @@ function GovernanceDatasetSection() {
 
   const bump = () => {
     setRefreshKey((k) => k + 1);
+    setRecycleBinKey((k) => k + 1);
     refreshDatasetsTable();
   };
+
+  const fetchRecycleBinPage = useCallback(
+    ({ page, pageSize, query }) =>
+      enterpriseGovernanceDatasetsRecycleBin({
+        page,
+        page_size: pageSize,
+        ...(query ? { q: query } : {}),
+      }),
+    [],
+  );
+
+  const handleRecycleRestore = async (row) => {
+    if (!row?.id) return;
+    setRecycleBusy(`restore-${row.id}`);
+    try {
+      await enterpriseGovernanceDatasetRestore(row.id);
+      bump();
+    } catch {
+      /* panel shows stale data until refresh */
+    } finally {
+      setRecycleBusy(null);
+    }
+  };
+
+  const handleRecyclePermanentDelete = async (row) => {
+    if (!row?.id) return;
+    if (!window.confirm(`Permanently delete “${row.name}”? This cannot be undone.`)) return;
+    setRecycleBusy(`delete-${row.id}`);
+    try {
+      await enterpriseGovernanceDatasetDelete(row.id, { mode: "permanent" });
+      bump();
+    } catch {
+      /* ignore */
+    } finally {
+      setRecycleBusy(null);
+    }
+  };
+
+  const recycleCols = [
+    { key: "name", label: "Dataset", render: (_, row) => <TableCellText className="font-semibold">{row?.name ?? "—"}</TableCellText> },
+    {
+      key: "deleted_at",
+      label: "Moved to bin",
+      render: (_, row) => <TableCellText>{row?.deleted_at ? formatRelativeTime(row.deleted_at) : "—"}</TableCellText>,
+    },
+    {
+      key: "purge_at",
+      label: "Auto-delete",
+      render: (_, row) => (
+        <TableCellText>
+          {row?.days_until_purge != null
+            ? `${row.days_until_purge} day${row.days_until_purge === 1 ? "" : "s"} left`
+            : row?.purge_at
+              ? formatRelativeTime(row.purge_at)
+              : "—"}
+        </TableCellText>
+      ),
+    },
+    {
+      key: "actions",
+      label: "",
+      render: (_, row) => (
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={!row?.id || recycleBusy === `restore-${row.id}`}
+            onClick={() => handleRecycleRestore(row)}
+            className="text-xs uppercase tracking-wide text-primary hover:underline disabled:opacity-50"
+          >
+            {recycleBusy === `restore-${row?.id}` ? "Restoring…" : "Restore"}
+          </button>
+          <button
+            type="button"
+            disabled={!row?.id || recycleBusy === `delete-${row.id}`}
+            onClick={() => handleRecyclePermanentDelete(row)}
+            className="text-xs uppercase tracking-wide text-destructive hover:underline disabled:opacity-50"
+          >
+            {recycleBusy === `delete-${row?.id}` ? "Deleting…" : "Delete now"}
+          </button>
+        </div>
+      ),
+    },
+  ];
 
   const fetchGovernanceDatasetsPage = useCallback(
     ({ page, pageSize, query }) =>
@@ -759,6 +849,10 @@ function GovernanceDatasetSection() {
         datasetId={previewDatasetId}
         open={previewDatasetId != null}
         onClose={() => setPreviewDatasetId(null)}
+        onDeleted={(info) => {
+          bump();
+          if (info?.mode === "recycle") setRecycleBinOpen(true);
+        }}
       />
       <DatasetEdaReportModal
         datasetId={edaReport?.id ?? null}
@@ -797,13 +891,33 @@ function GovernanceDatasetSection() {
           </button>
         </div>
       </div>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={() => setRecycleBinOpen((v) => !v)}
+          className="text-xs uppercase tracking-wide border border-border px-3 py-2 rounded font-semibold text-muted-foreground hover:text-foreground hover:bg-muted/50"
+        >
+          {recycleBinOpen ? "Hide recycle bin" : "Recycle bin"}
+        </button>
+      </div>
       <EnterpriseDataPanel
+        key={`ds-${refreshKey}`}
         title="Registered datasets"
         columns={dsCols}
         refreshEventName={GOVERNANCE_DATASETS_REFRESH}
         searchPlaceholder="Name contains…"
         fetchPage={fetchGovernanceDatasetsPage}
       />
+      {recycleBinOpen ? (
+        <EnterpriseDataPanel
+          key={`rb-${recycleBinKey}`}
+          title="Recycle bin"
+          columns={recycleCols}
+          searchPlaceholder="Name contains…"
+          fetchPage={fetchRecycleBinPage}
+          emptyMessage="No datasets in the recycle bin."
+        />
+      ) : null}
     </div>
   );
 }

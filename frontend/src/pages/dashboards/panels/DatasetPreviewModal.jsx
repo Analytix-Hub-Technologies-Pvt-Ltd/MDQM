@@ -4,6 +4,7 @@ import { enterpriseGovernanceDatasetPreview, invalidateEdaReportCache } from "..
 import DatasetEdaReportModal from "./DatasetEdaReportModal";
 import EditDatasetSourceModal from "./EditDatasetSourceModal";
 import AddDataSourceModal from "./AddDataSourceModal";
+import DatasetDeleteModal from "./DatasetDeleteModal";
 import ScoreRing from "../../../components/business/ScoreRing";
 import { AppModal, ModalSection, ModalAlert } from "@/components/layout/AppModal";
 import { Button } from "@/components/ui/button";
@@ -22,7 +23,7 @@ function formatDetail(d) {
   return "";
 }
 
-export default function DatasetPreviewModal({ datasetId, open, onClose }) {
+export default function DatasetPreviewModal({ datasetId, open, onClose, onDeleted }) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [payload, setPayload] = useState(null);
@@ -35,6 +36,7 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
   const [addSourceOpen, setAddSourceOpen] = useState(false);
   const [removeJoinBusy, setRemoveJoinBusy] = useState("");
   const [chartRevision, setChartRevision] = useState(0);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const loadPreview = useCallback(async () => {
     if (datasetId == null) return;
@@ -151,6 +153,17 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
               {canEditDataset ? (
                 <Button type="button" variant="outline" size="sm" onClick={() => setEditOpen(true)} className="text-xs uppercase tracking-wide">
                   Edit dataset
+                </Button>
+              ) : null}
+              {datasetId != null ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setDeleteOpen(true)}
+                  className="text-xs uppercase tracking-wide text-destructive hover:text-destructive"
+                >
+                  Delete dataset
                 </Button>
               ) : null}
             </div>
@@ -328,6 +341,17 @@ export default function DatasetPreviewModal({ datasetId, open, onClose }) {
         await loadPreview();
         setChartRevision((n) => n + 1);
         setRefreshOk("Data source joined successfully. Preview updated with merged columns.");
+      }}
+    />
+    <DatasetDeleteModal
+      open={deleteOpen}
+      onClose={() => setDeleteOpen(false)}
+      datasetId={datasetId}
+      datasetName={ds?.name}
+      onDeleted={(info) => {
+        setDeleteOpen(false);
+        onClose?.();
+        onDeleted?.(info);
       }}
     />
     </>
