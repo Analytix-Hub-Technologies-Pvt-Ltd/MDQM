@@ -499,6 +499,9 @@ class EnterpriseDataset(Base):
     pii = Column(Boolean, nullable=False, default=False)
     steward_name = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
+    deleted_at = Column(DateTime, nullable=True, index=True)
+    purge_at = Column(DateTime, nullable=True, index=True)
+    deleted_by_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
 
 
 class EnterpriseGlossaryTerm(Base):

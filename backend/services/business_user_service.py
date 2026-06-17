@@ -335,7 +335,11 @@ def build_business_catalog_chart_insights(
 
 def list_catalog(db: Session, page: int, page_size: int, q: str | None = None, username: str | None = None):
     offset, page_size = _page_bounds(page, page_size)
-    query = db.query(models.EnterpriseDataset).order_by(models.EnterpriseDataset.name.asc())
+    query = (
+        db.query(models.EnterpriseDataset)
+        .filter(models.EnterpriseDataset.deleted_at.is_(None))
+        .order_by(models.EnterpriseDataset.name.asc())
+    )
     if q and str(q).strip():
         term = f"%{str(q).strip()}%"
         query = query.filter(

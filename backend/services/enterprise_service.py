@@ -7,7 +7,7 @@ import io
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -18,6 +18,23 @@ from sqlalchemy.orm import Session
 
 import models
 from services.job_source_config_service import read_job_source_config
+
+DEFAULT_DATASET_RECYCLE_DAYS = 7
+
+
+def _dataset_recycle_days() -> int:
+    raw = os.environ.get("MDQM_DATASET_RECYCLE_DAYS", "").strip()
+    if raw.isdigit():
+        return max(1, int(raw))
+    return DEFAULT_DATASET_RECYCLE_DAYS
+
+
+def _active_datasets_query(db: Session):
+    return db.query(models.EnterpriseDataset).filter(models.EnterpriseDataset.deleted_at.is_(None))
+
+
+def _recycled_datasets_query(db: Session):
+    return db.query(models.EnterpriseDataset).filter(models.EnterpriseDataset.deleted_at.isnot(None))
 
 
 def _page_bounds(page: int, page_size: int) -> tuple[int, int]:
@@ -668,7 +685,7 @@ def dataset_last_refreshed_at(db: Session, job_id: int | None) -> datetime | Non
 
 def list_datasets(db: Session, page: int, page_size: int, name_q: str | None = None):
     offset, page_size = _page_bounds(page, page_size)
-    q = db.query(models.EnterpriseDataset).order_by(models.EnterpriseDataset.id.desc())
+    q = _active_datasets_query(db).order_by(models.EnterpriseDataset.id.desc())
     if name_q:
         q = q.filter(models.EnterpriseDataset.name.ilike(f"%{name_q}%"))
     total = q.count()
@@ -718,6 +735,116 @@ def list_datasets(db: Session, page: int, page_size: int, name_q: str | None = N
             }
         )
     return paginated_response(items, total, page, page_size)
+
+
+def list_recycled_datasets(db: Session, page: int, page_size: int, name_q: str | None = None):
+    offset, page_size = _page_bounds(page, page_size)
+    q = _recycled_datasets_query(db).order_by(models.EnterpriseDataset.purge_at.asc())
+    if name_q:
+        q = q.filter(models.EnterpriseDataset.name.ilike(f"%{name_q}%"))
+    total = q.count()
+    rows = q.offset(offset).limit(page_size).all()
+    retention_days = _dataset_recycle_days()
+    now = datetime.utcnow()
+    items = []
+    for r in rows:
+        purge_at = r.purge_at
+        days_left = None
+        if purge_at:
+            delta = purge_at - now
+            days_left = max(0, int(delta.total_seconds() // 86400) + (1 if delta.total_seconds() % 86400 else 0))
+        items.append(
+            {
+                "id": r.id,
+                "name": r.name,
+                "domain": r.domain,
+                "job_id": r.job_id,
+                "deleted_at": r.deleted_at.isoformat() if r.deleted_at else None,
+                "purge_at": purge_at.isoformat() if purge_at else None,
+                "days_until_purge": days_left,
+                "retention_days": retention_days,
+            }
+        )
+    return paginated_response(items, total, page, page_size)
+
+
+def _delete_job_and_children(db: Session, job_id: int) -> None:
+    """Remove a DQ job and all metadata children (catalog delete helper)."""
+    db.query(models.DatasetRowCell).filter(models.DatasetRowCell.job_id == job_id).delete()
+    db.query(models.DatasetRow).filter(models.DatasetRow.job_id == job_id).delete()
+    db.query(models.DatasetBaseBackupRow).filter(models.DatasetBaseBackupRow.job_id == job_id).delete()
+    db.query(models.QuarantineLog).filter(models.QuarantineLog.job_id == job_id).delete()
+    db.query(models.MasterTable).filter(models.MasterTable.job_id == job_id).delete()
+    db.query(models.ColumnMetadata).filter(models.ColumnMetadata.job_id == job_id).delete()
+    db.query(models.Rule).filter(models.Rule.job_id == job_id).delete()
+    db.query(models.TableStats).filter(models.TableStats.job_id == job_id).delete()
+    db.query(models.TableMetadata).filter(models.TableMetadata.job_id == job_id).delete()
+    db.query(models.EnterpriseScheduleRun).filter(models.EnterpriseScheduleRun.job_id == job_id).delete()
+    db.query(models.EnterpriseSchedule).filter(models.EnterpriseSchedule.job_id == job_id).delete()
+    job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+    if job:
+        db.delete(job)
+
+
+def permanent_delete_dataset(db: Session, dataset_id: int) -> models.EnterpriseDataset | None:
+    """Hard-delete catalog entry and linked DQ job."""
+    row = db.query(models.EnterpriseDataset).filter(models.EnterpriseDataset.id == dataset_id).first()
+    if not row:
+        return None
+    job_id = row.job_id
+    db.delete(row)
+    if job_id:
+        _delete_job_and_children(db, job_id)
+    db.commit()
+    return row
+
+
+def move_dataset_to_recycle_bin(
+    db: Session, dataset_id: int, *, user_id: int | None = None, retention_days: int | None = None
+) -> models.EnterpriseDataset | None:
+    """Flag dataset for deletion; purged automatically after retention period."""
+    row = db.query(models.EnterpriseDataset).filter(models.EnterpriseDataset.id == dataset_id).first()
+    if not row:
+        return None
+    if row.deleted_at is not None:
+        return row
+    days = retention_days if retention_days is not None else _dataset_recycle_days()
+    now = datetime.utcnow()
+    row.deleted_at = now
+    row.purge_at = now + timedelta(days=days)
+    row.deleted_by_user_id = user_id
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def restore_dataset_from_recycle_bin(db: Session, dataset_id: int) -> models.EnterpriseDataset | None:
+    row = db.query(models.EnterpriseDataset).filter(models.EnterpriseDataset.id == dataset_id).first()
+    if not row or row.deleted_at is None:
+        return None
+    row.deleted_at = None
+    row.purge_at = None
+    row.deleted_by_user_id = None
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def purge_expired_recycled_datasets(db: Session) -> list[int]:
+    """Permanently delete datasets whose recycle-bin retention has elapsed."""
+    now = datetime.utcnow()
+    expired = (
+        _recycled_datasets_query(db)
+        .filter(models.EnterpriseDataset.purge_at.isnot(None))
+        .filter(models.EnterpriseDataset.purge_at <= now)
+        .all()
+    )
+    deleted_ids: list[int] = []
+    for row in expired:
+        dataset_id = row.id
+        permanent_delete_dataset(db, dataset_id)
+        deleted_ids.append(dataset_id)
+    return deleted_ids
 
 
 def _dataset_refresh_meta(job_row: models.Job | None) -> dict[str, Any]:
@@ -799,7 +926,7 @@ def build_dataset_inventory_preview(
     Catalog dataset + linked DQ job: column metadata and a small CSV sample per table.
     """
     row = db.query(models.EnterpriseDataset).filter(models.EnterpriseDataset.id == dataset_id).first()
-    if not row:
+    if not row or row.deleted_at is not None:
         return None
 
     from services import business_user_service as busvc
@@ -967,7 +1094,7 @@ def build_dataset_table_rows_page(
 ) -> dict[str, Any] | None:
     """Server-paginated dataset rows for interactive grids (Data Owner preview)."""
     row = db.query(models.EnterpriseDataset).filter(models.EnterpriseDataset.id == dataset_id).first()
-    if not row:
+    if not row or row.deleted_at is not None:
         return None
 
     from services import business_user_service as busvc

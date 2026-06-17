@@ -144,6 +144,9 @@ if True:
                 "record_count_label VARCHAR(64)",
                 "pii BOOLEAN NOT NULL DEFAULT false",
                 "steward_name VARCHAR(255)",
+                "deleted_at TIMESTAMP",
+                "purge_at TIMESTAMP",
+                "deleted_by_user_id INTEGER",
             ):
                 conn.execute(
                     text(f"ALTER TABLE enterprise.datasets ADD COLUMN IF NOT EXISTS {col_def}")
@@ -300,6 +303,28 @@ if True:
     scheduler = BackgroundScheduler()
     scheduler.start()
     atexit.register(lambda: scheduler.shutdown(wait=False))
+
+    def _purge_recycled_datasets():
+        from services import enterprise_service as esvc
+
+        db = SessionLocal()
+        try:
+            esvc.purge_expired_recycled_datasets(db)
+        except Exception:
+            pass
+        finally:
+            db.close()
+
+    try:
+        scheduler.add_job(
+            _purge_recycled_datasets,
+            "interval",
+            hours=1,
+            id="purge_recycled_datasets",
+            replace_existing=True,
+        )
+    except Exception:
+        pass
 
     def _run_scheduled_job(job_id: int):
         db = SessionLocal()

@@ -405,6 +405,96 @@ def governance_dataset_create(request: Request, body: DatasetCreateBody, db: Ses
     return {"id": row.id, "name": row.name, "job_id": row.job_id}
 
 
+@router.get("/governance/datasets/recycle-bin")
+def governance_datasets_recycle_bin(
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    q: str | None = None,
+):
+    require_any_permission(
+        _role(request),
+        Permissions.DASHBOARD_OWNER,
+        Permissions.DASHBOARD_CDO,
+        Permissions.GOVERNANCE_VIEW,
+        Permissions.ADMIN_VIEW,
+    )
+    return esvc.list_recycled_datasets(db, page, page_size, q)
+
+
+class DatasetDeleteBody(BaseModel):
+    mode: Literal["permanent", "recycle"] = "recycle"
+
+
+@router.post("/governance/datasets/{dataset_id}/delete")
+def governance_dataset_delete(
+    request: Request,
+    dataset_id: int,
+    body: DatasetDeleteBody,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_any_permission(_role(request), Permissions.DASHBOARD_OWNER, Permissions.GOVERNANCE_VIEW, Permissions.ADMIN_VIEW)
+    if body.mode == "recycle":
+        row = esvc.move_dataset_to_recycle_bin(db, dataset_id, user_id=user.id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        write_audit_log(
+            db,
+            user_id=user.id,
+            action="enterprise_dataset_recycled",
+            entity_type="enterprise_dataset",
+            entity_id=str(dataset_id),
+            ip_address=request.client.host if request.client else None,
+            new_values={"name": row.name, "purge_at": row.purge_at.isoformat() if row.purge_at else None},
+        )
+        return {
+            "id": row.id,
+            "name": row.name,
+            "mode": "recycle",
+            "purge_at": row.purge_at.isoformat() if row.purge_at else None,
+            "retention_days": esvc._dataset_recycle_days(),
+        }
+    row = esvc.permanent_delete_dataset(db, dataset_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    write_audit_log(
+        db,
+        user_id=user.id,
+        action="enterprise_dataset_deleted",
+        entity_type="enterprise_dataset",
+        entity_id=str(dataset_id),
+        ip_address=request.client.host if request.client else None,
+        old_values={"name": row.name},
+    )
+    return {"id": dataset_id, "name": row.name, "mode": "permanent", "deleted": True}
+
+
+@router.post("/governance/datasets/{dataset_id}/restore")
+def governance_dataset_restore(
+    request: Request,
+    dataset_id: int,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_any_permission(_role(request), Permissions.DASHBOARD_OWNER, Permissions.GOVERNANCE_VIEW, Permissions.ADMIN_VIEW)
+    row = esvc.restore_dataset_from_recycle_bin(db, dataset_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Dataset not found in recycle bin")
+    write_audit_log(
+        db,
+        user_id=user.id,
+        action="enterprise_dataset_restored",
+        entity_type="enterprise_dataset",
+        entity_id=str(dataset_id),
+        ip_address=request.client.host if request.client else None,
+        new_values={"name": row.name},
+    )
+    return {"id": row.id, "name": row.name, "restored": True}
+
+
 @router.get("/governance/datasets/{dataset_id}/preview")
 def governance_dataset_preview(
     dataset_id: int,
