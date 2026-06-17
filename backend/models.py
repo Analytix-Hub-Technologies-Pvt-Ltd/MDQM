@@ -214,6 +214,7 @@ class DbConnection(Base):
     password = Column(String, nullable=True)
     user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
     db_type = Column(String(32), nullable=True, default="postgres")
+    dbname = Column(String(128), nullable=True)
     created_at = Column(DateTime, default=func.now())
 
 

@@ -114,6 +114,11 @@ if True:
             )
             conn.execute(
                 text(
+                    "ALTER TABLE metadata.db_connections ADD COLUMN IF NOT EXISTS dbname VARCHAR(128)"
+                )
+            )
+            conn.execute(
+                text(
                     "ALTER TABLE metadata.column_metadata ADD COLUMN IF NOT EXISTS description TEXT"
                 )
             )
@@ -493,6 +498,8 @@ if True:
                 port=str(item.get("port") or "5432"),
                 username=str(item.get("user") or "").strip(),
                 password=stored_pw,
+                db_type=str(item.get("db_type") or "postgres").strip().lower(),
+                dbname=str(item.get("dbname") or "").strip() or None,
             )
             db.add(row)
             migrated_any = True
@@ -747,6 +754,7 @@ if True:
                 "port": r.port or "5432",
                 "user": r.username or "",
                 "db_type": r.db_type or "postgres",
+                "dbname": r.dbname or "",
                 "owned": bool(r.user_id == user.id),
             }
             for r in rows
@@ -794,6 +802,7 @@ if True:
             "user": row.username or "",
             "password": _stored_connection_password_plain(row),
             "db_type": row.db_type or "postgres",
+            "dbname": row.dbname or "",
         }
 
 
@@ -841,6 +850,7 @@ if True:
             password=stored_pw,
             user_id=user.id,
             db_type=str(payload.get("db_type") or "postgres").strip().lower(),
+            dbname=str(payload.get("dbname") or "").strip() or None,
         )
         db.add(row)
         try:
@@ -1011,6 +1021,7 @@ if True:
         resolved_user = payload.get("user", payload.get("username", row.username))
         row.username = str(resolved_user or "").strip()
         row.db_type = str(payload.get("db_type") or "postgres").strip().lower()
+        row.dbname = str(payload.get("dbname") or "").strip() or None
 
         pass_field = payload.get("pass")
         if pass_field is None:
@@ -1231,7 +1242,7 @@ if True:
                     "port": str(row.port or "5432"),
                     "user": row.username,
                     "pass": _stored_connection_password_plain(row),
-                    "dbname": payload.get("dbname"),
+                    "dbname": payload.get("dbname") or row.dbname,
                     "db_type": db_type,
                 }
             finally:
