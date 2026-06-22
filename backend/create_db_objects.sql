@@ -550,3 +550,47 @@ CREATE TABLE IF NOT EXISTS metadata.table_stats (
     FOREIGN KEY(job_id, table_id) REFERENCES metadata.table_metadata (job_id, table_id),
     FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
 );
+
+-- Ticketing module tables
+CREATE TABLE IF NOT EXISTS enterprise.tickets (
+    id SERIAL PRIMARY KEY,
+    title VARCHAR(150) NOT NULL,
+    description TEXT NOT NULL,
+    category VARCHAR(50) DEFAULT 'Bug',
+    priority VARCHAR(20) NOT NULL DEFAULT 'Medium',
+    status VARCHAR(50) NOT NULL DEFAULT 'Open',
+    created_by_user_id INTEGER NOT NULL,
+    created_by_role VARCHAR(50),
+    assigned_to_user_id INTEGER,
+    fix_note TEXT,
+    fixed_by_user_id INTEGER,
+    verified_by_user_id INTEGER,
+    closed_by_user_id INTEGER,
+    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    fixed_at TIMESTAMP WITHOUT TIME ZONE,
+    verified_at TIMESTAMP WITHOUT TIME ZONE,
+    closed_at TIMESTAMP WITHOUT TIME ZONE,
+    FOREIGN KEY(created_by_user_id) REFERENCES auth.users(id),
+    FOREIGN KEY(assigned_to_user_id) REFERENCES auth.users(id),
+    FOREIGN KEY(fixed_by_user_id) REFERENCES auth.users(id),
+    FOREIGN KEY(verified_by_user_id) REFERENCES auth.users(id),
+    FOREIGN KEY(closed_by_user_id) REFERENCES auth.users(id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_enterprise_tickets_status ON enterprise.tickets(status);
+CREATE INDEX IF NOT EXISTS ix_enterprise_tickets_created_by ON enterprise.tickets(created_by_user_id);
+CREATE INDEX IF NOT EXISTS ix_enterprise_tickets_assigned_to ON enterprise.tickets(assigned_to_user_id);
+
+CREATE TABLE IF NOT EXISTS enterprise.ticket_comments (
+    id SERIAL PRIMARY KEY,
+    ticket_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    comment TEXT NOT NULL,
+    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY(ticket_id) REFERENCES enterprise.tickets(id),
+    FOREIGN KEY(user_id) REFERENCES auth.users(id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_enterprise_ticket_comments_ticket_id ON enterprise.ticket_comments(ticket_id);
+CREATE INDEX IF NOT EXISTS ix_enterprise_ticket_comments_user_id ON enterprise.ticket_comments(user_id);
