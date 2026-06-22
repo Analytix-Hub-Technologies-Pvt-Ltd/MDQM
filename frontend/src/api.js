@@ -2,6 +2,12 @@ import axios from 'axios';
 import { API_BASE_URL } from './config/apiConfig';
 
 const apiClient = axios.create({ baseURL: API_BASE_URL });
+const savedToken = localStorage.getItem("mdqm_token");
+
+if (savedToken) {
+    apiClient.defaults.headers.common.Authorization = `Bearer ${savedToken}`;
+    axios.defaults.headers.common.Authorization = `Bearer ${savedToken}`;
+}
 
 /** Let the browser set multipart boundary; long-running ingest (large CSV → Postgres). */
 const MULTIPART_UPLOAD_CONFIG = { timeout: 300_000 };
@@ -522,4 +528,38 @@ export const adminRoles = async () => {
 
 export const getAuditLogs = async (params = {}) => {
     return apiClient.get(`/api/audit/logs`, { params });
+};
+
+// --- TICKETS ---
+
+export const getTickets = async () => {
+    return apiClient.get(`/api/tickets`);
+};
+
+export const createTicket = async (payload) => {
+    return apiClient.post(`/api/tickets`, payload);
+};
+
+export const getTicketUsers = async () => {
+    return apiClient.get(`/api/tickets/users`);
+};
+
+export const assignTicketByEmail = async (ticketId, userEmail) => {
+    return apiClient.put(`/api/tickets/${ticketId}/assign`, {
+        user_email: userEmail,
+    });
+};
+
+export const updateTicketStatus = async (ticketId, payload) => {
+    return apiClient.put(`/api/tickets/${ticketId}/status`, payload);
+};
+
+export const addTicketComment = async (ticketId, comment) => {
+    return apiClient.post(`/api/tickets/${ticketId}/comments`, {
+        comment,
+    });
+};
+
+export const getTicketDatasets = async () => {
+  return apiClient.get("/api/tickets/datasets");
 };
