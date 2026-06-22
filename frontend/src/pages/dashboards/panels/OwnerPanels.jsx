@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { formatAccessType, formatRelativeTime } from "../../../utils/formatRelativeTime";
+import { formatAccessType, formatDateTime, formatRelativeTime, formatUpcomingRelative } from "../../../utils/formatRelativeTime";
 import EnterpriseDataPanel, { StatusBadge, TableCellText } from "../../../components/enterprise/EnterpriseDataPanel";
 import ScoreRing from "../../../components/business/ScoreRing";
 import DatasetRefreshToastStack, { buildRefreshToast } from "../../../components/business/DatasetRefreshToastStack";
@@ -251,21 +251,6 @@ const reportCols = [
   },
 ];
 
-function scoreCell(value, source, pendingLabel) {
-  if (value == null || value === "") {
-    const hint =
-      source === "no_csv"
-        ? "No CSV snapshot"
-        : source === "pending"
-          ? pendingLabel || "Run DQ job"
-          : source === "none"
-            ? "No job linked"
-            : "—";
-    return <span className="text-[#5c6d8a] text-xs" title={hint}>{hint}</span>;
-  }
-  return <ScoreRing score={value} size={36} />;
-}
-
 function formatRegisteredAt(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -273,10 +258,50 @@ function formatRegisteredAt(iso) {
   return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
-function sourceKindLabel(kind) {
-  if (kind === "table") return "Table";
-  if (kind === "file") return "File";
-  return "—";
+const DATASET_SCORE_SIZE = 30;
+
+function DatasetScoreSlot({ children, title }) {
+  return (
+    <span
+      className="inline-flex shrink-0 items-center justify-center leading-none"
+      style={{ width: DATASET_SCORE_SIZE, height: DATASET_SCORE_SIZE }}
+      title={title}
+    >
+      {children}
+    </span>
+  );
+}
+
+function DatasetScorePlaceholder({ title }) {
+  return (
+    <DatasetScoreSlot title={title}>
+      <span className="text-xs text-muted-foreground">—</span>
+    </DatasetScoreSlot>
+  );
+}
+
+function renderEdaScoreCell(row) {
+  const st = (row.import_status || "").toLowerCase();
+  const edaPending = st === "registered" || st === "importing" || !row.data_loaded;
+  if (edaPending || row.eda_score == null) {
+    return <DatasetScorePlaceholder title="Run import to calculate EDA score" />;
+  }
+  return (
+    <DatasetScoreSlot title={`EDA score: ${row.eda_score}`}>
+      <ScoreRing score={row.eda_score} size={DATASET_SCORE_SIZE} />
+    </DatasetScoreSlot>
+  );
+}
+
+function renderDqScoreCell(row) {
+  if (row.dq_score != null) {
+    return (
+      <DatasetScoreSlot title={`DQ score: ${row.dq_score}`}>
+        <ScoreRing score={row.dq_score} size={DATASET_SCORE_SIZE} />
+      </DatasetScoreSlot>
+    );
+  }
+  return <DatasetScorePlaceholder title="Run validation to calculate DQ score" />;
 }
 
 function GovernanceDatasetSection() {
@@ -669,31 +694,43 @@ function GovernanceDatasetSection() {
   };
 
   const dsCols = [
-    { key: "name", label: "Dataset" },
+    {
+      key: "name",
+      label: "Dataset",
+      headerClassName: "whitespace-nowrap",
+      render: (v) => (
+        <span className="text-xs font-semibold text-foreground line-clamp-2" title={v || ""}>
+          {v || "—"}
+        </span>
+      ),
+    },
     {
       key: "source_details",
       label: "Source",
+      headerClassName: "whitespace-nowrap",
       render: (v, row) => (
-        <div className="max-w-[240px]">
-          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-            {sourceKindLabel(row.source_kind)}
-          </span>
-          <p className="text-xs text-muted-foreground line-clamp-2" title={v || ""}>
-            {v || "—"}
-          </p>
-        </div>
+        <span
+          className="block max-w-[10rem] truncate text-xs text-muted-foreground"
+          title={row.source_tooltip || v || ""}
+        >
+          {v || "—"}
+        </span>
       ),
     },
     {
       key: "column_count",
-      label: "Columns",
+      label: "Cols",
+      headerClassName: "text-center w-px whitespace-nowrap",
+      cellClassName: "text-center w-px whitespace-nowrap",
       render: (v) => (
         <span className="text-xs font-mono text-foreground">{v != null ? v : "—"}</span>
       ),
     },
     {
       key: "eda_report",
-      label: "EDA report",
+      label: "EDA",
+      headerClassName: "w-px whitespace-nowrap",
+      cellClassName: "w-px whitespace-nowrap",
       render: (_, row) => {
         const st = (row.import_status || "").toLowerCase();
         const ready = row.eda_report_ready && st !== "registered" && st !== "importing";
@@ -705,7 +742,7 @@ function GovernanceDatasetSection() {
             title={ready ? "View ydata-profiling report" : "Run import first"}
             onClick={() => handleEdaReport(row)}
           >
-            EDA report
+            Report
           </button>
         );
       },
@@ -713,29 +750,33 @@ function GovernanceDatasetSection() {
     {
       key: "eda_score",
       label: "EDA score",
-      render: (v, row) => {
-        const st = (row.import_status || "").toLowerCase();
-        if (st === "registered" || st === "importing" || !row.data_loaded) {
-          return scoreCell(null, "none", "Run import");
-        }
-        return scoreCell(v, row.eda_score_source, "Load data");
-      },
+      headerTitle: "Exploratory data score — column completeness after import",
+      headerClassName: "text-center w-px whitespace-nowrap",
+      cellClassName: "text-center w-px whitespace-nowrap",
+      render: (_, row) => renderEdaScoreCell(row),
     },
     {
       key: "dq_score",
       label: "DQ score",
-      render: (v, row) => scoreCell(v, row.dq_score_source, "Run validation"),
+      headerTitle: "Data quality score — validation pass rate after rules run",
+      headerClassName: "text-center w-px whitespace-nowrap",
+      cellClassName: "text-center w-px whitespace-nowrap",
+      render: (_, row) => renderDqScoreCell(row),
     },
     {
       key: "created_at",
       label: "Registered",
+      headerClassName: "whitespace-nowrap",
+      cellClassName: "whitespace-nowrap",
       render: (v) => (
         <span className="text-xs text-muted-foreground whitespace-nowrap">{formatRegisteredAt(v)}</span>
       ),
     },
     {
       key: "last_refreshed_at",
-      label: "Last refreshed",
+      label: "Refreshed",
+      headerClassName: "whitespace-nowrap",
+      cellClassName: "whitespace-nowrap",
       render: (v, row) => {
         if (!row.data_loaded || !v) {
           return <span className="text-xs text-muted-foreground">—</span>;
@@ -752,7 +793,9 @@ function GovernanceDatasetSection() {
     },
     {
       key: "next_schedule",
-      label: "Next schedule",
+      label: "Next refresh",
+      headerClassName: "whitespace-nowrap",
+      cellClassName: "whitespace-nowrap",
       render: (_, row) => {
         if (row.source_kind !== "table" || !row.job_id) {
           return <span className="text-xs text-muted-foreground">—</span>;
@@ -768,15 +811,20 @@ function GovernanceDatasetSection() {
           return <span className="text-xs text-muted-foreground">—</span>;
         }
         return (
-          <span className="text-xs text-muted-foreground whitespace-nowrap">
-            {formatRegisteredAt(sched.next_run_time)}
+          <span
+            className="text-xs text-muted-foreground whitespace-nowrap"
+            title={formatUpcomingRelative(sched.next_run_time)}
+          >
+            {formatDateTime(sched.next_run_time)}
           </span>
         );
       },
     },
     {
       key: "actions",
-      label: "",
+      label: "Actions",
+      headerClassName: "whitespace-nowrap",
+      cellClassName: "whitespace-nowrap",
       render: (_, row) => {
         const sched = row.job_id ? refreshSchedules[row.job_id] : null;
         const isTableSource = row.source_kind === "table";
@@ -790,52 +838,76 @@ function GovernanceDatasetSection() {
           row.job_id && isTableSource && awaitingImport && !isImporting;
         const showPostLoad =
           row.job_id && row.data_loaded && !awaitingImport && !isImporting;
-        return (
-          <div className="flex flex-wrap items-center gap-2">
+
+        const actionLinks = [
+          <button
+            key="view"
+            type="button"
+            className="text-xs font-semibold text-primary hover:underline whitespace-nowrap"
+            onClick={() => setPreviewDatasetId(row.id)}
+          >
+            View
+          </button>,
+        ];
+
+        if (showRun) {
+          actionLinks.push(
             <button
+              key="run"
+              type="button"
+              disabled={actionBusy === `run-${row.id}`}
+              className="text-xs font-semibold text-primary hover:underline disabled:opacity-40 whitespace-nowrap"
+              onClick={() => handleRunImport(row)}
+            >
+              {actionBusy === `run-${row.id}` ? "Starting…" : "Run"}
+            </button>,
+          );
+        } else if (isImporting) {
+          actionLinks.push(
+            <span key="importing" className="text-xs text-muted-foreground whitespace-nowrap">
+              Importing…
+            </span>,
+          );
+        } else if (showPostLoad) {
+          actionLinks.push(
+            <button
+              key="refresh"
+              type="button"
+              disabled={actionBusy === `refresh-${row.id}`}
+              className="text-xs font-semibold text-primary hover:underline disabled:opacity-40 whitespace-nowrap"
+              onClick={() => handleRefresh(row)}
+            >
+              {actionBusy === `refresh-${row.id}` ? "…" : "Refresh"}
+            </button>,
+          );
+        }
+
+        if (showPostLoad && isTableSource) {
+          actionLinks.push(
+            <button
+              key="schedule"
               type="button"
               className="text-xs font-semibold text-primary hover:underline whitespace-nowrap"
-              onClick={() => setPreviewDatasetId(row.id)}
+              title={
+                sched?.next_run_time
+                  ? "Manage automatic refresh schedule"
+                  : "Set automatic refresh from database"
+              }
+              onClick={() => setScheduleRow(row)}
             >
-              View
-            </button>
-            {showRun ? (
-              <button
-                type="button"
-                disabled={actionBusy === `run-${row.id}`}
-                className="text-xs font-semibold text-primary hover:underline disabled:opacity-40 whitespace-nowrap"
-                onClick={() => handleRunImport(row)}
-              >
-                {actionBusy === `run-${row.id}` ? "Starting…" : "Run"}
-              </button>
-            ) : null}
-            {isImporting ? (
-              <span className="text-xs text-muted-foreground whitespace-nowrap">Importing…</span>
-            ) : null}
-            {showPostLoad ? (
-              <button
-                type="button"
-                disabled={actionBusy === `refresh-${row.id}`}
-                className="text-xs font-semibold text-primary hover:underline disabled:opacity-40 whitespace-nowrap"
-                onClick={() => handleRefresh(row)}
-              >
-                {actionBusy === `refresh-${row.id}` ? "…" : "Refresh now"}
-              </button>
-            ) : null}
-            {showPostLoad && isTableSource ? (
-              <button
-                type="button"
-                className="text-xs font-semibold text-primary hover:underline whitespace-nowrap"
-                title={
-                  sched?.next_run_time
-                    ? `Scheduled: ${new Date(sched.next_run_time).toLocaleString()}`
-                    : "Set automatic refresh from database"
-                }
-                onClick={() => setScheduleRow(row)}
-              >
-                {sched?.next_run_time ? "Scheduled" : "Schedule"}
-              </button>
-            ) : null}
+              {sched?.next_run_time ? "Scheduled" : "Schedule"}
+            </button>,
+          );
+        }
+
+        return (
+          <div className="flex items-center gap-1 whitespace-nowrap">
+            {actionLinks.map((link, i) => (
+              <span key={link.key} className="inline-flex items-center gap-1">
+                {i > 0 ? <span className="text-muted-foreground/50 select-none">·</span> : null}
+                {link}
+              </span>
+            ))}
           </div>
         );
       },
@@ -907,6 +979,8 @@ function GovernanceDatasetSection() {
         refreshEventName={GOVERNANCE_DATASETS_REFRESH}
         searchPlaceholder="Name contains…"
         fetchPage={fetchGovernanceDatasetsPage}
+        minTableWidth={980}
+        dense
       />
       {recycleBinOpen ? (
         <EnterpriseDataPanel

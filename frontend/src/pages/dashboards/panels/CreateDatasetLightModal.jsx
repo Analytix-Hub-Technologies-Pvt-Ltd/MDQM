@@ -512,6 +512,7 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
               <label className={modalLabelClass}>Upload CSV</label>
               <ModalFileInput
                 accept=".csv"
+                chooseLabel="Choose CSV file"
                 file={file}
                 onFileChange={(selected) => {
                   setFile(selected);

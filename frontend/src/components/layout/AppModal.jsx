@@ -180,7 +180,15 @@ export const modalInputClass =
 
 export const modalLabelClass = "text-[10px] font-bold uppercase tracking-wider text-muted-foreground";
 
-export function ModalFileInput({ id, accept = ".csv", file, onFileChange, className }) {
+export function ModalFileInput({
+  id,
+  accept = ".csv",
+  file,
+  onFileChange,
+  className,
+  chooseLabel = "Choose file",
+  acceptHint,
+}) {
   const autoId = useId();
   const inputId = id || autoId;
 
@@ -199,7 +207,7 @@ export function ModalFileInput({ id, accept = ".csv", file, onFileChange, classN
         className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-primary bg-primary px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-primary-foreground shadow-sm transition-opacity hover:opacity-90"
       >
         <Upload className="h-4 w-4 shrink-0" strokeWidth={2} />
-        {file ? "Change file" : "Choose CSV file"}
+        {file ? "Change file" : chooseLabel}
       </label>
       <p className="mt-2 truncate text-xs text-muted-foreground">
         {file ? (
@@ -210,6 +218,7 @@ export function ModalFileInput({ id, accept = ".csv", file, onFileChange, classN
           "No file chosen"
         )}
       </p>
+      {acceptHint ? <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">{acceptHint}</p> : null}
     </div>
   );
 }

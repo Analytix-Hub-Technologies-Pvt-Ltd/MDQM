@@ -227,6 +227,20 @@ table tbody tr:hover > th {
   box-shadow: var(--shadow-card);
 }
 
+/* Enterprise data panels — keep header/body cell padding identical */
+.light .mdqm-enterprise-table thead th,
+.dark .mdqm-enterprise-table thead th {
+  padding: 0.75rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.light .mdqm-enterprise-table--dense thead th,
+.dark .mdqm-enterprise-table--dense thead th {
+  padding: 0.5rem;
+}
+
 .enterprise-title {
   letter-spacing: 0.06em;
   text-transform: uppercase;

@@ -131,9 +131,16 @@ export async function enterpriseGovernanceDatasetPreview(datasetId) {
   return apiClient.get(`/api/enterprise/governance/datasets/${datasetId}/preview`);
 }
 
-export async function enterpriseGovernanceDatasetTableRows(datasetId, tableId, { offset = 0, limit = 50 } = {}) {
+export async function enterpriseGovernanceDatasetTableRows(
+  datasetId,
+  tableId,
+  { offset = 0, limit = 50, aiQuery = "" } = {},
+) {
+  const params = { offset, limit };
+  const q = (aiQuery || "").trim();
+  if (q) params.ai_query = q;
   return apiClient.get(`/api/enterprise/governance/datasets/${datasetId}/tables/${tableId}/rows`, {
-    params: { offset, limit },
+    params,
   });
 }
 

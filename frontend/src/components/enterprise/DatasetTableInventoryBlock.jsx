@@ -72,7 +72,7 @@ export default function DatasetTableInventoryBlock({
     />
   ) : showSampleRows && sampleRows.length ? (
       <div>
-        <p className={cn(modalLabelClass, "mb-1.5")}>Sample rows (first {sampleRows.length})</p>
+        <p className={cn(modalLabelClass, "mb-1.5")}>Data</p>
         <div className="mdqm-scroll-x max-h-56 overflow-auto rounded-lg border border-border">
           <table className="w-full min-w-[400px] text-[11px]">
             <thead className="sticky top-0 bg-[var(--table-header-bg)] text-[var(--table-header-fg)]">
@@ -106,7 +106,7 @@ export default function DatasetTableInventoryBlock({
         </div>
       </div>
     ) : showSampleRows ? (
-      <p className="text-xs text-muted-foreground">Run import to load sample rows from the database.</p>
+      <p className="text-xs text-muted-foreground">Run import to load data from the database.</p>
     ) : null;
 
   const body = (

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DataGrid } from "react-data-grid";
 import "react-data-grid/lib/styles.css";
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Search, Sparkles, X } from "lucide-react";
 import { enterpriseGovernanceDatasetTableRows } from "@/pages/dashboards/enterpriseApi";
 import { modalLabelClass } from "@/components/layout/AppModal";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 const PAGE_SIZES = [10, 25, 50];
@@ -144,6 +145,11 @@ export default function DatasetSampleRowsGrid({
   const [pageIndex, setPageIndex] = useState(0);
   const [pageSize, setPageSize] = useState(10);
   const [sortColumns, setSortColumns] = useState([]);
+  const [smartQuery, setSmartQuery] = useState("");
+  const [debouncedSmartQuery, setDebouncedSmartQuery] = useState("");
+  const [aiSummary, setAiSummary] = useState("");
+  const [aiSource, setAiSource] = useState("");
+  const [aiNotice, setAiNotice] = useState("");
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1);
   const safePageIndex = Math.min(pageIndex, totalPages - 1);
@@ -231,6 +237,7 @@ export default function DatasetSampleRowsGrid({
       const res = await enterpriseGovernanceDatasetTableRows(datasetId, tableId, {
         offset,
         limit: pageSize,
+        aiQuery: debouncedSmartQuery,
       });
       const data = res?.data ?? res;
       const pageRows = data?.rows || [];
@@ -243,13 +250,22 @@ export default function DatasetSampleRowsGrid({
       );
       setTotal(nextTotal);
       setMessage(data?.message || "");
+      setAiSummary(data?.ai_summary || "");
+      setAiSource(data?.ai_source || "");
+      if (data?.ai_llm_unavailable) {
+        setAiNotice("AI unavailable — using keyword search.");
+      } else if (data?.ai_scan_capped) {
+        setAiNotice("Search scanned first 5,000 rows only.");
+      } else {
+        setAiNotice("");
+      }
     } catch (e) {
       setRows([]);
       setErr(formatDetail(e?.response?.data) || e?.message || "Failed to load rows.");
     } finally {
       setLoading(false);
     }
-  }, [datasetId, tableId, enabled, safePageIndex, pageSize]);
+  }, [datasetId, tableId, enabled, safePageIndex, pageSize, debouncedSmartQuery]);
 
   useEffect(() => {
     if (!enabled || datasetId == null || tableId == null) {
@@ -257,6 +273,9 @@ export default function DatasetSampleRowsGrid({
       setTotal(0);
       setMessage("");
       setPageIndex(0);
+      setSmartQuery("");
+      setDebouncedSmartQuery("");
+      setAiSummary("");
       return;
     }
     loadPage();
@@ -267,6 +286,15 @@ export default function DatasetSampleRowsGrid({
     setSortColumns([]);
   }, [datasetId, tableId, pageSize]);
 
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSmartQuery(smartQuery.trim()), 450);
+    return () => clearTimeout(t);
+  }, [smartQuery]);
+
+  useEffect(() => {
+    setPageIndex(0);
+  }, [debouncedSmartQuery]);
+
   const goToPage = (next) => {
     const clamped = Math.max(0, Math.min(next, totalPages - 1));
     setPageIndex(clamped);
@@ -275,7 +303,7 @@ export default function DatasetSampleRowsGrid({
   const isDark = typeof document !== "undefined" && document.documentElement.classList.contains("dark");
 
   if (!enabled) {
-    return <p className="text-xs text-muted-foreground">Run import to load sample rows from the database.</p>;
+    return <p className="text-xs text-muted-foreground">Run import to load data from the database.</p>;
   }
 
   if (!columns.length) {
@@ -288,21 +316,56 @@ export default function DatasetSampleRowsGrid({
 
   return (
     <div className={cn("space-y-2", className)}>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className={modalLabelClass}>
-          Sample rows
-          {total > 0 ? (
-            <span className="ml-1 font-normal normal-case text-muted-foreground">
-              ({total.toLocaleString()} total)
-            </span>
-          ) : null}
-        </p>
-        {total > 0 ? (
-          <p className="text-[10px] text-muted-foreground">
-            Showing {rangeStart.toLocaleString()}–{rangeEnd.toLocaleString()}
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 min-w-0">
+          <p className={modalLabelClass}>
+            Data
+            {total > 0 ? (
+              <span className="ml-1 font-normal normal-case text-muted-foreground">
+                ({total.toLocaleString()} total)
+              </span>
+            ) : null}
           </p>
-        ) : null}
+          {total > 0 ? (
+            <p className="text-[10px] text-muted-foreground whitespace-nowrap">
+              Showing {rangeStart.toLocaleString()}–{rangeEnd.toLocaleString()}
+            </p>
+          ) : null}
+        </div>
+
+        <div className="relative ml-auto w-full max-w-[13rem] shrink-0 sm:w-52">
+          <Sparkles className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-primary/70" />
+          <Input
+            value={smartQuery}
+            onChange={(e) => setSmartQuery(e.target.value)}
+            placeholder="AI search…"
+            className="h-8 rounded-full pl-7 pr-7 text-[11px]"
+            aria-label="Smart search data"
+          />
+          {smartQuery ? (
+            <button
+              type="button"
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:text-foreground"
+              onClick={() => setSmartQuery("")}
+              aria-label="Clear smart search"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          ) : (
+            <Search className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground/45" />
+          )}
+        </div>
       </div>
+
+      {debouncedSmartQuery ? (
+        <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
+          {aiSummary ? <span>{aiSummary}</span> : null}
+          <span className="text-muted-foreground/60">
+            {aiSource === "llm" ? "· AI" : "· Keyword"}
+          </span>
+        </div>
+      ) : null}
+      {aiNotice ? <p className="text-[10px] text-amber-600 text-right">{aiNotice}</p> : null}
 
       {err ? <p className="text-xs text-destructive">{err}</p> : null}
       {message && !rows.length && !loading ? <p className="text-xs text-muted-foreground">{message}</p> : null}

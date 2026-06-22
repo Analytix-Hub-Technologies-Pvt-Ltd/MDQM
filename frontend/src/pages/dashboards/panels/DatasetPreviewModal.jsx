@@ -69,6 +69,8 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
   const baseColumns = baseTable?.columns || [];
   const canAddDataSource = Boolean(job?.job_id && baseColumns.length > 0);
   const joinSources = payload?.join_sources || [];
+  const activeJoins = joinSources.filter((j) => j.materialized !== false && j.status !== "broken");
+  const brokenJoins = joinSources.filter((j) => j.materialized === false || j.status === "broken");
 
   const handleRunImport = async () => {
     if (!job?.job_id) return;
@@ -225,10 +227,10 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
               </ModalAlert>
             ) : null}
 
-            {joinSources.length > 0 ? (
+            {activeJoins.length > 0 ? (
               <ModalSection title="Joined data sources">
                 <div className="space-y-2">
-                  {joinSources.map((j) => (
+                  {activeJoins.map((j) => (
                     <div key={j.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card px-3 py-2">
                       <div className="min-w-0 text-xs">
                         <p className="font-semibold text-foreground">{j.label || j.file_name || j.table_name || "Join source"}</p>
@@ -251,6 +253,36 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
                         className="text-xs uppercase tracking-wide text-destructive hover:text-destructive"
                       >
                         {removeJoinBusy === j.id ? "Removing…" : "Remove join"}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </ModalSection>
+            ) : null}
+
+            {brokenJoins.length > 0 ? (
+              <ModalSection title="Incomplete joins">
+                <ModalAlert variant="warning">
+                  These joins were not completed successfully. Remove them and try again with matching join keys.
+                </ModalAlert>
+                <div className="mt-2 space-y-2">
+                  {brokenJoins.map((j) => (
+                    <div key={j.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-300/60 bg-amber-50/50 px-3 py-2 dark:border-amber-700/50 dark:bg-amber-950/20">
+                      <div className="min-w-0 text-xs">
+                        <p className="font-semibold text-foreground">{j.label || j.file_name || "Failed join"}</p>
+                        <p className="text-muted-foreground">
+                          Not materialized · <span className="font-mono">{j.left_key}</span> = <span className="font-mono">{j.right_key}</span>
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={removeJoinBusy === j.id}
+                        onClick={() => handleRemoveJoin(j.id)}
+                        className="text-xs uppercase tracking-wide"
+                      >
+                        {removeJoinBusy === j.id ? "Removing…" : "Remove"}
                       </Button>
                     </div>
                   ))}
@@ -336,11 +368,17 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
       onClose={() => setAddSourceOpen(false)}
       jobId={job?.job_id}
       baseColumns={baseColumns}
-      onSaved={async () => {
+      onSaved={async (result) => {
         if (datasetId != null) invalidateEdaReportCache(datasetId);
         await loadPreview();
         setChartRevision((n) => n + 1);
-        setRefreshOk("Data source joined successfully. Preview updated with merged columns.");
+        const rows = result?.materialized?.row_count;
+        const cols = result?.materialized?.column_count;
+        const detail =
+          rows != null && cols != null
+            ? ` Join complete — ${rows.toLocaleString()} rows, ${cols} columns.`
+            : "";
+        setRefreshOk(`Data source joined successfully.${detail}`);
       }}
     />
     <DatasetDeleteModal

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AppModal, ModalAlert, modalInputClass, modalLabelClass } from "@/components/layout/AppModal";
+import { AppModal, ModalAlert, ModalFileInput, modalInputClass, modalLabelClass } from "@/components/layout/AppModal";
 import { Button } from "@/components/ui/button";
 import ColumnSelector from "@/components/enterprise/ColumnSelector";
 import { cn } from "@/lib/utils";
@@ -12,6 +12,9 @@ import {
   previewCsvFile,
   previewCsvFileFromPath,
 } from "@/api";
+
+const FILE_ACCEPT = ".csv,.xlsx,.xls";
+const FILE_ACCEPT_HINT = "Accepted formats: CSV (.csv), Excel (.xlsx, .xls)";
 
 const JOIN_TYPES = [
   { value: "left", label: "Left join (keep all base rows)" },
@@ -226,7 +229,7 @@ export default function AddDataSourceModal({ open, onClose, jobId, baseColumns =
       return;
     }
     if (mode === "file" && !file && !filePath.trim()) {
-      setError("Upload a CSV file or enter a server file path.");
+      setError("Choose a CSV or Excel file, or enter a server file path.");
       return;
     }
     if (mode === "table" && (!selectedSchema || !selectedTable)) {
@@ -246,16 +249,22 @@ export default function AddDataSourceModal({ open, onClose, jobId, baseColumns =
         selected_columns: selectedColumns,
       };
 
+      let res;
       if (mode === "table") {
         Object.assign(payload, buildDbPayload());
-        await addJobJoinSource(jobId, payload);
+        res = await addJobJoinSource(jobId, payload);
       } else if (file) {
-        await addJobJoinSource(jobId, { ...payload, source_kind: "file" }, file);
+        res = await addJobJoinSource(jobId, { ...payload, source_kind: "file" }, file);
       } else {
-        await addJobJoinSource(jobId, { ...payload, source_kind: "file", file_path: filePath.trim() });
+        res = await addJobJoinSource(jobId, { ...payload, source_kind: "file", file_path: filePath.trim() });
       }
 
-      onSaved?.();
+      const body = res?.data ?? res;
+      if (!body?.materialized) {
+        throw new Error("Join did not complete. Dataset was not updated.");
+      }
+
+      onSaved?.(body);
       reset();
       onClose();
     } catch (e2) {
@@ -281,7 +290,7 @@ export default function AddDataSourceModal({ open, onClose, jobId, baseColumns =
         onClose();
       }}
       title="Add data source"
-      description="Attach a CSV or database table and join it to this dataset (e.g. customers + customer_details on customer_id)."
+      description="Attach a CSV, Excel file, or database table and join it to this dataset (e.g. customers + customer_details on customer_id)."
       maxWidth="max-w-2xl"
       showDefaultFooter={false}
       bodyClassName="overflow-y-auto max-h-[calc(90vh-8rem)]"
@@ -296,7 +305,7 @@ export default function AddDataSourceModal({ open, onClose, jobId, baseColumns =
 
         <div className="grid grid-cols-2 gap-2">
           <button type="button" onClick={() => setMode("file")} className={modeBtn(mode === "file")}>
-            File (CSV)
+            File (CSV / Excel)
           </button>
           <button type="button" onClick={() => setMode("table")} className={modeBtn(mode === "table")}>
             Table (DB)
@@ -306,12 +315,30 @@ export default function AddDataSourceModal({ open, onClose, jobId, baseColumns =
         {mode === "file" ? (
           <>
             <div>
-              <label className={modalLabelClass}>Upload CSV</label>
-              <input type="file" accept=".csv,.xlsx,.xls" className="mt-1 w-full text-xs" onChange={(e) => { setFile(e.target.files?.[0] || null); if (e.target.files?.[0]) setFilePath(""); }} />
+              <label className={modalLabelClass}>Upload file</label>
+              <ModalFileInput
+                accept={FILE_ACCEPT}
+                chooseLabel="Choose CSV or Excel file"
+                acceptHint={FILE_ACCEPT_HINT}
+                file={file}
+                onFileChange={(selected) => {
+                  setFile(selected);
+                  if (selected) setFilePath("");
+                }}
+              />
             </div>
             <div>
               <label className={modalLabelClass}>Or server path</label>
-              <input className={modalInputClass} placeholder="C:\\data\\details.csv" value={filePath} onChange={(e) => { setFilePath(e.target.value); if (e.target.value.trim()) setFile(null); }} />
+              <input
+                className={modalInputClass}
+                placeholder="C:\\data\\details.csv or .xlsx"
+                value={filePath}
+                onChange={(e) => {
+                  setFilePath(e.target.value);
+                  if (e.target.value.trim()) setFile(null);
+                }}
+              />
+              <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">{FILE_ACCEPT_HINT}</p>
             </div>
           </>
         ) : (

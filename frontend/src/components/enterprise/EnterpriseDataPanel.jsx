@@ -73,12 +73,16 @@ function TableCellText({ children, className }) {
  */
 export default function EnterpriseDataPanel({
   title,
+  description,
   columns,
   fetchPage,
   pageSize = 10,
   searchPlaceholder = "Search…",
   emptyMessage = "No records match your filters.",
   refreshEventName,
+  scrollable = true,
+  dense = false,
+  minTableWidth = 520,
 }) {
   const pageStorageKey = title ? `mdqm-enterprise-panel-page:${title}` : null;
   const [items, setItems] = useState([]);
@@ -153,11 +157,17 @@ export default function EnterpriseDataPanel({
   }, [refreshEventName]);
 
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const cellPad = dense ? "!px-2 !py-2" : "!p-3";
 
   return (
     <div className="enterprise-card p-4 space-y-3">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-        <h3 className="enterprise-title">{title}</h3>
+        <div className="min-w-0">
+          <h3 className="enterprise-title">{title}</h3>
+          {description ? (
+            <p className="mt-1 text-[11px] leading-snug text-muted-foreground max-w-3xl">{description}</p>
+          ) : null}
+        </div>
         <Input
           value={query}
           onChange={(e) => {
@@ -176,14 +186,40 @@ export default function EnterpriseDataPanel({
       ) : !items.length ? (
         <p className="text-sm text-muted-foreground py-8 text-center">{emptyMessage}</p>
       ) : (
-        <div className="mdqm-scroll-x overflow-x-auto rounded-xl border border-border">
-          <table className="w-full text-sm min-w-[520px]">
+        <div
+          className={cn(
+            "rounded-xl border border-border",
+            scrollable ? "mdqm-scroll-x overflow-x-auto" : "overflow-hidden",
+          )}
+        >
+          <table
+            className={cn(
+              "mdqm-enterprise-table w-full border-collapse text-sm",
+              dense && "mdqm-enterprise-table--dense",
+              !scrollable && "table-fixed",
+            )}
+            style={scrollable && minTableWidth ? { minWidth: minTableWidth } : undefined}
+          >
+            {!scrollable ? (
+              <colgroup>
+                {columns.map((c) => (
+                  <col key={c.key} style={c.width ? { width: c.width } : undefined} />
+                ))}
+              </colgroup>
+            ) : null}
             <thead>
               <tr className="text-left border-b border-[var(--table-header-border)] bg-[var(--table-header-bg)]">
                 {columns.map((c) => (
                   <th
                     key={c.key}
-                    className="p-3 whitespace-nowrap text-xs font-bold uppercase tracking-wide text-[var(--table-header-fg)]"
+                    title={c.headerTitle || undefined}
+                    className={cn(
+                      cellPad,
+                      "whitespace-nowrap text-xs font-bold uppercase tracking-wide text-[var(--table-header-fg)]",
+                      !scrollable && "overflow-hidden",
+                      c.headerClassName,
+                      c.className,
+                    )}
                   >
                     {c.label}
                   </th>
@@ -197,7 +233,17 @@ export default function EnterpriseDataPanel({
                   className="border-b border-border"
                 >
                   {columns.map((c, ci) => (
-                    <td key={`${c.key}-${ci}`} className="p-3 align-middle text-foreground">
+                    <td
+                      key={`${c.key}-${ci}`}
+                      className={cn(
+                        cellPad,
+                        dense ? "align-top" : "align-middle",
+                        "text-foreground",
+                        !scrollable && "overflow-hidden",
+                        c.cellClassName,
+                        c.className,
+                      )}
+                    >
                       {c.render ? c.render(row[c.key], row) : String(row[c.key] ?? "—")}
                     </td>
                   ))}
