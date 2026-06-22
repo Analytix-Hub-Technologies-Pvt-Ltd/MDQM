@@ -700,11 +700,14 @@ if True:
     @app.post("/files/preview")
     async def preview_file(file: UploadFile = File(...)):
         """Return first rows + inferred column types for CSV / Excel."""
+        from services.dataset_db_import import normalize_dataframe_columns
+
         try:
             if file.filename.lower().endswith((".xlsx", ".xls")):
                 df = pd.read_excel(file.file)
             else:
                 df = pd.read_csv(file.file)
+            df = normalize_dataframe_columns(df)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid file: {str(e)}")
 
@@ -735,6 +738,9 @@ if True:
                 return _excel_preview_fast(file_path)
             else:
                 df = pd.read_csv(file_path)
+            from services.dataset_db_import import normalize_dataframe_columns
+
+            df = normalize_dataframe_columns(df)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid file: {str(e)}")
 
@@ -2909,18 +2915,9 @@ if True:
 
     # 1. FIX: Changed the URL to match the frontend exactly
     def _apply_selected_columns_to_df(df, selected_columns):
-        from services.dataset_db_import import normalize_selected_columns
+        from services.dataset_db_import import apply_selected_columns_to_dataframe
 
-        cols = normalize_selected_columns(selected_columns)
-        if not cols:
-            return df
-        missing = [c for c in cols if c not in df.columns]
-        if missing:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Selected column(s) not found in file: {', '.join(missing)}",
-            )
-        return df[cols]
+        return apply_selected_columns_to_dataframe(df, selected_columns)
 
     @app.post("/jobs/{job_id}/upload")
     async def upload_file(

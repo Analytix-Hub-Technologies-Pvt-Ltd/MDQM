@@ -53,9 +53,14 @@ def eda_cache_dir(job_id: int) -> str:
     return ensure_cache_subdir("eda", f"job_{job_id}")
 
 
-def join_source_cache_path(job_id: int, join_id: str) -> str:
+def join_source_cache_path(job_id: int, join_id: str, *, ext: str | None = None) -> str:
     """Cached join source file — stored under .cache, not uploads/."""
-    return os.path.join(ensure_cache_subdir("joins", f"job_{job_id}"), f"join_{join_id}.csv")
+    suffix = (ext or ".csv").strip()
+    if not suffix.startswith("."):
+        suffix = f".{suffix}"
+    if suffix.lower() not in (".csv", ".xlsx", ".xls"):
+        suffix = ".csv"
+    return os.path.join(ensure_cache_subdir("joins", f"job_{job_id}"), f"join_{join_id}{suffix}")
 
 
 def resolve_table_csv_path(job_id: int, table_name: str) -> str | None:

@@ -525,6 +525,7 @@ def governance_dataset_table_rows(
     user: models.User = Depends(get_current_user),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
+    ai_query: str | None = Query(None, max_length=500),
 ):
     """Paginated dataset rows for server-side data grids."""
     require_any_permission(
@@ -534,7 +535,9 @@ def governance_dataset_table_rows(
         Permissions.GOVERNANCE_VIEW,
         Permissions.ADMIN_VIEW,
     )
-    result = esvc.build_dataset_table_rows_page(db, dataset_id, table_id, offset=offset, limit=limit)
+    result = esvc.build_dataset_table_rows_page(
+        db, dataset_id, table_id, offset=offset, limit=limit, ai_query=ai_query
+    )
     if result is None:
         raise HTTPException(status_code=404, detail="Dataset or table not found")
     return result

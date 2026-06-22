@@ -14,7 +14,9 @@ import models
 from services.dataset_db_import import (
     build_table_select_query,
     connect_external_db,
+    normalize_dataframe_columns,
     normalize_selected_columns,
+    resolve_column_in_frame,
     resolve_creds_from_job_config,
 )
 from utils.source_secret_crypto import decrypt_db_password_optional, encrypt_db_password_optional
@@ -49,8 +51,8 @@ def legacy_base_snapshot_path(job_id: int) -> str:
     return os.path.join(UPLOAD_ROOT, f"job_{job_id}", "_base_primary.csv")
 
 
-def join_source_csv_path(job_id: int, join_id: str) -> str:
-    return join_source_cache_path(job_id, join_id)
+def join_source_csv_path(job_id: int, join_id: str, *, ext: str | None = None) -> str:
+    return join_source_cache_path(job_id, join_id, ext=ext)
 
 
 def list_join_sources(job: models.Job) -> list[dict[str, Any]]:
@@ -62,6 +64,26 @@ def list_join_sources(job: models.Job) -> list[dict[str, Any]]:
     for j in joins:
         if not isinstance(j, dict):
             continue
+        source_kind = str(j.get("source_kind") or "file").lower()
+        file_ready = True
+        if source_kind == "file":
+            join_id = str(j.get("id") or "")
+            path = j.get("file_path") or (
+                join_source_csv_path(job.job_id, join_id) if join_id else ""
+            )
+            file_ready = bool(path and os.path.isfile(path))
+
+        stored_materialized = j.get("materialized") is True
+        if source_kind == "file" and not file_ready:
+            status = "broken"
+            is_materialized = False
+        elif stored_materialized:
+            status = "active"
+            is_materialized = True
+        else:
+            status = "broken"
+            is_materialized = False
+
         out.append(
             {
                 "id": j.get("id"),
@@ -74,6 +96,8 @@ def list_join_sources(job: models.Job) -> list[dict[str, Any]]:
                 "schema_name": j.get("schema_name"),
                 "table_name": j.get("table_name"),
                 "file_name": j.get("file_name"),
+                "status": status,
+                "materialized": is_materialized,
             }
         )
     return out
@@ -161,7 +185,7 @@ def _load_base_dataframe(db: Session, job: models.Job) -> pd.DataFrame:
     df = load_snapshot_with_csv_fallback(db, job.job_id, primary.table_name, table_id=primary.table_id)
     if df is None:
         raise ValueError("Primary dataset has no loaded data. Upload or import base data before joining.")
-    return df
+    return normalize_dataframe_columns(df)
 
 
 def _load_file_join_df(job_id: int, join_cfg: dict[str, Any]) -> pd.DataFrame:
@@ -169,10 +193,13 @@ def _load_file_join_df(job_id: int, join_cfg: dict[str, Any]) -> pd.DataFrame:
     path = join_cfg.get("file_path") or join_source_csv_path(job_id, join_id)
     if not path or not os.path.isfile(path):
         raise ValueError(f"Join source file not found for '{join_cfg.get('label') or join_id}'.")
-    lower = str(path).lower()
-    if lower.endswith((".xlsx", ".xls")):
-        return pd.read_excel(path)
-    return pd.read_csv(path)
+    name_hint = str(join_cfg.get("file_name") or path).lower()
+    path_l = str(path).lower()
+    if name_hint.endswith((".xlsx", ".xls")) or path_l.endswith((".xlsx", ".xls")):
+        df = pd.read_excel(path)
+    else:
+        df = pd.read_csv(path)
+    return normalize_dataframe_columns(df)
 
 
 def _load_table_join_df(join_cfg: dict[str, Any], pass_override: str | None = None) -> pd.DataFrame:
@@ -220,7 +247,41 @@ def load_join_source_df(job_id: int, join_cfg: dict[str, Any], pass_override: st
     return _load_file_join_df(job_id, join_cfg)
 
 
-def materialize_dataset_with_joins(db: Session, job_id: int, snapshot_fn) -> dict[str, Any]:
+def _normalize_join_key_value(val: Any) -> str | None:
+    """Coerce join key cell values to a comparable string (handles int64 vs object)."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        if isinstance(val, float) and val != int(val):
+            return str(val).strip()
+        return str(int(val))
+    text = str(val).strip()
+    if not text or text.lower() in ("nan", "none", "<na>"):
+        return None
+    try:
+        num = float(text)
+        if num == int(num):
+            return str(int(num))
+    except ValueError:
+        pass
+    return text
+
+
+def _harmonize_join_key_column(df: pd.DataFrame, column: str) -> pd.DataFrame:
+    if column not in df.columns:
+        return df
+    out = df.copy()
+    out[column] = out[column].map(_normalize_join_key_value).astype("string")
+    return out
+
+
+def materialize_dataset_with_joins(
+    db: Session,
+    job_id: int,
+    snapshot_fn,
+    *,
+    joins_override: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
     if not job:
         raise ValueError("Job not found.")
@@ -230,13 +291,14 @@ def materialize_dataset_with_joins(db: Session, job_id: int, snapshot_fn) -> dic
         raise ValueError("No primary table found on this dataset job.")
 
     cfg = _job_cfg(job)
-    joins = cfg.get("join_sources") or []
-    result = _load_base_dataframe(db, job)
+    joins = joins_override if joins_override is not None else (cfg.get("join_sources") or [])
+    result = normalize_dataframe_columns(_load_base_dataframe(db, job))
 
     for join in joins:
         if not isinstance(join, dict):
             continue
         right_df = load_join_source_df(job.job_id, join)
+        right_df = normalize_dataframe_columns(right_df)
         selected = normalize_selected_columns(join.get("selected_columns"))
         left_key = str(join.get("left_key") or "").strip()
         right_key = str(join.get("right_key") or "").strip()
@@ -245,33 +307,59 @@ def materialize_dataset_with_joins(db: Session, job_id: int, snapshot_fn) -> dic
             join_type = "left"
         if not left_key or not right_key:
             raise ValueError(f"Join '{join.get('label')}' is missing join keys.")
-        if left_key not in result.columns:
+
+        left_col = resolve_column_in_frame(result, left_key)
+        right_col = resolve_column_in_frame(right_df, right_key)
+        if not left_col:
             raise ValueError(f"Left join key '{left_key}' not found in base dataset.")
-        if right_key not in right_df.columns:
+        if not right_col:
             raise ValueError(f"Right join key '{right_key}' not found in join source '{join.get('label')}'.")
 
-        keep_cols = list(dict.fromkeys((selected or list(right_df.columns)) + [right_key]))
+        resolved_selected: list[str] = []
+        for col_name in selected or list(right_df.columns):
+            match = resolve_column_in_frame(right_df, col_name)
+            if match and match not in resolved_selected:
+                resolved_selected.append(match)
+        if right_col not in resolved_selected:
+            resolved_selected.append(right_col)
+
+        keep_cols = list(dict.fromkeys(resolved_selected))
         right_subset = right_df[[c for c in keep_cols if c in right_df.columns]].copy()
 
-        overlap = (set(result.columns) & set(right_subset.columns)) - {left_key, right_key}
-        if left_key == right_key:
-            overlap.discard(left_key)
+        overlap = (set(result.columns) & set(right_subset.columns)) - {left_col, right_col}
+        if left_col == right_col:
+            overlap.discard(left_col)
         rename = {c: f"{c}_joined" for c in overlap}
         if rename:
             right_subset = right_subset.rename(columns=rename)
 
-        if left_key == right_key:
-            result = result.merge(right_subset, on=left_key, how=join_type)
+        result = _harmonize_join_key_column(result, left_col)
+        if left_col == right_col:
+            right_subset = _harmonize_join_key_column(right_subset, right_col)
         else:
-            result = result.merge(right_subset, left_on=left_key, right_on=right_key, how=join_type)
-            if right_key in result.columns and right_key != left_key:
-                result = result.drop(columns=[right_key])
+            right_subset = _harmonize_join_key_column(right_subset, right_col)
+
+        rows_before = len(result)
+        right_rows = len(right_subset)
+
+        if left_col == right_col:
+            result = result.merge(right_subset, on=left_col, how=join_type)
+        else:
+            result = result.merge(right_subset, left_on=left_col, right_on=right_col, how=join_type)
+            if right_col in result.columns and right_col != left_col:
+                result = result.drop(columns=[right_col])
+
+        if join_type == "inner" and rows_before > 0 and right_rows > 0 and len(result) == 0:
+            raise ValueError(
+                f"Inner join '{join.get('label')}' matched no rows. Check join keys "
+                f"({left_col} = {right_col}) and value formats."
+            )
 
     snapshot_fn(db, job_id, primary.table_id, primary.table_name, result)
     return {
         "row_count": int(len(result)),
         "column_count": int(len(result.columns)),
-        "join_count": len(joins),
+        "join_count": len([j for j in joins if isinstance(j, dict)]),
     }
 
 
@@ -309,6 +397,7 @@ def add_join_source(
         "selected_columns": selected_columns,
     }
 
+    join_file_dest: str | None = None
     if source_kind == "table":
         entry.update(
             {
@@ -328,20 +417,40 @@ def add_join_source(
     else:
         if not file_path:
             raise ValueError("file is required for file join sources.")
-        dest = join_source_csv_path(job.job_id, join_id)
-        shutil.copy2(file_path, dest)
-        entry["file_path"] = dest
-        entry["file_name"] = os.path.basename(file_path)
+        orig_name = os.path.basename(file_path)
+        _, ext = os.path.splitext(orig_name)
+        join_file_dest = join_source_csv_path(job.job_id, join_id, ext=ext or ".csv")
+        shutil.copy2(file_path, join_file_dest)
+        entry["file_path"] = join_file_dest
+        entry["file_name"] = orig_name
+
+    entry["materialized"] = False
 
     cfg = _job_cfg(job)
     if not cfg.get("kind"):
         cfg["kind"] = _infer_kind(cfg)
     joins = list(cfg.get("join_sources") or [])
-    joins.append(entry)
-    cfg["join_sources"] = joins
-    _save_job_cfg(db, job, cfg)
+    trial_joins = joins + [entry]
 
-    stats = materialize_dataset_with_joins(db, job.job_id, snapshot_fn)
+    try:
+        stats = materialize_dataset_with_joins(
+            db, job.job_id, snapshot_fn, joins_override=trial_joins
+        )
+    except Exception:
+        if join_file_dest and os.path.isfile(join_file_dest):
+            try:
+                os.remove(join_file_dest)
+            except OSError:
+                pass
+        raise
+
+    entry["materialized"] = True
+    for j in trial_joins:
+        if isinstance(j, dict):
+            j["materialized"] = True
+
+    cfg["join_sources"] = trial_joins
+    _save_job_cfg(db, job, cfg)
     return {"join": entry, "materialized": stats}
 
 
@@ -350,6 +459,8 @@ def remove_join_source(db: Session, job: models.Job, join_id: str, snapshot_fn) 
     joins = [j for j in (cfg.get("join_sources") or []) if isinstance(j, dict) and str(j.get("id")) != str(join_id)]
     if len(joins) == len(cfg.get("join_sources") or []):
         raise ValueError("Join source not found.")
+
+    stats = materialize_dataset_with_joins(db, job.job_id, snapshot_fn, joins_override=joins)
 
     cfg["join_sources"] = joins
     _save_job_cfg(db, job, cfg)
@@ -361,5 +472,4 @@ def remove_join_source(db: Session, job: models.Job, join_id: str, snapshot_fn) 
         except OSError:
             pass
 
-    stats = materialize_dataset_with_joins(db, job.job_id, snapshot_fn)
     return {"removed": join_id, "materialized": stats}

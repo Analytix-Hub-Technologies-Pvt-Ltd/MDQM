@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pandas as pd
@@ -363,6 +364,60 @@ def _normalize_import_dataframe_dates(df: pd.DataFrame) -> pd.DataFrame:
             except Exception:
                 pass
     return df
+
+
+def normalize_column_label(name: Any) -> str:
+    """Strip Excel/CSV header noise (e.g. 'MOBILE ' -> 'MOBILE')."""
+    return re.sub(r"\s+", " ", str(name or "").strip())
+
+
+def normalize_dataframe_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize header labels so preview, selection, and upload use the same names."""
+    out = df.copy()
+    out.columns = [
+        normalize_column_label(col) or f"column_{idx + 1}" for idx, col in enumerate(out.columns)
+    ]
+    return out
+
+
+def resolve_column_in_frame(df: pd.DataFrame, requested: str) -> str | None:
+    """Match a requested column to a dataframe column (trim + case-insensitive)."""
+    req = normalize_column_label(requested)
+    if not req:
+        return None
+    if req in df.columns:
+        return req
+    req_l = req.lower()
+    for col in df.columns:
+        if normalize_column_label(col).lower() == req_l:
+            return str(col)
+    return None
+
+
+def apply_selected_columns_to_dataframe(df: pd.DataFrame, selected_columns) -> pd.DataFrame:
+    """Subset dataframe columns; tolerates trimmed / differently-cased header names."""
+    frame = normalize_dataframe_columns(df)
+    cols = normalize_selected_columns(selected_columns)
+    if not cols:
+        return frame
+
+    missing: list[str] = []
+    resolved: list[str] = []
+    for name in cols:
+        match = resolve_column_in_frame(frame, name)
+        if match is None:
+            missing.append(name)
+        elif match not in resolved:
+            resolved.append(match)
+
+    if missing:
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=400,
+            detail=f"Selected column(s) not found in file: {', '.join(missing)}",
+        )
+    return frame[resolved]
 
 
 def normalize_selected_columns(raw) -> list[str]:

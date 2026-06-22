@@ -556,10 +556,116 @@ def dataset_source_kind(
     return "unknown"
 
 
+def _resolve_db_connection_name(db: Session, cfg: dict[str, Any]) -> str | None:
+    cid_raw = cfg.get("connection_id")
+    if cid_raw is None or str(cid_raw).strip() in ("", "null", "nan"):
+        return None
+    try:
+        conn_id = int(float(cid_raw))
+    except (TypeError, ValueError):
+        return None
+    conn_row = (
+        db.query(models.DbConnection).filter(models.DbConnection.connection_id == conn_id).first()
+    )
+    if conn_row and (conn_row.connection_name or "").strip():
+        return str(conn_row.connection_name).strip()
+    return None
+
+
+def _resolve_dataset_file_name(db: Session, job: models.Job) -> str:
+    cfg = read_job_source_config(job)
+    if isinstance(cfg, dict):
+        snap = cfg.get("base_snapshot_path")
+        if snap:
+            base = os.path.basename(str(snap).strip())
+            if base and base.lower() not in ("_base_primary.csv",):
+                return base
+        joins = cfg.get("join_sources") or []
+        if isinstance(joins, list):
+            for join in joins:
+                if not isinstance(join, dict):
+                    continue
+                file_name = str(join.get("file_name") or "").strip()
+                if file_name:
+                    return os.path.basename(file_name)
+
+    first_table = (
+        db.query(models.TableMetadata)
+        .filter(models.TableMetadata.job_id == job.job_id)
+        .order_by(models.TableMetadata.table_id.asc())
+        .first()
+    )
+    if first_table:
+        from utils.upload_paths import resolve_table_csv_path
+
+        path = resolve_table_csv_path(job.job_id, first_table.table_name)
+        if path:
+            base = os.path.basename(path)
+            if base:
+                return base
+        table_name = (first_table.table_name or "").strip()
+        if table_name:
+            return table_name
+
+    job_name = (job.job_name or "").strip()
+    return job_name or "CSV file"
+
+
 def format_dataset_source_details(
     db: Session, row: models.EnterpriseDataset, job_id: int | None
 ) -> str:
-    """Human-readable source line for the datasets table."""
+    """Short source label for the datasets table (file name or DB connection name)."""
+    kind = dataset_source_kind(db, row, job_id)
+    if kind == "join":
+        job = db.query(models.Job).filter(models.Job.job_id == job_id).first() if job_id else None
+        cfg = read_job_source_config(job) if job else {}
+        joins = cfg.get("join_sources") or [] if isinstance(cfg, dict) else []
+        join_count = len(joins) if isinstance(joins, list) else 0
+        if isinstance(cfg, dict) and cfg.get("kind") == "postgres_tables":
+            conn_name = _resolve_db_connection_name(db, cfg)
+            if conn_name:
+                return conn_name if join_count <= 1 else f"{conn_name} + {join_count - 1} more"
+        labels = [
+            str(j.get("label") or j.get("table_name") or j.get("file_name") or "source").strip()
+            for j in joins
+            if isinstance(j, dict)
+        ]
+        joined = labels[0] if labels else "extra source"
+        if join_count > 1:
+            return f"{joined} + {join_count - 1} more"
+        return joined
+
+    if kind == "file":
+        job = (
+            db.query(models.Job).filter(models.Job.job_id == job_id).first() if job_id else None
+        )
+        if job:
+            return _resolve_dataset_file_name(db, job)
+        return "CSV file"
+
+    if not job_id:
+        return (row.description or "—")[:120]
+
+    job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+    if not job:
+        return row.classification or "—"
+
+    cfg = read_job_source_config(job)
+    if isinstance(cfg, dict) and cfg.get("kind") == "postgres_tables":
+        conn_name = _resolve_db_connection_name(db, cfg)
+        if conn_name:
+            return conn_name
+        db_type = str(cfg.get("db_type") or "database").strip().upper()
+        dbname = str(cfg.get("dbname") or "").strip() or "default"
+        return f"{db_type}: {dbname}"
+
+    return row.classification or job.job_name or "—"
+
+
+def format_dataset_source_tooltip(
+    db: Session, row: models.EnterpriseDataset, job_id: int | None
+) -> str:
+    """Full source details for hover tooltips."""
     kind = dataset_source_kind(db, row, job_id)
     if kind == "join":
         job = db.query(models.Job).filter(models.Job.job_id == job_id).first() if job_id else None
@@ -581,8 +687,8 @@ def format_dataset_source_details(
         job = (
             db.query(models.Job).filter(models.Job.job_id == job_id).first() if job_id else None
         )
-        if job and job.job_name:
-            return f"CSV · {job.job_name}"
+        if job:
+            return f"File · {_resolve_dataset_file_name(db, job)}"
         return "CSV file"
 
     if not job_id:
@@ -599,6 +705,9 @@ def format_dataset_source_details(
         schema = str(cfg.get("schema_name") or "").strip() or "—"
         tables = cfg.get("table_names") or []
         table = str(tables[0]).strip() if tables else "—"
+        conn_name = _resolve_db_connection_name(db, cfg)
+        if conn_name:
+            return f"{conn_name} · {schema}.{table}"
         return f"{host} · {dbname} · {schema}.{table}"
 
     return row.classification or job.job_name or "—"
@@ -722,6 +831,7 @@ def list_datasets(db: Session, page: int, page_size: int, name_q: str | None = N
                 "last_refreshed_at": last_refreshed.isoformat() if last_refreshed else None,
                 "source_kind": dataset_source_kind(db, r, jid),
                 "source_details": format_dataset_source_details(db, r, jid),
+                "source_tooltip": format_dataset_source_tooltip(db, r, jid),
                 "column_count": col_count or None,
                 "import_status": job.status if job else None,
                 "data_loaded": dataset_has_loaded_data(db, jid),
@@ -1091,6 +1201,8 @@ def build_dataset_table_rows_page(
     *,
     offset: int = 0,
     limit: int = 50,
+    ai_query: str | None = None,
+    column_defs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Server-paginated dataset rows for interactive grids (Data Owner preview)."""
     row = db.query(models.EnterpriseDataset).filter(models.EnterpriseDataset.id == dataset_id).first()
@@ -1127,15 +1239,62 @@ def build_dataset_table_rows_page(
             "message": "No loaded data for this table yet.",
         }
 
-    rows, total = load_table_rows_page(
-        db,
-        job_id,
-        tbl.table_name,
-        table_id=tbl.table_id,
-        offset=offset,
-        limit=limit,
-    )
-    return {
+    q = (ai_query or "").strip()
+    if q:
+        from services.dataset_smart_search_service import (
+            MAX_SCAN_ROWS,
+            apply_smart_filters,
+            parse_smart_search_query,
+        )
+
+        col_meta = column_defs or []
+        if not col_meta:
+            col_meta = [
+                {"name": c.column_name, "data_type": c.data_type or "String"}
+                for c in db.query(models.ColumnMetadata)
+                .filter(
+                    models.ColumnMetadata.job_id == job_id,
+                    models.ColumnMetadata.table_id == table_id,
+                )
+                .order_by(models.ColumnMetadata.column_id.asc())
+                .all()
+            ]
+
+        parsed = parse_smart_search_query(q, col_meta)
+        ai_summary = parsed.get("summary")
+        ai_source = parsed.get("source")
+        ai_unavailable = parsed.get("llm_unavailable")
+        filters = parsed.get("filters") or []
+
+        all_rows, scan_total = load_table_rows_page(
+            db,
+            job_id,
+            tbl.table_name,
+            table_id=tbl.table_id,
+            offset=0,
+            limit=MAX_SCAN_ROWS,
+        )
+        scanned_all = scan_total <= MAX_SCAN_ROWS
+        filtered = apply_smart_filters(all_rows, filters)
+        total = len(filtered)
+        page_offset = max(0, int(offset))
+        page_limit = max(1, min(int(limit), 200))
+        rows = filtered[page_offset : page_offset + page_limit]
+    else:
+        rows, total = load_table_rows_page(
+            db,
+            job_id,
+            tbl.table_name,
+            table_id=tbl.table_id,
+            offset=offset,
+            limit=limit,
+        )
+        ai_summary = None
+        ai_source = None
+        ai_unavailable = None
+        scanned_all = False
+
+    result = {
         "dataset_id": dataset_id,
         "table_id": table_id,
         "table_name": tbl.table_name,
@@ -1144,6 +1303,15 @@ def build_dataset_table_rows_page(
         "total": total,
         "rows": rows,
     }
+    if q:
+        result["ai_query"] = q
+        result["ai_summary"] = ai_summary
+        result["ai_source"] = ai_source
+        if ai_unavailable:
+            result["ai_llm_unavailable"] = ai_unavailable
+        if not scanned_all:
+            result["ai_scan_capped"] = True
+    return result
 
 
 def list_glossary(db: Session, page: int, page_size: int, q: str | None):
