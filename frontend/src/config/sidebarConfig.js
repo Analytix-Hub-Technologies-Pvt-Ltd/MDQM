@@ -21,7 +21,6 @@ import {
   FileText,
   BarChart3,
   Award,
-  TicketCheck,
 } from "lucide-react";
 import { PERMISSIONS } from "../auth/permissions";
 import { ROLES } from "../auth/rolePermissions";
@@ -30,7 +29,6 @@ export const SIDEBAR_CONFIG = {
   [ROLES.ADMIN]: [
     { group: "Core", items: [
       { label: "Dashboard", path: "/dashboard", icon: LayoutDashboard, permission: PERMISSIONS.DASHBOARD_VIEW },
-      { label: "Tickets", path: "/tickets", icon: TicketCheck, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "Jobs", path: "/jobs", icon: Workflow, permission: PERMISSIONS.JOBS_VIEW },
       { label: "DB Connections", path: "/connections", icon: Database, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "Rules", path: "/rules", icon: ShieldCheck, permission: PERMISSIONS.RULES_VIEW },
@@ -46,7 +44,6 @@ export const SIDEBAR_CONFIG = {
   [ROLES.CDO]: [
     { group: "Governance", items: [
       { label: "Dashboard", path: "/dashboard", icon: LayoutDashboard, permission: PERMISSIONS.DASHBOARD_VIEW },
-      { label: "Tickets", path: "/tickets", icon: TicketCheck, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "DB Connections", path: "/connections", icon: Database, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "Governance", path: "/governance", icon: Landmark, permission: PERMISSIONS.GOVERNANCE_VIEW },
       { label: "Compliance", path: "/compliance", icon: ClipboardCheck, permission: PERMISSIONS.COMPLIANCE_VIEW },
@@ -57,7 +54,6 @@ export const SIDEBAR_CONFIG = {
   [ROLES.DATA_STEWARD]: [
     { group: "Stewardship", items: [
       { label: "Dashboard", path: "/dashboard", icon: LayoutDashboard, permission: PERMISSIONS.DASHBOARD_VIEW },
-      { label: "Tickets", path: "/tickets", icon: TicketCheck, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "DB Connections", path: "/connections", icon: Database, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "Data Quality", path: "/jobs", icon: Workflow, permission: PERMISSIONS.JOBS_VIEW },
       { label: "Rules", path: "/rules", icon: ShieldCheck, permission: PERMISSIONS.RULES_VIEW },
@@ -68,7 +64,6 @@ export const SIDEBAR_CONFIG = {
   [ROLES.DATA_OWNER]: [
     { group: "Governance desk", items: [
       { label: "Overview", path: "/dashboard", icon: LayoutDashboard, permission: PERMISSIONS.DASHBOARD_VIEW },
-      { label: "Tickets", path: "/tickets", icon: TicketCheck, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "DB Connections", path: "/connections", icon: Database, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "Datasets", path: "/dashboard?tab=datasets", icon: Database, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "Policies", path: "/dashboard?tab=policies", icon: FileText, permission: PERMISSIONS.DASHBOARD_VIEW },
@@ -86,7 +81,6 @@ export const SIDEBAR_CONFIG = {
   [ROLES.DEVELOPER]: [
     { group: "Engineering", items: [
       { label: "Dashboard", path: "/dashboard", icon: LayoutDashboard, permission: PERMISSIONS.DASHBOARD_VIEW },
-      { label: "Tickets", path: "/tickets", icon: TicketCheck, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "Jobs", path: "/jobs", icon: Workflow, permission: PERMISSIONS.JOBS_VIEW },
       { label: "DB Connections", path: "/connections", icon: Database, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "Rules", path: "/rules", icon: ShieldCheck, permission: PERMISSIONS.RULES_VIEW },
@@ -96,7 +90,6 @@ export const SIDEBAR_CONFIG = {
   [ROLES.AUDITOR]: [
     { group: "Audit", items: [
       { label: "Dashboard", path: "/dashboard", icon: LayoutDashboard, permission: PERMISSIONS.DASHBOARD_VIEW },
-      { label: "Tickets", path: "/tickets", icon: TicketCheck, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "DB Connections", path: "/connections", icon: Database, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "Audit Logs", path: "/audit", icon: History, permission: PERMISSIONS.AUDIT_VIEW },
       { label: "Compliance", path: "/compliance", icon: ClipboardCheck, permission: PERMISSIONS.COMPLIANCE_VIEW },
@@ -106,7 +99,6 @@ export const SIDEBAR_CONFIG = {
   [ROLES.ANALYST]: [
     { group: "Analytics", items: [
       { label: "Dashboard", path: "/dashboard", icon: LayoutDashboard, permission: PERMISSIONS.DASHBOARD_VIEW },
-      { label: "Tickets", path: "/tickets", icon: TicketCheck, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "Reports", path: "/reports", icon: FileBarChart, permission: PERMISSIONS.REPORTS_VIEW },
       { label: "Jobs", path: "/jobs", icon: Workflow, permission: PERMISSIONS.JOBS_VIEW },
       { label: "DB Connections", path: "/connections", icon: Database, permission: PERMISSIONS.DASHBOARD_VIEW },
@@ -115,7 +107,6 @@ export const SIDEBAR_CONFIG = {
   [ROLES.BUSINESS_USER]: [
     { group: "Workspace", items: [
       { label: "Overview", path: "/dashboard", icon: LayoutDashboard, permission: PERMISSIONS.DASHBOARD_VIEW },
-      { label: "Tickets", path: "/tickets", icon: TicketCheck, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "Data catalog", path: "/dashboard?tab=catalog", icon: LibraryBig, permission: PERMISSIONS.GOVERNANCE_VIEW },
       { label: "Quality", path: "/dashboard?tab=quality", icon: Sparkles, permission: PERMISSIONS.JOBS_VIEW },
       { label: "DB Connections", path: "/connections", icon: Database, permission: PERMISSIONS.DASHBOARD_VIEW },
