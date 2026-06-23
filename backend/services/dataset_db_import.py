@@ -434,6 +434,23 @@ def normalize_selected_columns(raw) -> list[str]:
     return out
 
 
+def normalize_column_aliases(raw) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    used: set[str] = set()
+    for key, value in raw.items():
+        source = str(key or "").strip()
+        alias = str(value or "").strip()
+        if not source or not alias or alias == source:
+            continue
+        if alias in used:
+            continue
+        out[source] = alias
+        used.add(alias)
+    return out
+
+
 def filter_column_schema(columns: list[dict[str, str]], selected_columns: list[str] | None) -> list[dict[str, str]]:
     if not selected_columns:
         return columns

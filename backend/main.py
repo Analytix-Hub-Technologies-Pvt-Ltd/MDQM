@@ -2312,6 +2312,42 @@ if True:
             raise HTTPException(status_code=404, detail="Job not found")
         return {"job_id": job_id, "join_sources": list_join_sources(job)}
 
+    @app.post("/jobs/{job_id}/join-sources/recommend-keys")
+    def recommend_job_join_keys(job_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
+        from services.dataset_join_recommend_service import recommend_join_keys
+        from services.dataset_join_service import _load_base_dataframe
+
+        job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        left_columns = payload.get("left_columns")
+        if not isinstance(left_columns, list) or not left_columns:
+            try:
+                left_columns = list(_load_base_dataframe(db, job).columns)
+            except Exception:
+                left_columns = []
+
+        right_columns = payload.get("right_columns") if isinstance(payload.get("right_columns"), list) else []
+        left_sample = payload.get("left_sample") if isinstance(payload.get("left_sample"), list) else None
+        right_sample = payload.get("right_sample") if isinstance(payload.get("right_sample"), list) else None
+
+        if not left_sample and left_columns:
+            try:
+                left_sample = _load_base_dataframe(db, job).head(5).fillna("").to_dict(orient="records")
+            except Exception:
+                left_sample = None
+
+        result = recommend_join_keys(
+            left_columns=[str(c) for c in left_columns if str(c).strip()],
+            right_columns=[str(c) for c in right_columns if str(c).strip()],
+            left_sample=left_sample,
+            right_sample=right_sample,
+            left_label=str(payload.get("left_label") or "base dataset"),
+            right_label=str(payload.get("right_label") or "new source"),
+        )
+        return {"job_id": job_id, **result}
+
     @app.post("/jobs/{job_id}/join-sources")
     async def add_job_join_source(
         job_id: int,

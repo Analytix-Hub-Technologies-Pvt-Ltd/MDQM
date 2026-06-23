@@ -16,6 +16,7 @@ from services.dataset_db_import import (
     connect_external_db,
     normalize_dataframe_columns,
     normalize_selected_columns,
+    normalize_column_aliases,
     resolve_column_in_frame,
     resolve_creds_from_job_config,
 )
@@ -24,6 +25,33 @@ from utils.upload_paths import join_source_cache_path, resolve_table_csv_path
 
 
 JOIN_TYPES = {"left", "inner", "right", "outer"}
+
+
+def normalize_join_keys(join: dict[str, Any]) -> list[dict[str, str]]:
+    keys = join.get("join_keys")
+    if isinstance(keys, list) and keys:
+        out: list[dict[str, str]] = []
+        for item in keys:
+            if not isinstance(item, dict):
+                continue
+            lk = str(item.get("left_key") or "").strip()
+            rk = str(item.get("right_key") or "").strip()
+            if lk and rk:
+                out.append({"left_key": lk, "right_key": rk})
+        if out:
+            return out
+    lk = str(join.get("left_key") or "").strip()
+    rk = str(join.get("right_key") or "").strip()
+    if lk and rk:
+        return [{"left_key": lk, "right_key": rk}]
+    return []
+
+
+def format_join_keys_display(join: dict[str, Any]) -> str:
+    pairs = normalize_join_keys(join)
+    if not pairs:
+        return ""
+    return " · ".join(f"{p['left_key']} = {p['right_key']}" for p in pairs)
 
 
 from services.job_source_config_service import read_job_source_config, write_job_source_config
@@ -92,7 +120,9 @@ def list_join_sources(job: models.Job) -> list[dict[str, Any]]:
                 "join_type": j.get("join_type") or "left",
                 "left_key": j.get("left_key"),
                 "right_key": j.get("right_key"),
+                "join_keys": normalize_join_keys(j),
                 "selected_columns": j.get("selected_columns") or [],
+                "column_aliases": j.get("column_aliases") or {},
                 "schema_name": j.get("schema_name"),
                 "table_name": j.get("table_name"),
                 "file_name": j.get("file_name"),
@@ -222,9 +252,10 @@ def _load_table_join_df(join_cfg: dict[str, Any], pass_override: str | None = No
         raise ValueError("No password available for join table source.")
 
     selected = normalize_selected_columns(join_cfg.get("selected_columns"))
-    right_key = str(join_cfg.get("right_key") or "").strip()
-    if right_key and right_key not in selected:
-        selected = selected + [right_key]
+    for pair in normalize_join_keys(join_cfg):
+        rk = pair.get("right_key") or ""
+        if rk and rk not in selected:
+            selected = selected + [rk]
 
     external_conn = connect_external_db(creds)
     try:
@@ -300,59 +331,83 @@ def materialize_dataset_with_joins(
         right_df = load_join_source_df(job.job_id, join)
         right_df = normalize_dataframe_columns(right_df)
         selected = normalize_selected_columns(join.get("selected_columns"))
-        left_key = str(join.get("left_key") or "").strip()
-        right_key = str(join.get("right_key") or "").strip()
-        join_type = str(join.get("join_type") or "left").lower()
+        key_pairs = normalize_join_keys(join)
+        join_type = str(join.get("join_type") or "outer").lower()
         if join_type not in JOIN_TYPES:
-            join_type = "left"
-        if not left_key or not right_key:
+            join_type = "outer"
+        if not key_pairs:
             raise ValueError(f"Join '{join.get('label')}' is missing join keys.")
 
-        left_col = resolve_column_in_frame(result, left_key)
-        right_col = resolve_column_in_frame(right_df, right_key)
-        if not left_col:
-            raise ValueError(f"Left join key '{left_key}' not found in base dataset.")
-        if not right_col:
-            raise ValueError(f"Right join key '{right_key}' not found in join source '{join.get('label')}'.")
+        left_cols: list[str] = []
+        right_cols: list[str] = []
+        for pair in key_pairs:
+            left_key = pair["left_key"]
+            right_key = pair["right_key"]
+            left_col = resolve_column_in_frame(result, left_key)
+            right_col = resolve_column_in_frame(right_df, right_key)
+            if not left_col:
+                raise ValueError(f"Left join key '{left_key}' not found in base dataset.")
+            if not right_col:
+                raise ValueError(
+                    f"Right join key '{right_key}' not found in join source '{join.get('label')}'."
+                )
+            left_cols.append(left_col)
+            right_cols.append(right_col)
 
         resolved_selected: list[str] = []
         for col_name in selected or list(right_df.columns):
             match = resolve_column_in_frame(right_df, col_name)
             if match and match not in resolved_selected:
                 resolved_selected.append(match)
-        if right_col not in resolved_selected:
-            resolved_selected.append(right_col)
+        for right_col in right_cols:
+            if right_col not in resolved_selected:
+                resolved_selected.append(right_col)
 
         keep_cols = list(dict.fromkeys(resolved_selected))
         right_subset = right_df[[c for c in keep_cols if c in right_df.columns]].copy()
 
-        overlap = (set(result.columns) & set(right_subset.columns)) - {left_col, right_col}
-        if left_col == right_col:
-            overlap.discard(left_col)
+        overlap = (set(result.columns) & set(right_subset.columns)) - set(left_cols) - set(right_cols)
         rename = {c: f"{c}_joined" for c in overlap}
         if rename:
             right_subset = right_subset.rename(columns=rename)
+            right_cols = [rename.get(c, c) for c in right_cols]
 
-        result = _harmonize_join_key_column(result, left_col)
-        if left_col == right_col:
-            right_subset = _harmonize_join_key_column(right_subset, right_col)
-        else:
+        user_aliases = normalize_column_aliases(join.get("column_aliases"))
+        if user_aliases:
+            alias_rename: dict[str, str] = {}
+            for src_name, alias_name in user_aliases.items():
+                col = resolve_column_in_frame(right_subset, src_name)
+                if not col and f"{src_name}_joined" in right_subset.columns:
+                    col = f"{src_name}_joined"
+                if not col or col in right_cols:
+                    continue
+                if alias_name in result.columns or alias_name in right_subset.columns:
+                    raise ValueError(
+                        f"Column alias '{alias_name}' for '{src_name}' conflicts with an existing column name."
+                    )
+                alias_rename[col] = alias_name
+            if alias_rename:
+                right_subset = right_subset.rename(columns=alias_rename)
+
+        for left_col, right_col in zip(left_cols, right_cols):
+            result = _harmonize_join_key_column(result, left_col)
             right_subset = _harmonize_join_key_column(right_subset, right_col)
 
         rows_before = len(result)
         right_rows = len(right_subset)
 
-        if left_col == right_col:
-            result = result.merge(right_subset, on=left_col, how=join_type)
+        if left_cols == right_cols:
+            result = result.merge(right_subset, on=left_cols, how=join_type)
         else:
-            result = result.merge(right_subset, left_on=left_col, right_on=right_col, how=join_type)
-            if right_col in result.columns and right_col != left_col:
-                result = result.drop(columns=[right_col])
+            result = result.merge(right_subset, left_on=left_cols, right_on=right_cols, how=join_type)
+            drop_cols = [rc for lc, rc in zip(left_cols, right_cols) if rc in result.columns and rc != lc]
+            if drop_cols:
+                result = result.drop(columns=list(dict.fromkeys(drop_cols)))
 
         if join_type == "inner" and rows_before > 0 and right_rows > 0 and len(result) == 0:
             raise ValueError(
                 f"Inner join '{join.get('label')}' matched no rows. Check join keys "
-                f"({left_col} = {right_col}) and value formats."
+                f"({format_join_keys_display(join)}) and value formats."
             )
 
     snapshot_fn(db, job_id, primary.table_id, primary.table_name, result)
@@ -375,16 +430,29 @@ def add_join_source(
 
     join_id = str(uuid.uuid4())
     source_kind = str(payload.get("source_kind") or "file").lower()
-    join_type = str(payload.get("join_type") or "left").lower()
+    join_type = str(payload.get("join_type") or "outer").lower()
     if join_type not in JOIN_TYPES:
-        join_type = "left"
+        join_type = "outer"
 
-    left_key = str(payload.get("left_key") or "").strip()
-    right_key = str(payload.get("right_key") or "").strip()
-    if not left_key or not right_key:
-        raise ValueError("left_key and right_key are required.")
+    join_keys: list[dict[str, str]] = []
+    raw_keys = payload.get("join_keys")
+    if isinstance(raw_keys, list):
+        for item in raw_keys:
+            if isinstance(item, dict):
+                lk = str(item.get("left_key") or "").strip()
+                rk = str(item.get("right_key") or "").strip()
+                if lk and rk:
+                    join_keys.append({"left_key": lk, "right_key": rk})
+    if not join_keys:
+        lk = str(payload.get("left_key") or "").strip()
+        rk = str(payload.get("right_key") or "").strip()
+        if lk and rk:
+            join_keys = [{"left_key": lk, "right_key": rk}]
+    if not join_keys:
+        raise ValueError("At least one join key pair is required.")
 
     selected_columns = normalize_selected_columns(payload.get("selected_columns"))
+    column_aliases = normalize_column_aliases(payload.get("column_aliases"))
     label = str(payload.get("label") or "").strip() or f"join_{join_id[:8]}"
 
     entry: dict[str, Any] = {
@@ -392,9 +460,11 @@ def add_join_source(
         "label": label,
         "source_kind": source_kind,
         "join_type": join_type,
-        "left_key": left_key,
-        "right_key": right_key,
+        "join_keys": join_keys,
+        "left_key": join_keys[0]["left_key"],
+        "right_key": join_keys[0]["right_key"],
         "selected_columns": selected_columns,
+        "column_aliases": column_aliases,
     }
 
     join_file_dest: str | None = None
