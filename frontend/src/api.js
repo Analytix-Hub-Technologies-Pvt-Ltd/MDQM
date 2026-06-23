@@ -246,6 +246,10 @@ export const listJobJoinSources = async (jobId) => {
     return apiClient.get(`/jobs/${jobId}/join-sources`);
 };
 
+export const recommendJobJoinKeys = async (jobId, payload) => {
+    return apiClient.post(`/jobs/${jobId}/join-sources/recommend-keys`, payload);
+};
+
 export const addJobJoinSource = async (jobId, payload, file = null) => {
     if (file) {
         const formData = new FormData();

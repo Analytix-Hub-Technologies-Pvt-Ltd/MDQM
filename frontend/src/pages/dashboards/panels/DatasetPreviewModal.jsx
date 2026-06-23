@@ -10,6 +10,25 @@ import { AppModal, ModalSection, ModalAlert } from "@/components/layout/AppModal
 import { Button } from "@/components/ui/button";
 import DatasetTableInventoryBlock from "@/components/enterprise/DatasetTableInventoryBlock";
 import DatasetCatalogChartInsights from "@/components/enterprise/DatasetCatalogChartInsights";
+import { formatJoinKeysLabel } from "@/components/enterprise/JoinKeyPairsEditor";
+
+function formatJoinColumns(join) {
+  const cols = join?.selected_columns || [];
+  const aliases = join?.column_aliases || {};
+  if (!cols.length) return "";
+  return cols
+    .map((c) => {
+      const alias = aliases[c];
+      return alias && alias !== c ? `${c} → ${alias}` : c;
+    })
+    .join(", ");
+}
+
+function joinKeysText(join) {
+  if (join?.join_keys?.length) return formatJoinKeysLabel(join.join_keys);
+  if (join?.left_key && join?.right_key) return `${join.left_key} = ${join.right_key}`;
+  return "—";
+}
 
 function formatDetail(d) {
   if (typeof d === "string") return d;
@@ -235,12 +254,12 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
                       <div className="min-w-0 text-xs">
                         <p className="font-semibold text-foreground">{j.label || j.file_name || j.table_name || "Join source"}</p>
                         <p className="text-muted-foreground">
-                          {(j.source_kind || "file").toUpperCase()} · {(j.join_type || "left").toUpperCase()} JOIN ·{" "}
-                          <span className="font-mono">{j.left_key}</span> = <span className="font-mono">{j.right_key}</span>
+                          {(j.source_kind || "file").toUpperCase()} · {(j.join_type || "outer").toUpperCase()} JOIN ·{" "}
+                          <span className="font-mono">{joinKeysText(j)}</span>
                         </p>
                         {j.selected_columns?.length ? (
                           <p className="mt-1 text-[10px] text-muted-foreground line-clamp-2">
-                            Columns: {j.selected_columns.join(", ")}
+                            Columns: {formatJoinColumns(j)}
                           </p>
                         ) : null}
                       </div>
@@ -271,7 +290,7 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
                       <div className="min-w-0 text-xs">
                         <p className="font-semibold text-foreground">{j.label || j.file_name || "Failed join"}</p>
                         <p className="text-muted-foreground">
-                          Not materialized · <span className="font-mono">{j.left_key}</span> = <span className="font-mono">{j.right_key}</span>
+                          Not materialized · <span className="font-mono">{joinKeysText(j)}</span>
                         </p>
                       </div>
                       <Button
