@@ -240,6 +240,7 @@ if True:
     app.include_router(reports_router)
     app.include_router(platform_admin_router)
     app.include_router(enterprise_router)
+    app.include_router(tickets_router)
 
 
     @app.middleware("http")
