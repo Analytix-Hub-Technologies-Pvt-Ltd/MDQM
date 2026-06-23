@@ -594,3 +594,41 @@ class EnterpriseReportExport(Base):
     payload = Column(JSON, nullable=True)
     created_by_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
+
+class EnterpriseTicket(Base):
+    __tablename__ = "tickets"
+    __table_args__ = {"schema": "enterprise"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String(150), nullable=False)
+    description = Column(Text, nullable=False)
+    category = Column(String(50), nullable=True, default="Bug Issue")
+    priority = Column(String(20), nullable=False, default="Medium")
+    status = Column(String(50), nullable=False, default="Open", index=True)
+
+    created_by_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=False, index=True)
+    created_by_role = Column(String(50), nullable=True)
+    assigned_to_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
+
+    fix_note = Column(Text, nullable=True)
+    fixed_by_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
+    verified_by_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
+    closed_by_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
+
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+    fixed_at = Column(DateTime, nullable=True)
+    verified_at = Column(DateTime, nullable=True)
+    closed_at = Column(DateTime, nullable=True)
+    
+
+
+class EnterpriseTicketComment(Base):
+    __tablename__ = "ticket_comments"
+    __table_args__ = {"schema": "enterprise"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticket_id = Column(Integer, ForeignKey("enterprise.tickets.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=False, index=True)
+    comment = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=func.now(), nullable=False)

@@ -16,6 +16,7 @@ import LineagePage from "./pages/LineagePage";
 import AuditLogsPage from "./pages/AuditLogsPage";
 import StewardshipPage from "./pages/StewardshipPage";
 import DeveloperToolsPage from "./pages/DeveloperToolsPage";
+import TicketsPage from "./pages/TicketsPage";
 import ProtectedRoute from "./auth/ProtectedRoute";
 import PermissionGuard from "./auth/PermissionGuard";
 import { PERMISSIONS } from "./auth/permissions";
@@ -76,6 +77,15 @@ function AppShell() {
           element={
             <PermissionGuard require={PERMISSIONS.GOVERNANCE_VIEW}>
               <GovernanceRoute />
+            </PermissionGuard>
+          }
+        />
+        <Route path="/connections" element={<DbConnectionsPage />} />
+        <Route
+          path="/tickets"
+          element={
+            <PermissionGuard require={PERMISSIONS.TICKETS_VIEW}>
+              <TicketsPage />
             </PermissionGuard>
           }
         />

@@ -60,6 +60,7 @@ if True:
     from routers.reports.router import router as reports_router
     from routers.stewardship.router import router as stewardship_router
     from routers.enterprise.router import router as enterprise_router
+    from routers.tickets.router import router as tickets_router
     from auth.deps import get_current_user
     app = FastAPI(title="Data Quality Engine")
     logger = logging.getLogger("mdqm.backend")
