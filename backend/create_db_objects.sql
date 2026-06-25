@@ -6,6 +6,9 @@ CREATE SCHEMA IF NOT EXISTS enterprise;
 CREATE SCHEMA IF NOT EXISTS governance;
 CREATE SCHEMA IF NOT EXISTS metadata;
 CREATE SCHEMA IF NOT EXISTS quarantine;
+-- Per-dataset physical tables: one table per dataset in this schema
+CREATE SCHEMA IF NOT EXISTS datasets;
+
 
 CREATE TABLE IF NOT EXISTS auth.access_requests (
     id SERIAL NOT NULL,
@@ -500,6 +503,30 @@ CREATE TABLE IF NOT EXISTS metadata.dataset_base_backup_rows (
 );
 
 CREATE INDEX IF NOT EXISTS ix_metadata_dataset_base_backup_job ON metadata.dataset_base_backup_rows (job_id);
+
+-- Registry for per-dataset physical tables in the datasets schema
+CREATE TABLE IF NOT EXISTS metadata.dataset_physical_tables (
+    id SERIAL NOT NULL,
+    job_id INTEGER NOT NULL,
+    table_id INTEGER NOT NULL,
+    physical_table_name VARCHAR(256) NOT NULL,
+    schema_name VARCHAR(64) NOT NULL DEFAULT 'datasets',
+    column_names TEXT[] NOT NULL DEFAULT '{}',
+    row_count INTEGER NOT NULL DEFAULT 0,
+    has_base_backup BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (id),
+    UNIQUE (job_id, table_id),
+    FOREIGN KEY (job_id) REFERENCES metadata.jobs (job_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_metadata_dataset_physical_tables_job_id
+    ON metadata.dataset_physical_tables (job_id);
+CREATE INDEX IF NOT EXISTS ix_metadata_dataset_physical_tables_job_table
+    ON metadata.dataset_physical_tables (job_id, table_id);
+
+
 
 CREATE TABLE IF NOT EXISTS quarantine.logs (
     log_id SERIAL NOT NULL,

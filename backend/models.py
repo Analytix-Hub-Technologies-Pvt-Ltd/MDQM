@@ -1,4 +1,5 @@
 from sqlalchemy import BigInteger, Column, Integer, String, Boolean, ForeignKey, DateTime, Text, ForeignKeyConstraint, JSON, UniqueConstraint
+from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -124,6 +125,31 @@ class DatasetBaseBackupRow(Base):
     job_id = Column(Integer, ForeignKey("metadata.jobs.job_id"), nullable=False, index=True)
     row_index = Column(Integer, nullable=False)
     row_data = Column(JSON, nullable=False)
+
+
+class DatasetPhysicalTable(Base):
+    """Registry: one row per physical per-dataset table in the 'datasets' schema."""
+    __tablename__ = "dataset_physical_tables"
+    __table_args__ = (
+        UniqueConstraint("job_id", "table_id", name="uq_metadata_dataset_physical_tables_job_table"),
+        {"schema": "metadata"},
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_id = Column(Integer, ForeignKey("metadata.jobs.job_id"), nullable=False, index=True)
+    table_id = Column(Integer, nullable=False, index=True)
+    # Fully-qualified physical table name (without schema), e.g. 'job_1_tbl_2'
+    physical_table_name = Column(String(256), nullable=False)
+    schema_name = Column(String(64), nullable=False, default="datasets")
+    # Ordered list of user-data column names (as stored in the physical table)
+    column_names = Column(PG_ARRAY(String), nullable=False, default=list)
+    row_count = Column(Integer, nullable=False, default=0)
+    # Whether a pre-join base backup physical table also exists
+    has_base_backup = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+
+
 
 
 class Rule(Base):

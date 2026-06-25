@@ -80,7 +80,12 @@ if True:
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS metadata"))
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS quarantine"))
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS enterprise"))
+            # Per-dataset physical tables live in this dedicated schema
+            conn.execute(text("CREATE SCHEMA IF NOT EXISTS datasets"))
         models.Base.metadata.create_all(bind=engine)
+        # Ensure the datasets schema is present (also called by physical_table_manager)
+        from services.physical_table_manager import ensure_datasets_schema
+        ensure_datasets_schema(engine)
         # SQLAlchemy create_all does not alter existing tables; add column if model gained it via migration.
         with engine.begin() as conn:
             conn.execute(
@@ -183,7 +188,7 @@ if True:
                 conn.execute(
                     text(f"ALTER TABLE enterprise.glossary ADD COLUMN IF NOT EXISTS {col_def}")
                 )
-        print("[mdqm] Database schema ready.", file=sys.stderr, flush=True)
+        print("[mdqm] Database schema ready (including datasets schema for physical tables).", file=sys.stderr, flush=True)
 
     def _migrate_job_source_config():
         from services.job_source_config_service import migrate_job_source_json_to_columns
