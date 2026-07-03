@@ -1,9 +1,10 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { LayoutDashboard, Inbox } from "lucide-react";
+import { LayoutDashboard, Inbox, Workflow } from "lucide-react";
 
 const links = [
   { to: "/admin", label: "Overview", icon: LayoutDashboard, end: true },
   { to: "/admin/access-requests", label: "Access requests", icon: Inbox, end: false },
+  { to: "/admin/jobs", label: "Job Audit Log", icon: Workflow, end: false },
 ];
 
 export default function AdminDashboardLayout() {

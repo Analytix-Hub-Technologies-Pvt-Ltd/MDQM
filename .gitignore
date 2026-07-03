@@ -1,4 +1,4 @@
-# Logs
+﻿# Logs
 logs
 *.log
 npm-debug.log*
@@ -7,54 +7,46 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
+# Node modules
+node_modules/
+
+# Frontend builds
+dist/
+dist-ssr/
 *.local
 
 # Editor directories and files
-.vscode/*
+.vscode/
 !.vscode/extensions.json
-.idea
-.DS_Store
+.idea/
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-venv/
-env/
-.venv/
-
 # OS Files
 .DS_Store
 Thumbs.db
 
-# IDEs
-.vscode/
-.idea/
+# Python
+__pycache__/
+*.py[cod]
+*.class
+venv/
+env/
+.venv/
+backend/.cache/
 
-# Logs & Databases
+# Databases
 *.sqlite
+
+# Environment variables
 .env
 .env.local
 
 # Local saved DB connection presets (may contain secrets)
 backend/saved_connections.json
 
-# Ignore the virtual environment inside backend
-backend/MDQM/
-
 # Ignore local test data and results
 backend/uploads/
-backend/uploads/*.csv
-backend/.cache/
-
-# Node modules (if you haven't already)
-node_modules/
-frontend/node_modules/

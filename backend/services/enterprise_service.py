@@ -880,6 +880,22 @@ def list_recycled_datasets(db: Session, page: int, page_size: int, name_q: str |
 
 def _delete_job_and_children(db: Session, job_id: int) -> None:
     """Remove a DQ job and all metadata children (catalog delete helper)."""
+    # 1. Clean up physical tables/snapshots registered for this job
+    from services.dataset_row_storage_service import delete_snapshot
+    table_metadata_rows = db.query(models.TableMetadata).filter(models.TableMetadata.job_id == job_id).all()
+    for t in table_metadata_rows:
+        try:
+            delete_snapshot(db, job_id, t.table_id)
+        except Exception:
+            pass
+
+    # 2. Clean up any remaining physical table registry entries
+    db.query(models.DatasetPhysicalTable).filter(models.DatasetPhysicalTable.job_id == job_id).delete()
+
+    # 3. Clean up other references (validation results and quarantine records)
+    db.query(models.EnterpriseValidationResult).filter(models.EnterpriseValidationResult.job_id == job_id).delete()
+    db.query(models.EnterpriseQuarantineRecord).filter(models.EnterpriseQuarantineRecord.job_id == job_id).delete()
+
     db.query(models.DatasetRowCell).filter(models.DatasetRowCell.job_id == job_id).delete()
     db.query(models.DatasetRow).filter(models.DatasetRow.job_id == job_id).delete()
     db.query(models.DatasetBaseBackupRow).filter(models.DatasetBaseBackupRow.job_id == job_id).delete()
@@ -902,6 +918,11 @@ def permanent_delete_dataset(db: Session, dataset_id: int) -> models.EnterpriseD
     if not row:
         return None
     job_id = row.job_id
+
+    # Clean up golden record merge configs and candidates to prevent ForeignKeyViolation
+    db.query(models.GoldenMergeCandidate).filter(models.GoldenMergeCandidate.dataset_id == dataset_id).delete()
+    db.query(models.GoldenMergeConfig).filter(models.GoldenMergeConfig.dataset_id == dataset_id).delete()
+
     db.delete(row)
     if job_id:
         _delete_job_and_children(db, job_id)
@@ -1091,7 +1112,7 @@ def build_dataset_inventory_preview(
                 models.ColumnMetadata.job_id == job_id,
                 models.ColumnMetadata.table_id == t.table_id,
             )
-            .order_by(models.ColumnMetadata.column_name.asc())
+            .order_by(models.ColumnMetadata.column_id.asc())
             .all()
         )
         col_list = [

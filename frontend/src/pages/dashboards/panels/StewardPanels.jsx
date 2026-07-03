@@ -9,10 +9,13 @@ import {
   enterpriseValidationResults,
   enterpriseValidationRun,
   STEWARDSHIP_REFRESH_EVENT,
+  enterpriseGovernanceDatasets,
+  enterpriseGovernanceDatasetPreview,
 } from "../enterpriseApi";
 import StewardshipTasksTable from "@/components/stewardship/StewardshipTasksTable";
 import { useAuth } from "@/auth/AuthContext";
 import { ROLES } from "@/auth/rolePermissions";
+import GoldenMergePanel from "@/components/enterprise/GoldenMergePanel";
 
 const btnOutline =
   "inline-flex items-center rounded border border-border bg-card px-3 py-2 text-xs font-medium uppercase tracking-wider text-foreground hover:bg-muted";
@@ -145,6 +148,93 @@ function StewardTasksTab() {
   );
 }
 
+function StewardMatchingTab() {
+  const [datasets, setDatasets] = useState([]);
+  const [selectedDatasetId, setSelectedDatasetId] = useState("");
+  const [selectedDatasetPreview, setSelectedDatasetPreview] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [datasetsLoading, setDatasetsLoading] = useState(true);
+
+  useEffect(() => {
+    setDatasetsLoading(true);
+    enterpriseGovernanceDatasets({ page: 1, page_size: 100 })
+      .then((res) => {
+        const items = res?.data?.items ?? [];
+        setDatasets(items);
+      })
+      .catch(() => setDatasets([]))
+      .finally(() => setDatasetsLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (!selectedDatasetId) {
+      setSelectedDatasetPreview(null);
+      return;
+    }
+    setLoading(true);
+    enterpriseGovernanceDatasetPreview(selectedDatasetId)
+      .then((res) => {
+        setSelectedDatasetPreview(res?.data ?? res);
+      })
+      .catch(() => setSelectedDatasetPreview(null))
+      .finally(() => setLoading(false));
+  }, [selectedDatasetId]);
+
+  return (
+    <div className="space-y-4">
+      <div className="enterprise-card p-4 space-y-3 bg-card text-foreground rounded-lg border border-border">
+        <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+          Select dataset for golden merge review
+        </h3>
+        <div>
+          {datasetsLoading ? (
+            <p className="text-xs text-muted-foreground">Loading datasets…</p>
+          ) : (
+            <select
+              value={selectedDatasetId}
+              onChange={(e) => setSelectedDatasetId(e.target.value)}
+              className="min-w-[250px] rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            >
+              <option value="">Select a dataset…</option>
+              {datasets.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+      </div>
+
+      {loading && <p className="text-xs text-muted-foreground">Loading dataset details…</p>}
+
+      {!loading && selectedDatasetPreview && (() => {
+        const ds = selectedDatasetPreview.dataset;
+        const job = selectedDatasetPreview.linked_job;
+        const joinSources = selectedDatasetPreview.join_sources || [];
+        const activeJoins = joinSources.filter((j) => j.materialized !== false && j.status !== "broken");
+
+        if (activeJoins.length === 0) {
+          return (
+            <p className="text-xs text-muted-foreground bg-muted/20 border border-border rounded p-4">
+              This dataset has no active joined data sources. Golden record merging is only available for joined datasets.
+            </p>
+          );
+        }
+
+        return (
+          <GoldenMergePanel
+            datasetId={ds.id}
+            jobId={job?.job_id}
+            joinSources={activeJoins}
+            readOnly={true}
+          />
+        );
+      })()}
+    </div>
+  );
+}
+
 export function renderStewardTab(tabId) {
   switch (tabId) {
     case "rules":
@@ -229,15 +319,7 @@ export function renderStewardTab(tabId) {
         />
       );
     case "matching":
-      return (
-        <div className="enterprise-card p-5 text-sm text-muted-foreground">
-          <h3 className="enterprise-title mb-2">Fuzzy matching</h3>
-          <p>Review fuzzy match candidates from the Quarantine workspace.</p>
-          <Link to="/quarantine" className="text-primary font-medium hover:underline mt-2 inline-block">
-            Go to Quarantine →
-          </Link>
-        </div>
-      );
+      return <StewardMatchingTab />;
     case "tasks":
       return <StewardTasksTab />;
     case "reports":

@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import DatasetTableInventoryBlock from "@/components/enterprise/DatasetTableInventoryBlock";
 import DatasetCatalogChartInsights from "@/components/enterprise/DatasetCatalogChartInsights";
 import { formatJoinKeysLabel } from "@/components/enterprise/JoinKeyPairsEditor";
+import GoldenMergePanel from "@/components/enterprise/GoldenMergePanel";
 
 function formatJoinColumns(join) {
   const cols = join?.selected_columns || [];
@@ -278,6 +279,12 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
                 </div>
               </ModalSection>
             ) : null}
+
+            {activeJoins.length > 0 && ds && job && (
+              <ModalSection title="Golden records">
+                <GoldenMergePanel datasetId={ds.id} jobId={job.job_id} joinSources={activeJoins} />
+              </ModalSection>
+            )}
 
             {brokenJoins.length > 0 ? (
               <ModalSection title="Incomplete joins">

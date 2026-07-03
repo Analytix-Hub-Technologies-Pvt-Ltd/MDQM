@@ -3,7 +3,7 @@ import { getColumnStats, renameColumn, standardizeDates } from "../api";
 // 1. ADD Wand2 to your imports
 import { Edit2, Check, X, Wand2 } from "lucide-react";
 
-const ColumnAudit = ({ tableId }) => {
+const ColumnAudit = ({ tableId, readOnly = false }) => {
   const [columns, setColumns] = useState([]);
   const [editingCol, setEditingCol] = useState(null);
   const [newName, setNewName] = useState("");
@@ -116,31 +116,33 @@ const ColumnAudit = ({ tableId }) => {
                       {col.column_name}
                     </span>
 
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => {
-                          setEditingCol(col.column_name);
-                          setNewName(col.column_name);
-                        }}
-                        className="text-gray-400 cursor-pointer hover:text-black transition-colors p-1"
-                        title="Rename Column"
-                      >
-                        <Edit2 size={14} />
-                      </button>
-
-                      {/* 2. BULLETPROOF CHECK: Case-insensitive and handles undefined */}
-                      {(col.data_type?.toLowerCase() === "date" ||
-                        col.column_name.toLowerCase().includes("date") ||
-                        col.column_name.includes("D.O.B")) && (
+                    {!readOnly && (
+                      <div className="flex items-center gap-1">
                         <button
-                          onClick={() => handleAutoFormat(col.column_name)}
-                          className="text-blue-400 cursor-pointer hover:text-blue-600 transition-colors p-1"
-                          title="Auto-Format Dates"
+                          onClick={() => {
+                            setEditingCol(col.column_name);
+                            setNewName(col.column_name);
+                          }}
+                          className="text-gray-400 cursor-pointer hover:text-black transition-colors p-1"
+                          title="Rename Column"
                         >
-                          <Wand2 size={14} />
+                          <Edit2 size={14} />
                         </button>
-                      )}
-                    </div>
+
+                        {/* 2. BULLETPROOF CHECK: Case-insensitive and handles undefined */}
+                        {(col.data_type?.toLowerCase() === "date" ||
+                          col.column_name.toLowerCase().includes("date") ||
+                          col.column_name.includes("D.O.B")) && (
+                          <button
+                            onClick={() => handleAutoFormat(col.column_name)}
+                            className="text-blue-400 cursor-pointer hover:text-blue-600 transition-colors p-1"
+                            title="Auto-Format Dates"
+                          >
+                            <Wand2 size={14} />
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

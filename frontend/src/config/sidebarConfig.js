@@ -29,7 +29,6 @@ export const SIDEBAR_CONFIG = {
   [ROLES.ADMIN]: [
     { group: "Core", items: [
       { label: "Dashboard", path: "/dashboard", icon: LayoutDashboard, permission: PERMISSIONS.DASHBOARD_VIEW },
-      { label: "Jobs", path: "/jobs", icon: Workflow, permission: PERMISSIONS.JOBS_VIEW },
       { label: "DB Connections", path: "/connections", icon: Database, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "Rules", path: "/rules", icon: ShieldCheck, permission: PERMISSIONS.RULES_VIEW },
     ] },
@@ -55,7 +54,6 @@ export const SIDEBAR_CONFIG = {
     { group: "Stewardship", items: [
       { label: "Dashboard", path: "/dashboard", icon: LayoutDashboard, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "DB Connections", path: "/connections", icon: Database, permission: PERMISSIONS.DASHBOARD_VIEW },
-      { label: "Data Quality", path: "/jobs", icon: Workflow, permission: PERMISSIONS.JOBS_VIEW },
       { label: "Rules", path: "/rules", icon: ShieldCheck, permission: PERMISSIONS.RULES_VIEW },
       { label: "Stewardship", path: "/stewardship", icon: UserCheck, permission: PERMISSIONS.STEWARDSHIP_VIEW },
       { label: "Quarantine", path: "/quarantine", icon: DatabaseZap, permission: PERMISSIONS.QUARANTINE_VIEW },
@@ -81,7 +79,6 @@ export const SIDEBAR_CONFIG = {
   [ROLES.DEVELOPER]: [
     { group: "Engineering", items: [
       { label: "Dashboard", path: "/dashboard", icon: LayoutDashboard, permission: PERMISSIONS.DASHBOARD_VIEW },
-      { label: "Jobs", path: "/jobs", icon: Workflow, permission: PERMISSIONS.JOBS_VIEW },
       { label: "DB Connections", path: "/connections", icon: Database, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "Rules", path: "/rules", icon: ShieldCheck, permission: PERMISSIONS.RULES_VIEW },
       { label: "Lineage", path: "/lineage", icon: Network, permission: PERMISSIONS.LINEAGE_VIEW },
@@ -100,7 +97,6 @@ export const SIDEBAR_CONFIG = {
     { group: "Analytics", items: [
       { label: "Dashboard", path: "/dashboard", icon: LayoutDashboard, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "Reports", path: "/reports", icon: FileBarChart, permission: PERMISSIONS.REPORTS_VIEW },
-      { label: "Jobs", path: "/jobs", icon: Workflow, permission: PERMISSIONS.JOBS_VIEW },
       { label: "DB Connections", path: "/connections", icon: Database, permission: PERMISSIONS.DASHBOARD_VIEW },
     ] },
   ],
@@ -108,7 +104,7 @@ export const SIDEBAR_CONFIG = {
     { group: "Workspace", items: [
       { label: "Overview", path: "/dashboard", icon: LayoutDashboard, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "Data catalog", path: "/dashboard?tab=catalog", icon: LibraryBig, permission: PERMISSIONS.GOVERNANCE_VIEW },
-      { label: "Quality", path: "/dashboard?tab=quality", icon: Sparkles, permission: PERMISSIONS.JOBS_VIEW },
+      { label: "Quality", path: "/dashboard?tab=quality", icon: Sparkles, permission: PERMISSIONS.RULES_VIEW },
       { label: "DB Connections", path: "/connections", icon: Database, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "Glossary", path: "/dashboard?tab=glossary", icon: BookMarked, permission: PERMISSIONS.GOVERNANCE_VIEW },
       { label: "Data flow", path: "/dashboard?tab=lineage", icon: Share2, permission: PERMISSIONS.LINEAGE_VIEW },

@@ -21,9 +21,21 @@ import {
 } from "../../../api";
 import { enterpriseGovernanceDatasetCreate } from "../enterpriseApi";
 
+function nameFromFileName(fileName) {
+  if (!fileName) return "";
+  const base = String(fileName).replace(/\.[^.]+$/, "");
+  return base || String(fileName);
+}
+
+function nameFromPath(path) {
+  if (!path?.trim()) return "";
+  return nameFromFileName(path.trim().split(/[/\\]/).pop() || "");
+}
+
 /** Lightweight create flow: job name + file upload/path OR DB table — no rules wizard (use Jobs later if needed). */
 export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
   const [name, setName] = useState("");
+  const [nameEdited, setNameEdited] = useState(false);
   const [mode, setMode] = useState("file");
   const [file, setFile] = useState(null);
   const [filePath, setFilePath] = useState("");
@@ -134,6 +146,7 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
 
   const reset = () => {
     setName("");
+    setNameEdited(false);
     setMode("file");
     setFile(null);
     setFilePath("");
@@ -155,6 +168,11 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
     setAvailableColumns([]);
     setSelectedColumns([]);
     setColumnsLoading(false);
+  };
+
+  const applyAutoName = (nextName) => {
+    if (!nextName || nameEdited) return;
+    setName(nextName);
   };
 
   const setColumnsFromList = (cols = []) => {
@@ -472,7 +490,10 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
             className={modalInputClass}
             placeholder="e.g. CUSTOMER_MASTER"
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => {
+              setName(e.target.value);
+              setNameEdited(true);
+            }}
           />
         </div>
 
@@ -516,7 +537,10 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
                 file={file}
                 onFileChange={(selected) => {
                   setFile(selected);
-                  if (selected) setFilePath("");
+                  if (selected) {
+                    setFilePath("");
+                    applyAutoName(nameFromFileName(selected.name));
+                  }
                   setColumnsFromList([]);
                 }}
               />
@@ -529,7 +553,10 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
                 value={filePath}
                 onChange={(e) => {
                   setFilePath(e.target.value);
-                  if (e.target.value.trim()) setFile(null);
+                  if (e.target.value.trim()) {
+                    setFile(null);
+                    applyAutoName(nameFromPath(e.target.value));
+                  }
                   setColumnsFromList([]);
                 }}
               />
@@ -657,7 +684,12 @@ export default function CreateDatasetLightModal({ open, onClose, onCreated }) {
                     id="create-ds-table"
                     className={cn(modalInputClass, "mt-1")}
                     value={selectedTable}
-                    onChange={(e) => setSelectedTable(e.target.value)}
+                    onChange={(e) => {
+                      setSelectedTable(e.target.value);
+                      if (e.target.value) {
+                        applyAutoName(e.target.value);
+                      }
+                    }}
                     disabled={tableOptions.length === 0}
                   >
                     <option value="">Select a table…</option>

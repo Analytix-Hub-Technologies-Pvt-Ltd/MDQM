@@ -215,6 +215,12 @@ def _load_base_dataframe(db: Session, job: models.Job) -> pd.DataFrame:
     df = load_snapshot_with_csv_fallback(db, job.job_id, primary.table_name, table_id=primary.table_id)
     if df is None:
         raise ValueError("Primary dataset has no loaded data. Upload or import base data before joining.")
+    
+    # Drop internal metadata columns from the base DataFrame before joining
+    drop_cols = [c for c in ["is_golden_record", "golden_remarks", "dq_remarks", "job_id", "table_id"] if c in df.columns]
+    if drop_cols:
+        df = df.drop(columns=drop_cols)
+        
     return normalize_dataframe_columns(df)
 
 

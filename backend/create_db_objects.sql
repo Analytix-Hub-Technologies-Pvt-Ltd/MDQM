@@ -1,618 +1,562 @@
--- Generated PostgreSQL DDL for MDQM backend required schemas and tables
--- Derived from backend SQLAlchemy models and migration scripts
-
+-- Generated PostgreSQL DDL for MDQM backend
 CREATE SCHEMA IF NOT EXISTS auth;
 CREATE SCHEMA IF NOT EXISTS enterprise;
 CREATE SCHEMA IF NOT EXISTS governance;
 CREATE SCHEMA IF NOT EXISTS metadata;
 CREATE SCHEMA IF NOT EXISTS quarantine;
--- Per-dataset physical tables: one table per dataset in this schema
 CREATE SCHEMA IF NOT EXISTS datasets;
 
-
-CREATE TABLE IF NOT EXISTS auth.access_requests (
-    id SERIAL NOT NULL,
-    full_name VARCHAR(255) NOT NULL,
-    username VARCHAR(64),
-    email VARCHAR(320) NOT NULL,
-    department VARCHAR(255),
-    reason TEXT,
-    status VARCHAR(32) NOT NULL,
-    requested_at TIMESTAMP WITHOUT TIME ZONE,
-    dataset_name VARCHAR(255),
-    access_type VARCHAR(32),
-    duration VARCHAR(64),
-    approver_name VARCHAR(255),
-    PRIMARY KEY (id)
+CREATE TABLE metadata.jobs (
+	job_id SERIAL NOT NULL, 
+	job_name TEXT, 
+	status TEXT, 
+	start_time TIMESTAMP WITHOUT TIME ZONE, 
+	end_time TIMESTAMP WITHOUT TIME ZONE, 
+	created_at TIMESTAMP WITHOUT TIME ZONE, 
+	db_source_config JSON, 
+	source_kind TEXT, 
+	source_connection_id INTEGER, 
+	source_host TEXT, 
+	source_port TEXT, 
+	source_db_user TEXT, 
+	source_dbname TEXT, 
+	source_db_type TEXT, 
+	source_schema_name TEXT, 
+	source_table_names TEXT, 
+	source_selected_columns TEXT, 
+	source_encrypted_db_pass TEXT, 
+	PRIMARY KEY (job_id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_auth_access_requests_email ON auth.access_requests (email);
-CREATE INDEX IF NOT EXISTS ix_auth_access_requests_id ON auth.access_requests (id);
-CREATE INDEX IF NOT EXISTS ix_auth_access_requests_username ON auth.access_requests (username);
-
-CREATE TABLE IF NOT EXISTS auth.permissions (
-    id SERIAL NOT NULL,
-    code VARCHAR(128) NOT NULL,
-    description TEXT,
-    PRIMARY KEY (id),
-    UNIQUE (code)
+CREATE TABLE metadata.table_metadata (
+	job_id INTEGER NOT NULL, 
+	table_id INTEGER NOT NULL, 
+	table_name TEXT, 
+	row_count INTEGER, 
+	data_updated_at TIMESTAMP WITHOUT TIME ZONE, 
+	PRIMARY KEY (job_id, table_id), 
+	FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_auth_permissions_id ON auth.permissions (id);
-
-CREATE TABLE IF NOT EXISTS auth.roles (
-    id SERIAL NOT NULL,
-    name VARCHAR(64) NOT NULL,
-    description TEXT,
-    PRIMARY KEY (id),
-    UNIQUE (name)
+CREATE TABLE metadata.column_metadata (
+	column_id SERIAL NOT NULL, 
+	job_id INTEGER, 
+	table_id INTEGER, 
+	column_name TEXT, 
+	data_type TEXT, 
+	description TEXT, 
+	description_generated_at TIMESTAMP WITHOUT TIME ZONE, 
+	PRIMARY KEY (column_id), 
+	FOREIGN KEY(job_id, table_id) REFERENCES metadata.table_metadata (job_id, table_id), 
+	FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_auth_roles_id ON auth.roles (id);
-
-CREATE TABLE IF NOT EXISTS auth.users (
-    id SERIAL NOT NULL,
-    full_name VARCHAR(255) NOT NULL,
-    username VARCHAR(64),
-    email VARCHAR(320) NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
-    role VARCHAR(32) NOT NULL,
-    is_active BOOLEAN NOT NULL,
-    created_at TIMESTAMP WITHOUT TIME ZONE,
-    created_by INTEGER,
-    invite_token_hash VARCHAR(128),
-    invite_expires_at TIMESTAMP WITHOUT TIME ZONE,
-    password_configured BOOLEAN NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(created_by) REFERENCES auth.users (id)
+CREATE TABLE metadata.dataset_rows (
+	id BIGSERIAL NOT NULL, 
+	job_id INTEGER NOT NULL, 
+	table_id INTEGER NOT NULL, 
+	row_index INTEGER NOT NULL, 
+	row_data JSON NOT NULL, 
+	is_golden_record BOOLEAN NOT NULL, 
+	dq_remarks TEXT, 
+	golden_remarks TEXT, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(job_id, table_id) REFERENCES metadata.table_metadata (job_id, table_id), 
+	CONSTRAINT uq_metadata_dataset_rows_job_table_row UNIQUE (job_id, table_id, row_index)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS ix_auth_users_email ON auth.users (email);
-CREATE INDEX IF NOT EXISTS ix_auth_users_id ON auth.users (id);
-CREATE UNIQUE INDEX IF NOT EXISTS ix_auth_users_username ON auth.users (username);
-
-CREATE TABLE IF NOT EXISTS enterprise.analytics_metrics (
-    id SERIAL NOT NULL,
-    metric_key VARCHAR(128) NOT NULL,
-    metric_value JSON NOT NULL,
-    domain VARCHAR(128),
-    captured_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id)
+CREATE TABLE metadata.dataset_row_cells (
+	id BIGSERIAL NOT NULL, 
+	job_id INTEGER NOT NULL, 
+	table_id INTEGER NOT NULL, 
+	row_index INTEGER NOT NULL, 
+	column_name TEXT NOT NULL, 
+	value_text TEXT, 
+	dq_passed BOOLEAN, 
+	dq_remark TEXT, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(job_id, table_id) REFERENCES metadata.table_metadata (job_id, table_id), 
+	CONSTRAINT uq_metadata_dataset_row_cells_job_table_row_col UNIQUE (job_id, table_id, row_index, column_name)
 );
 
-CREATE INDEX IF NOT EXISTS ix_enterprise_analytics_metrics_captured_at ON enterprise.analytics_metrics (captured_at);
-CREATE INDEX IF NOT EXISTS ix_enterprise_analytics_metrics_domain ON enterprise.analytics_metrics (domain);
-CREATE INDEX IF NOT EXISTS ix_enterprise_analytics_metrics_metric_key ON enterprise.analytics_metrics (metric_key);
-
-CREATE TABLE IF NOT EXISTS governance.lineage_nodes (
-    id SERIAL NOT NULL,
-    node_key VARCHAR(255) NOT NULL,
-    node_type VARCHAR(64) NOT NULL,
-    domain VARCHAR(128),
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    UNIQUE (node_key)
+CREATE TABLE metadata.dataset_base_backup_rows (
+	id BIGSERIAL NOT NULL, 
+	job_id INTEGER NOT NULL, 
+	row_index INTEGER NOT NULL, 
+	row_data JSON NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_metadata_dataset_base_backup_job_row UNIQUE (job_id, row_index), 
+	FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_governance_lineage_nodes_id ON governance.lineage_nodes (id);
-
-CREATE TABLE IF NOT EXISTS metadata.db_connections (
-    connection_id SERIAL NOT NULL,
-    connection_name VARCHAR NOT NULL,
-    host VARCHAR NOT NULL,
-    port VARCHAR,
-    username VARCHAR NOT NULL,
-    password VARCHAR,
-    created_at TIMESTAMP WITHOUT TIME ZONE,
-    PRIMARY KEY (connection_id),
-    UNIQUE (connection_name)
+CREATE TABLE metadata.dataset_physical_tables (
+	id SERIAL NOT NULL, 
+	job_id INTEGER NOT NULL, 
+	table_id INTEGER NOT NULL, 
+	physical_table_name TEXT NOT NULL, 
+	schema_name TEXT NOT NULL, 
+	column_names TEXT[] NOT NULL, 
+	row_count INTEGER NOT NULL, 
+	has_base_backup BOOLEAN NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_metadata_dataset_physical_tables_job_table UNIQUE (job_id, table_id), 
+	FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_metadata_db_connections_connection_id ON metadata.db_connections (connection_id);
-
-CREATE TABLE IF NOT EXISTS metadata.jobs (
-    job_id SERIAL NOT NULL,
-    job_name VARCHAR,
-    status VARCHAR,
-    start_time TIMESTAMP WITHOUT TIME ZONE,
-    end_time TIMESTAMP WITHOUT TIME ZONE,
-    created_at TIMESTAMP WITHOUT TIME ZONE,
-    PRIMARY KEY (job_id)
+CREATE TABLE metadata.rules (
+	rule_id SERIAL NOT NULL, 
+	job_id INTEGER, 
+	table_id INTEGER, 
+	column_name TEXT, 
+	data_type TEXT, 
+	rule_type TEXT, 
+	rule_value TEXT, 
+	is_active BOOLEAN, 
+	created_at TIMESTAMP WITHOUT TIME ZONE, 
+	PRIMARY KEY (rule_id), 
+	FOREIGN KEY(job_id, table_id) REFERENCES metadata.table_metadata (job_id, table_id), 
+	FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_metadata_jobs_job_id ON metadata.jobs (job_id);
-
-ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS db_source_config JSONB;
-ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_kind VARCHAR(64);
-ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_connection_id INTEGER;
-ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_host VARCHAR(255);
-ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_port VARCHAR(16);
-ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_db_user VARCHAR(128);
-ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_dbname VARCHAR(128);
-ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_db_type VARCHAR(32);
-ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_schema_name VARCHAR(128);
-ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_table_names TEXT;
-ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_selected_columns TEXT;
-ALTER TABLE metadata.jobs ADD COLUMN IF NOT EXISTS source_encrypted_db_pass TEXT;
-
-CREATE TABLE IF NOT EXISTS auth.role_permissions (
-    id SERIAL NOT NULL,
-    role_id INTEGER NOT NULL,
-    permission_id INTEGER NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(role_id) REFERENCES auth.roles (id),
-    FOREIGN KEY(permission_id) REFERENCES auth.permissions (id)
+CREATE TABLE metadata.table_stats (
+	stat_id SERIAL NOT NULL, 
+	job_id INTEGER, 
+	table_id INTEGER, 
+	table_name TEXT, 
+	start_time TIMESTAMP WITHOUT TIME ZONE, 
+	end_time TIMESTAMP WITHOUT TIME ZONE, 
+	total_rows INTEGER, 
+	validation_errors INTEGER, 
+	fuzzy_errors INTEGER, 
+	good_rows INTEGER, 
+	PRIMARY KEY (stat_id), 
+	FOREIGN KEY(job_id, table_id) REFERENCES metadata.table_metadata (job_id, table_id), 
+	FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_auth_role_permissions_id ON auth.role_permissions (id);
-
-CREATE TABLE IF NOT EXISTS enterprise.access_logs (
-    id SERIAL NOT NULL,
-    user_id INTEGER,
-    resource VARCHAR(255) NOT NULL,
-    action VARCHAR(128) NOT NULL,
-    ip_address VARCHAR(64),
-    meta JSON,
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(user_id) REFERENCES auth.users (id)
+CREATE TABLE quarantine.logs (
+	log_id SERIAL NOT NULL, 
+	job_id INTEGER, 
+	table_name TEXT, 
+	row_id INTEGER, 
+	column_name TEXT, 
+	error_type TEXT, 
+	error_value TEXT, 
+	description TEXT, 
+	fuzzy_score INTEGER, 
+	master_match TEXT, 
+	created_at TIMESTAMP WITHOUT TIME ZONE, 
+	PRIMARY KEY (log_id), 
+	FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_enterprise_access_logs_created_at ON enterprise.access_logs (created_at);
-CREATE INDEX IF NOT EXISTS ix_enterprise_access_logs_resource ON enterprise.access_logs (resource);
-CREATE INDEX IF NOT EXISTS ix_enterprise_access_logs_user_id ON enterprise.access_logs (user_id);
-
-CREATE TABLE IF NOT EXISTS enterprise.alert_subscriptions (
-    id SERIAL NOT NULL,
-    user_id INTEGER NOT NULL,
-    dataset_name VARCHAR(255) NOT NULL,
-    threshold INTEGER NOT NULL,
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(user_id) REFERENCES auth.users (id)
+CREATE TABLE metadata.master_tables (
+	id SERIAL NOT NULL, 
+	job_id INTEGER, 
+	table_id INTEGER, 
+	table_name TEXT, 
+	master_value TEXT, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(job_id, table_id) REFERENCES metadata.table_metadata (job_id, table_id), 
+	FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_enterprise_alert_subscriptions_user_id ON enterprise.alert_subscriptions (user_id);
-
-CREATE TABLE IF NOT EXISTS enterprise.api_logs (
-    id SERIAL NOT NULL,
-    method VARCHAR(16) NOT NULL,
-    path VARCHAR(512) NOT NULL,
-    status_code INTEGER,
-    duration_ms INTEGER,
-    user_id INTEGER,
-    correlation_id VARCHAR(64),
-    ip_address VARCHAR(64),
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(user_id) REFERENCES auth.users (id)
+CREATE TABLE metadata.db_connections (
+	connection_id SERIAL NOT NULL, 
+	connection_name TEXT NOT NULL, 
+	host TEXT NOT NULL, 
+	port TEXT, 
+	username TEXT NOT NULL, 
+	password TEXT, 
+	user_id INTEGER, 
+	db_type TEXT, 
+	dbname TEXT, 
+	created_at TIMESTAMP WITHOUT TIME ZONE, 
+	PRIMARY KEY (connection_id), 
+	CONSTRAINT uq_db_connections_name_user UNIQUE (connection_name, user_id), 
+	FOREIGN KEY(user_id) REFERENCES auth.users (id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_enterprise_api_logs_correlation_id ON enterprise.api_logs (correlation_id);
-CREATE INDEX IF NOT EXISTS ix_enterprise_api_logs_created_at ON enterprise.api_logs (created_at);
-CREATE INDEX IF NOT EXISTS ix_enterprise_api_logs_path ON enterprise.api_logs (path);
-CREATE INDEX IF NOT EXISTS ix_enterprise_api_logs_user_id ON enterprise.api_logs (user_id);
-
-CREATE TABLE IF NOT EXISTS enterprise.business_reports (
-    id SERIAL NOT NULL,
-    title VARCHAR(255) NOT NULL,
-    report_type VARCHAR(64) NOT NULL,
-    dataset_name VARCHAR(255),
-    status VARCHAR(32) NOT NULL,
-    quality_score INTEGER,
-    last_refreshed_label VARCHAR(64),
-    external_url VARCHAR(512),
-    user_id INTEGER,
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(user_id) REFERENCES auth.users (id)
+CREATE TABLE metadata.db_connection_shares (
+	share_id SERIAL NOT NULL, 
+	connection_id INTEGER NOT NULL, 
+	shared_user_id INTEGER NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE, 
+	PRIMARY KEY (share_id), 
+	CONSTRAINT uq_db_connection_shares UNIQUE (connection_id, shared_user_id), 
+	FOREIGN KEY(connection_id) REFERENCES metadata.db_connections (connection_id), 
+	FOREIGN KEY(shared_user_id) REFERENCES auth.users (id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_enterprise_business_reports_user_id ON enterprise.business_reports (user_id);
-
-CREATE TABLE IF NOT EXISTS enterprise.compliance_reports (
-    id SERIAL NOT NULL,
-    title VARCHAR(255) NOT NULL,
-    framework VARCHAR(64) NOT NULL,
-    status VARCHAR(32) NOT NULL,
-    body TEXT,
-    created_by_user_id INTEGER,
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(created_by_user_id) REFERENCES auth.users (id)
+CREATE TABLE auth.users (
+	id SERIAL NOT NULL, 
+	full_name TEXT NOT NULL, 
+	username TEXT, 
+	email TEXT NOT NULL, 
+	password_hash TEXT NOT NULL, 
+	role TEXT NOT NULL, 
+	is_active BOOLEAN NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE, 
+	created_by INTEGER, 
+	invite_token_hash TEXT, 
+	invite_expires_at TIMESTAMP WITHOUT TIME ZONE, 
+	password_configured BOOLEAN NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(created_by) REFERENCES auth.users (id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_enterprise_compliance_reports_framework ON enterprise.compliance_reports (framework);
-CREATE INDEX IF NOT EXISTS ix_enterprise_compliance_reports_status ON enterprise.compliance_reports (status);
-
-CREATE TABLE IF NOT EXISTS enterprise.datasets (
-    id SERIAL NOT NULL,
-    name VARCHAR(255) NOT NULL,
-    domain VARCHAR(128),
-    owner_user_id INTEGER,
-    job_id INTEGER,
-    classification VARCHAR(64),
-    description TEXT,
-    tier VARCHAR(32),
-    quality_score INTEGER,
-    record_count_label VARCHAR(64),
-    pii BOOLEAN NOT NULL,
-    steward_name VARCHAR(255),
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    UNIQUE (name),
-    FOREIGN KEY(owner_user_id) REFERENCES auth.users (id),
-    FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
+CREATE TABLE auth.access_requests (
+	id SERIAL NOT NULL, 
+	full_name TEXT NOT NULL, 
+	username TEXT, 
+	email TEXT NOT NULL, 
+	department TEXT, 
+	reason TEXT, 
+	status TEXT NOT NULL, 
+	requested_at TIMESTAMP WITHOUT TIME ZONE, 
+	dataset_name TEXT, 
+	access_type TEXT, 
+	duration TEXT, 
+	approver_name TEXT, 
+	PRIMARY KEY (id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_enterprise_datasets_domain ON enterprise.datasets (domain);
-CREATE INDEX IF NOT EXISTS ix_enterprise_datasets_job_id ON enterprise.datasets (job_id);
-CREATE INDEX IF NOT EXISTS ix_enterprise_datasets_owner_user_id ON enterprise.datasets (owner_user_id);
-
-CREATE TABLE IF NOT EXISTS enterprise.glossary (
-    id SERIAL NOT NULL,
-    term VARCHAR(255) NOT NULL,
-    definition TEXT NOT NULL,
-    domain VARCHAR(128),
-    status VARCHAR(32) NOT NULL,
-    tags JSON,
-    related_terms JSON,
-    owner_user_id INTEGER,
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(owner_user_id) REFERENCES auth.users (id)
+CREATE TABLE auth.roles (
+	id SERIAL NOT NULL, 
+	name TEXT NOT NULL, 
+	description TEXT, 
+	PRIMARY KEY (id), 
+	UNIQUE (name)
 );
 
-CREATE INDEX IF NOT EXISTS ix_enterprise_glossary_domain ON enterprise.glossary (domain);
-CREATE INDEX IF NOT EXISTS ix_enterprise_glossary_status ON enterprise.glossary (status);
-CREATE INDEX IF NOT EXISTS ix_enterprise_glossary_term ON enterprise.glossary (term);
-
-CREATE TABLE IF NOT EXISTS enterprise.notifications (
-    id SERIAL NOT NULL,
-    user_id INTEGER,
-    channel VARCHAR(32) NOT NULL,
-    subject VARCHAR(255) NOT NULL,
-    body TEXT,
-    severity VARCHAR(32) NOT NULL,
-    read_at TIMESTAMP WITHOUT TIME ZONE,
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(user_id) REFERENCES auth.users (id)
+CREATE TABLE auth.permissions (
+	id SERIAL NOT NULL, 
+	code TEXT NOT NULL, 
+	description TEXT, 
+	PRIMARY KEY (id), 
+	UNIQUE (code)
 );
 
-CREATE INDEX IF NOT EXISTS ix_enterprise_notifications_created_at ON enterprise.notifications (created_at);
-CREATE INDEX IF NOT EXISTS ix_enterprise_notifications_user_id ON enterprise.notifications (user_id);
-
-CREATE TABLE IF NOT EXISTS enterprise.policies (
-    id SERIAL NOT NULL,
-    policy_name VARCHAR(255) NOT NULL,
-    domain VARCHAR(128),
-    status VARCHAR(32) NOT NULL,
-    content TEXT,
-    owner_user_id INTEGER,
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(owner_user_id) REFERENCES auth.users (id)
+CREATE TABLE auth.role_permissions (
+	id SERIAL NOT NULL, 
+	role_id INTEGER NOT NULL, 
+	permission_id INTEGER NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(role_id) REFERENCES auth.roles (id), 
+	FOREIGN KEY(permission_id) REFERENCES auth.permissions (id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_enterprise_policies_domain ON enterprise.policies (domain);
-CREATE INDEX IF NOT EXISTS ix_enterprise_policies_status ON enterprise.policies (status);
-
-CREATE TABLE IF NOT EXISTS enterprise.quarantine_records (
-    id SERIAL NOT NULL,
-    job_id INTEGER NOT NULL,
-    table_name VARCHAR(255) NOT NULL,
-    open_issues INTEGER NOT NULL,
-    last_error_type VARCHAR(128),
-    updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
+CREATE TABLE governance.audit_logs (
+	id SERIAL NOT NULL, 
+	user_id INTEGER, 
+	action TEXT NOT NULL, 
+	entity_type TEXT, 
+	entity_id TEXT, 
+	ip_address TEXT, 
+	old_values TEXT, 
+	new_values TEXT, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(user_id) REFERENCES auth.users (id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_enterprise_quarantine_records_job_id ON enterprise.quarantine_records (job_id);
-
-CREATE TABLE IF NOT EXISTS enterprise.report_exports (
-    id SERIAL NOT NULL,
-    report_type VARCHAR(64) NOT NULL,
-    format VARCHAR(16) NOT NULL,
-    payload JSON,
-    created_by_user_id INTEGER,
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(created_by_user_id) REFERENCES auth.users (id)
+CREATE TABLE governance.governance_policies (
+	id SERIAL NOT NULL, 
+	policy_name TEXT NOT NULL, 
+	domain TEXT, 
+	status TEXT NOT NULL, 
+	owner_user_id INTEGER, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(owner_user_id) REFERENCES auth.users (id)
 );
 
-CREATE TABLE IF NOT EXISTS enterprise.schedules (
-    id SERIAL NOT NULL,
-    job_id INTEGER NOT NULL,
-    name VARCHAR(255) NOT NULL,
-    schedule_type VARCHAR(32) NOT NULL,
-    cron_expression VARCHAR(128),
-    interval_minutes INTEGER,
-    is_active BOOLEAN NOT NULL,
-    created_by_user_id INTEGER,
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id),
-    FOREIGN KEY(created_by_user_id) REFERENCES auth.users (id)
+CREATE TABLE governance.stewardship_tasks (
+	id SERIAL NOT NULL, 
+	dataset_name TEXT NOT NULL, 
+	assigned_to_user_id INTEGER, 
+	status TEXT NOT NULL, 
+	severity TEXT NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(assigned_to_user_id) REFERENCES auth.users (id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_enterprise_schedules_job_id ON enterprise.schedules (job_id);
-
-CREATE TABLE IF NOT EXISTS enterprise.validation_results (
-    id SERIAL NOT NULL,
-    job_id INTEGER NOT NULL,
-    table_id INTEGER,
-    passed BOOLEAN NOT NULL,
-    summary TEXT,
-    details JSON,
-    created_by_user_id INTEGER,
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id),
-    FOREIGN KEY(created_by_user_id) REFERENCES auth.users (id)
+CREATE TABLE governance.lineage_nodes (
+	id SERIAL NOT NULL, 
+	node_key TEXT NOT NULL, 
+	node_type TEXT NOT NULL, 
+	domain TEXT, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	UNIQUE (node_key)
 );
 
-CREATE INDEX IF NOT EXISTS ix_enterprise_validation_results_created_at ON enterprise.validation_results (created_at);
-CREATE INDEX IF NOT EXISTS ix_enterprise_validation_results_job_id ON enterprise.validation_results (job_id);
-CREATE INDEX IF NOT EXISTS ix_enterprise_validation_results_table_id ON enterprise.validation_results (table_id);
-
-CREATE TABLE IF NOT EXISTS governance.audit_logs (
-    id SERIAL NOT NULL,
-    user_id INTEGER,
-    action VARCHAR(255) NOT NULL,
-    entity_type VARCHAR(128),
-    entity_id VARCHAR(128),
-    ip_address VARCHAR(64),
-    old_values TEXT,
-    new_values TEXT,
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(user_id) REFERENCES auth.users (id)
+CREATE TABLE governance.lineage_edges (
+	id SERIAL NOT NULL, 
+	from_node_id INTEGER NOT NULL, 
+	to_node_id INTEGER NOT NULL, 
+	relation_type TEXT NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(from_node_id) REFERENCES governance.lineage_nodes (id), 
+	FOREIGN KEY(to_node_id) REFERENCES governance.lineage_nodes (id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_governance_audit_logs_id ON governance.audit_logs (id);
-CREATE INDEX IF NOT EXISTS ix_governance_audit_logs_user_id ON governance.audit_logs (user_id);
-
-CREATE TABLE IF NOT EXISTS governance.dataset_access (
-    id SERIAL NOT NULL,
-    dataset_name VARCHAR(255) NOT NULL,
-    user_id INTEGER NOT NULL,
-    access_level VARCHAR(32) NOT NULL,
-    pii_allowed BOOLEAN NOT NULL,
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(user_id) REFERENCES auth.users (id)
+CREATE TABLE governance.dataset_access (
+	id SERIAL NOT NULL, 
+	dataset_name TEXT NOT NULL, 
+	user_id INTEGER NOT NULL, 
+	access_level TEXT NOT NULL, 
+	pii_allowed BOOLEAN NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(user_id) REFERENCES auth.users (id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_governance_dataset_access_dataset_name ON governance.dataset_access (dataset_name);
-CREATE INDEX IF NOT EXISTS ix_governance_dataset_access_id ON governance.dataset_access (id);
-CREATE INDEX IF NOT EXISTS ix_governance_dataset_access_user_id ON governance.dataset_access (user_id);
-
-CREATE TABLE IF NOT EXISTS governance.governance_policies (
-    id SERIAL NOT NULL,
-    policy_name VARCHAR(255) NOT NULL,
-    domain VARCHAR(128),
-    status VARCHAR(64) NOT NULL,
-    owner_user_id INTEGER,
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(owner_user_id) REFERENCES auth.users (id)
+CREATE TABLE governance.workflow_approvals (
+	id SERIAL NOT NULL, 
+	request_type TEXT NOT NULL, 
+	request_ref TEXT NOT NULL, 
+	owner_user_id INTEGER, 
+	status TEXT NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(owner_user_id) REFERENCES auth.users (id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_governance_governance_policies_domain ON governance.governance_policies (domain);
-CREATE INDEX IF NOT EXISTS ix_governance_governance_policies_id ON governance.governance_policies (id);
-
-CREATE TABLE IF NOT EXISTS governance.lineage_edges (
-    id SERIAL NOT NULL,
-    from_node_id INTEGER NOT NULL,
-    to_node_id INTEGER NOT NULL,
-    relation_type VARCHAR(64) NOT NULL,
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(from_node_id) REFERENCES governance.lineage_nodes (id),
-    FOREIGN KEY(to_node_id) REFERENCES governance.lineage_nodes (id)
+CREATE TABLE enterprise.schedules (
+	id SERIAL NOT NULL, 
+	job_id INTEGER NOT NULL, 
+	name TEXT NOT NULL, 
+	schedule_type TEXT NOT NULL, 
+	cron_expression TEXT, 
+	interval_minutes INTEGER, 
+	is_active BOOLEAN NOT NULL, 
+	created_by_user_id INTEGER, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id), 
+	FOREIGN KEY(created_by_user_id) REFERENCES auth.users (id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_governance_lineage_edges_id ON governance.lineage_edges (id);
-
-CREATE TABLE IF NOT EXISTS governance.stewardship_tasks (
-    id SERIAL NOT NULL,
-    dataset_name VARCHAR(255) NOT NULL,
-    assigned_to_user_id INTEGER,
-    status VARCHAR(64) NOT NULL,
-    severity VARCHAR(32) NOT NULL,
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(assigned_to_user_id) REFERENCES auth.users (id)
+CREATE TABLE enterprise.schedule_runs (
+	id SERIAL NOT NULL, 
+	schedule_id INTEGER, 
+	job_id INTEGER NOT NULL, 
+	status TEXT NOT NULL, 
+	message TEXT, 
+	started_at TIMESTAMP WITHOUT TIME ZONE, 
+	finished_at TIMESTAMP WITHOUT TIME ZONE, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(schedule_id) REFERENCES enterprise.schedules (id), 
+	FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_governance_stewardship_tasks_id ON governance.stewardship_tasks (id);
-
-CREATE TABLE IF NOT EXISTS governance.workflow_approvals (
-    id SERIAL NOT NULL,
-    request_type VARCHAR(128) NOT NULL,
-    request_ref VARCHAR(128) NOT NULL,
-    owner_user_id INTEGER,
-    status VARCHAR(32) NOT NULL,
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(owner_user_id) REFERENCES auth.users (id)
+CREATE TABLE enterprise.api_logs (
+	id SERIAL NOT NULL, 
+	method TEXT NOT NULL, 
+	path TEXT NOT NULL, 
+	status_code INTEGER, 
+	duration_ms INTEGER, 
+	user_id INTEGER, 
+	correlation_id TEXT, 
+	ip_address TEXT, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(user_id) REFERENCES auth.users (id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_governance_workflow_approvals_id ON governance.workflow_approvals (id);
-
-CREATE TABLE IF NOT EXISTS metadata.table_metadata (
-    job_id INTEGER NOT NULL,
-    table_id INTEGER NOT NULL,
-    table_name VARCHAR,
-    row_count INTEGER,
-    data_updated_at TIMESTAMPTZ,
-    PRIMARY KEY (job_id, table_id),
-    FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
+CREATE TABLE enterprise.validation_results (
+	id SERIAL NOT NULL, 
+	job_id INTEGER NOT NULL, 
+	table_id INTEGER, 
+	passed BOOLEAN NOT NULL, 
+	summary TEXT, 
+	details JSON, 
+	created_by_user_id INTEGER, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id), 
+	FOREIGN KEY(created_by_user_id) REFERENCES auth.users (id)
 );
 
-CREATE TABLE IF NOT EXISTS metadata.dataset_rows (
-    id BIGSERIAL NOT NULL,
-    job_id INTEGER NOT NULL,
-    table_id INTEGER NOT NULL,
-    row_index INTEGER NOT NULL,
-    row_data JSONB NOT NULL,
-    PRIMARY KEY (id),
-    UNIQUE (job_id, table_id, row_index),
-    FOREIGN KEY(job_id, table_id) REFERENCES metadata.table_metadata (job_id, table_id)
+CREATE TABLE enterprise.quarantine_records (
+	id SERIAL NOT NULL, 
+	job_id INTEGER NOT NULL, 
+	table_name TEXT NOT NULL, 
+	open_issues INTEGER NOT NULL, 
+	last_error_type TEXT, 
+	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_metadata_dataset_rows_job_table ON metadata.dataset_rows (job_id, table_id);
-
-ALTER TABLE metadata.dataset_rows
-    ADD COLUMN IF NOT EXISTS is_golden_record BOOLEAN NOT NULL DEFAULT FALSE;
-
-ALTER TABLE metadata.dataset_rows
-    ADD COLUMN IF NOT EXISTS dq_remarks TEXT;
-
-ALTER TABLE metadata.dataset_rows
-    ADD COLUMN IF NOT EXISTS golden_remarks TEXT;
-
-CREATE TABLE IF NOT EXISTS metadata.dataset_row_cells (
-    id BIGSERIAL NOT NULL,
-    job_id INTEGER NOT NULL,
-    table_id INTEGER NOT NULL,
-    row_index INTEGER NOT NULL,
-    column_name VARCHAR NOT NULL,
-    value_text TEXT,
-    dq_passed BOOLEAN,
-    dq_remark TEXT,
-    PRIMARY KEY (id),
-    UNIQUE (job_id, table_id, row_index, column_name),
-    FOREIGN KEY(job_id, table_id) REFERENCES metadata.table_metadata (job_id, table_id)
+CREATE TABLE enterprise.access_logs (
+	id SERIAL NOT NULL, 
+	user_id INTEGER, 
+	resource TEXT NOT NULL, 
+	action TEXT NOT NULL, 
+	ip_address TEXT, 
+	meta JSON, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(user_id) REFERENCES auth.users (id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_metadata_dataset_row_cells_job_table_row
-    ON metadata.dataset_row_cells (job_id, table_id, row_index);
-
-CREATE TABLE IF NOT EXISTS metadata.dataset_base_backup_rows (
-    id BIGSERIAL NOT NULL,
-    job_id INTEGER NOT NULL,
-    row_index INTEGER NOT NULL,
-    row_data JSONB NOT NULL,
-    PRIMARY KEY (id),
-    UNIQUE (job_id, row_index),
-    FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
+CREATE TABLE enterprise.compliance_reports (
+	id SERIAL NOT NULL, 
+	title TEXT NOT NULL, 
+	framework TEXT NOT NULL, 
+	status TEXT NOT NULL, 
+	body TEXT, 
+	created_by_user_id INTEGER, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(created_by_user_id) REFERENCES auth.users (id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_metadata_dataset_base_backup_job ON metadata.dataset_base_backup_rows (job_id);
-
--- Registry for per-dataset physical tables in the datasets schema
-CREATE TABLE IF NOT EXISTS metadata.dataset_physical_tables (
-    id SERIAL NOT NULL,
-    job_id INTEGER NOT NULL,
-    table_id INTEGER NOT NULL,
-    physical_table_name VARCHAR(256) NOT NULL,
-    schema_name VARCHAR(64) NOT NULL DEFAULT 'datasets',
-    column_names TEXT[] NOT NULL DEFAULT '{}',
-    row_count INTEGER NOT NULL DEFAULT 0,
-    has_base_backup BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (id),
-    UNIQUE (job_id, table_id),
-    FOREIGN KEY (job_id) REFERENCES metadata.jobs (job_id)
+CREATE TABLE enterprise.datasets (
+	id SERIAL NOT NULL, 
+	name TEXT NOT NULL, 
+	domain TEXT, 
+	owner_user_id INTEGER, 
+	job_id INTEGER, 
+	classification TEXT, 
+	description TEXT, 
+	tier TEXT, 
+	quality_score INTEGER, 
+	record_count_label TEXT, 
+	pii BOOLEAN NOT NULL, 
+	steward_name TEXT, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	deleted_at TIMESTAMP WITHOUT TIME ZONE, 
+	purge_at TIMESTAMP WITHOUT TIME ZONE, 
+	deleted_by_user_id INTEGER, 
+	PRIMARY KEY (id), 
+	UNIQUE (name), 
+	FOREIGN KEY(owner_user_id) REFERENCES auth.users (id), 
+	FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id), 
+	FOREIGN KEY(deleted_by_user_id) REFERENCES auth.users (id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_metadata_dataset_physical_tables_job_id
-    ON metadata.dataset_physical_tables (job_id);
-CREATE INDEX IF NOT EXISTS ix_metadata_dataset_physical_tables_job_table
-    ON metadata.dataset_physical_tables (job_id, table_id);
-
-
-
-CREATE TABLE IF NOT EXISTS quarantine.logs (
-    log_id SERIAL NOT NULL,
-    job_id INTEGER,
-    table_name VARCHAR,
-    row_id INTEGER,
-    column_name VARCHAR,
-    error_type VARCHAR,
-    error_value TEXT,
-    description TEXT,
-    fuzzy_score INTEGER,
-    master_match VARCHAR,
-    created_at TIMESTAMP WITHOUT TIME ZONE,
-    PRIMARY KEY (log_id),
-    FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
+CREATE TABLE enterprise.glossary (
+	id SERIAL NOT NULL, 
+	term TEXT NOT NULL, 
+	definition TEXT NOT NULL, 
+	domain TEXT, 
+	status TEXT NOT NULL, 
+	tags JSON, 
+	related_terms JSON, 
+	owner_user_id INTEGER, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(owner_user_id) REFERENCES auth.users (id)
 );
 
-CREATE TABLE IF NOT EXISTS enterprise.schedule_runs (
-    id SERIAL NOT NULL,
-    schedule_id INTEGER,
-    job_id INTEGER NOT NULL,
-    status VARCHAR(32) NOT NULL,
-    message TEXT,
-    started_at TIMESTAMP WITHOUT TIME ZONE,
-    finished_at TIMESTAMP WITHOUT TIME ZONE,
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    PRIMARY KEY (id),
-    FOREIGN KEY(schedule_id) REFERENCES enterprise.schedules (id),
-    FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
+CREATE TABLE enterprise.business_reports (
+	id SERIAL NOT NULL, 
+	title TEXT NOT NULL, 
+	report_type TEXT NOT NULL, 
+	dataset_name TEXT, 
+	status TEXT NOT NULL, 
+	quality_score INTEGER, 
+	last_refreshed_label TEXT, 
+	external_url TEXT, 
+	user_id INTEGER, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(user_id) REFERENCES auth.users (id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_enterprise_schedule_runs_job_id ON enterprise.schedule_runs (job_id);
-CREATE INDEX IF NOT EXISTS ix_enterprise_schedule_runs_schedule_id ON enterprise.schedule_runs (schedule_id);
-CREATE INDEX IF NOT EXISTS ix_enterprise_schedule_runs_status ON enterprise.schedule_runs (status);
-
-CREATE TABLE IF NOT EXISTS metadata.column_metadata (
-    column_id SERIAL NOT NULL,
-    job_id INTEGER,
-    table_id INTEGER,
-    column_name VARCHAR,
-    data_type VARCHAR,
-    description TEXT,
-    description_generated_at TIMESTAMPTZ,
-    PRIMARY KEY (column_id),
-    FOREIGN KEY(job_id, table_id) REFERENCES metadata.table_metadata (job_id, table_id),
-    FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
+CREATE TABLE enterprise.alert_subscriptions (
+	id SERIAL NOT NULL, 
+	user_id INTEGER NOT NULL, 
+	dataset_name TEXT NOT NULL, 
+	threshold INTEGER NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(user_id) REFERENCES auth.users (id)
 );
 
-CREATE TABLE IF NOT EXISTS metadata.master_tables (
-    id SERIAL NOT NULL,
-    job_id INTEGER,
-    table_id INTEGER,
-    table_name VARCHAR,
-    master_value VARCHAR,
-    PRIMARY KEY (id),
-    FOREIGN KEY(job_id, table_id) REFERENCES metadata.table_metadata (job_id, table_id),
-    FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
+CREATE TABLE enterprise.policies (
+	id SERIAL NOT NULL, 
+	policy_name TEXT NOT NULL, 
+	domain TEXT, 
+	status TEXT NOT NULL, 
+	content TEXT, 
+	owner_user_id INTEGER, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(owner_user_id) REFERENCES auth.users (id)
 );
 
-CREATE TABLE IF NOT EXISTS metadata.rules (
-    rule_id SERIAL NOT NULL,
-    job_id INTEGER,
-    table_id INTEGER,
-    column_name VARCHAR,
-    data_type VARCHAR,
-    rule_type VARCHAR,
-    rule_value TEXT,
-    is_active BOOLEAN,
-    created_at TIMESTAMP WITHOUT TIME ZONE,
-    PRIMARY KEY (rule_id),
-    FOREIGN KEY(job_id, table_id) REFERENCES metadata.table_metadata (job_id, table_id),
-    FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
+CREATE TABLE enterprise.analytics_metrics (
+	id SERIAL NOT NULL, 
+	metric_key TEXT NOT NULL, 
+	metric_value JSON NOT NULL, 
+	domain TEXT, 
+	captured_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id)
 );
 
-CREATE TABLE IF NOT EXISTS metadata.table_stats (
-    stat_id SERIAL NOT NULL,
-    job_id INTEGER,
-    table_id INTEGER,
-    table_name VARCHAR,
-    start_time TIMESTAMP WITHOUT TIME ZONE,
-    end_time TIMESTAMP WITHOUT TIME ZONE,
-    total_rows INTEGER,
-    validation_errors INTEGER,
-    fuzzy_errors INTEGER,
-    good_rows INTEGER,
-    PRIMARY KEY (stat_id),
-    FOREIGN KEY(job_id, table_id) REFERENCES metadata.table_metadata (job_id, table_id),
-    FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id)
+CREATE TABLE enterprise.notifications (
+	id SERIAL NOT NULL, 
+	user_id INTEGER, 
+	channel TEXT NOT NULL, 
+	subject TEXT NOT NULL, 
+	body TEXT, 
+	severity TEXT NOT NULL, 
+	read_at TIMESTAMP WITHOUT TIME ZONE, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(user_id) REFERENCES auth.users (id)
 );
+
+CREATE TABLE enterprise.report_exports (
+	id SERIAL NOT NULL, 
+	report_type TEXT NOT NULL, 
+	format TEXT NOT NULL, 
+	payload JSON, 
+	created_by_user_id INTEGER, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(created_by_user_id) REFERENCES auth.users (id)
+);
+
+CREATE TABLE metadata.golden_merge_candidates (
+	id SERIAL NOT NULL, 
+	dataset_id INTEGER NOT NULL, 
+	row_group_key TEXT NOT NULL, 
+	source_values JSON NOT NULL, 
+	column_scores JSON NOT NULL, 
+	row_score NUMERIC NOT NULL, 
+	status TEXT NOT NULL, 
+	golden_values JSON, 
+	resolved_by_user_id INTEGER, 
+	resolved_at TIMESTAMP WITHOUT TIME ZONE, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	merge_config_snapshot JSON, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(dataset_id) REFERENCES enterprise.datasets (id), 
+	FOREIGN KEY(resolved_by_user_id) REFERENCES auth.users (id)
+);
+
+CREATE TABLE metadata.golden_merge_configs (
+	id SERIAL NOT NULL, 
+	dataset_id INTEGER NOT NULL, 
+	source_priority JSON NOT NULL, 
+	auto_merge_threshold NUMERIC NOT NULL, 
+	review_threshold NUMERIC NOT NULL, 
+	column_overrides JSON NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	UNIQUE (dataset_id), 
+	FOREIGN KEY(dataset_id) REFERENCES enterprise.datasets (id)
+);
+

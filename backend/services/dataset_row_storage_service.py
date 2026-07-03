@@ -283,11 +283,77 @@ def _read_physical_table(db, job_id, table_id, *, offset=0, limit=None):
         result = conn.execute(text(sql), params)
         keys = list(result.keys())
         data = result.fetchall()
-    user_keys = [k for k in keys if k not in _INTERNAL_COLS]
+
+    # Fetch column metadata to map sanitized column names back to original names
+    cols = (
+        db.query(models.ColumnMetadata)
+        .filter(
+            models.ColumnMetadata.job_id == job_id,
+            models.ColumnMetadata.table_id == table_id,
+        )
+        .all()
+    )
+
+    # Fetch active rules for the table to determine which columns were evaluated
+    rules = (
+        db.query(models.Rule)
+        .filter(
+            models.Rule.job_id == job_id,
+            models.Rule.table_id == table_id,
+            models.Rule.is_active == True,
+        )
+        .all()
+    )
+    cols_with_rules = {r.column_name.strip() for r in rules}
+
+    # Map sanitized SQL identifier -> original column name
+    name_map = {}
+    for c in cols:
+        name_map[sanitize_column_name(c.column_name)] = c.column_name
+
     out = []
     for row in data:
         row_dict = dict(zip(keys, row))
-        out.append({k: (str(row_dict[k]) if row_dict[k] is not None else "") for k in user_keys})
+
+        # Parse _dq_remarks if present
+        dq_passed = row_dict.get("_dq_passed")
+        dq_remarks = row_dict.get("_dq_remarks")
+        failed_cols_map = {}
+        if dq_remarks:
+            parts = str(dq_remarks).split("; ")
+            for part in parts:
+                if ":" in part:
+                    cname, remark = part.split(":", 1)
+                    failed_cols_map[cname.strip()] = remark.strip()
+
+        row_out = {}
+        # Map user columns back to original names
+        for c in cols:
+            sanitized = sanitize_column_name(c.column_name)
+            val = row_dict.get(sanitized)
+            row_out[c.column_name] = str(val) if val is not None else ""
+
+            if dq_passed is not None:
+                if c.column_name in failed_cols_map:
+                    row_out[f"{c.column_name}__dq_pass"] = "false"
+                    row_out[f"{c.column_name}__dq_remark"] = failed_cols_map[c.column_name]
+                elif c.column_name in cols_with_rules:
+                    row_out[f"{c.column_name}__dq_pass"] = "true"
+                    row_out[f"{c.column_name}__dq_remark"] = ""
+
+        row_out["is_golden_record"] = "true" if row_dict.get("_is_golden") else "false"
+        row_out["golden_remarks"] = str(row_dict.get("_golden_remarks")) if row_dict.get("_golden_remarks") is not None else ""
+        row_out["dq_remarks"] = str(row_dict.get("_dq_remarks")) if row_dict.get("_dq_remarks") is not None else ""
+
+        # If ColumnMetadata is missing, fallback to returning keys as-is
+        if not cols:
+            user_keys = [k for k in keys if k not in _INTERNAL_COLS]
+            row_out = {k: (str(row_dict[k]) if row_dict[k] is not None else "") for k in user_keys}
+            row_out["is_golden_record"] = "true" if row_dict.get("_is_golden") else "false"
+            row_out["golden_remarks"] = str(row_dict.get("_golden_remarks")) if row_dict.get("_golden_remarks") is not None else ""
+            row_out["dq_remarks"] = str(row_dict.get("_dq_remarks")) if row_dict.get("_dq_remarks") is not None else ""
+
+        out.append(row_out)
     return out
 
 
@@ -509,11 +575,12 @@ def load_table_rows_page(db, job_id, table_name, *, table_id=None, offset=0, lim
                 .scalar()
                 or 0
             )
-            rows_flat = _load_flat_rows_from_legacy(db, job_id, tid, offset=offset, limit=limit)
-            clean = [
-                {k: v for k, v in r.items() if k not in ("is_golden_record", "dq_remarks", "golden_remarks", "job_id", "table_id") and "__dq_" not in k}
-                for r in rows_flat
-            ]
+            clean = []
+            for r in rows_flat:
+                row_clean = {k: v for k, v in r.items() if k not in ("job_id", "table_id") and "__dq_" not in k}
+                row_clean["is_golden_record"] = r.get("is_golden_record", "false")
+                row_clean["golden_remarks"] = r.get("golden_remarks", "")
+                clean.append(row_clean)
             return clean, int(total)
 
     from utils.upload_paths import resolve_table_csv_path
@@ -535,11 +602,15 @@ def load_table_rows_page(db, job_id, table_name, *, table_id=None, offset=0, lim
         return [], total
     if df.empty:
         return [], total
-    rows_out = [{str(k): _normalize_value(v) for k, v in r.items()} for r in df.fillna("").to_dict(orient="records")]
-    if tid is not None:
-        for row in rows_out:
-            row.setdefault("job_id", str(job_id))
-            row.setdefault("table_id", str(tid))
+    rows_out = []
+    for r in df.fillna("").to_dict(orient="records"):
+        row_clean = {str(k): _normalize_value(v) for k, v in r.items()}
+        row_clean["is_golden_record"] = "false"
+        row_clean["golden_remarks"] = ""
+        if tid is not None:
+            row_clean["job_id"] = str(job_id)
+            row_clean["table_id"] = str(tid)
+        rows_out.append(row_clean)
     return rows_out, total
 
 

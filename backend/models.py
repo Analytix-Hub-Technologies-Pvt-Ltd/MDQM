@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, Column, Integer, String, Boolean, ForeignKey, DateTime, Text, ForeignKeyConstraint, JSON, UniqueConstraint
+from sqlalchemy import Numeric, BigInteger, Column, Integer, Text, Boolean, ForeignKey, DateTime, Text, ForeignKeyConstraint, JSON, UniqueConstraint, Numeric
 from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -9,21 +9,21 @@ class Job(Base):
     __table_args__ = {'schema': 'metadata'}
 
     job_id = Column(Integer, primary_key=True, index=True)
-    job_name = Column(String)
-    status = Column(String, default="Pending")
+    job_name = Column(Text)
+    status = Column(Text, default="Pending")
     start_time = Column(DateTime)
     end_time = Column(DateTime)
     created_at = Column(DateTime, default=func.now())
     """Legacy JSON snapshot — use relational source_* columns instead."""
     db_source_config = Column(JSON, nullable=True)
-    source_kind = Column(String(64), nullable=True)
+    source_kind = Column(Text, nullable=True)
     source_connection_id = Column(Integer, nullable=True)
-    source_host = Column(String(255), nullable=True)
-    source_port = Column(String(16), nullable=True)
-    source_db_user = Column(String(128), nullable=True)
-    source_dbname = Column(String(128), nullable=True)
-    source_db_type = Column(String(32), nullable=True)
-    source_schema_name = Column(String(128), nullable=True)
+    source_host = Column(Text, nullable=True)
+    source_port = Column(Text, nullable=True)
+    source_db_user = Column(Text, nullable=True)
+    source_dbname = Column(Text, nullable=True)
+    source_db_type = Column(Text, nullable=True)
+    source_schema_name = Column(Text, nullable=True)
     source_table_names = Column(Text, nullable=True)
     source_selected_columns = Column(Text, nullable=True)
     source_encrypted_db_pass = Column(Text, nullable=True)
@@ -39,9 +39,9 @@ class TableMetadata(Base):
     job_id = Column(Integer, ForeignKey("metadata.jobs.job_id"), primary_key=True)
     table_id = Column(Integer, primary_key=True) 
     
-    table_name = Column(String)
+    table_name = Column(Text)
     row_count = Column(Integer, default=0)
-    data_updated_at = Column(DateTime(timezone=True), nullable=True)
+    data_updated_at = Column(DateTime, nullable=True)
 
     job = relationship("Job", back_populates="tables")
     columns = relationship("ColumnMetadata", back_populates="table", cascade="all, delete-orphan")
@@ -58,10 +58,10 @@ class ColumnMetadata(Base):
     column_id = Column(Integer, primary_key=True)
     job_id = Column(Integer, ForeignKey("metadata.jobs.job_id")) 
     table_id = Column(Integer)
-    column_name = Column(String)
-    data_type = Column(String)
+    column_name = Column(Text)
+    data_type = Column(Text)
     description = Column(Text, nullable=True)
-    description_generated_at = Column(DateTime(timezone=True), nullable=True)
+    description_generated_at = Column(DateTime, nullable=True)
 
     table = relationship("TableMetadata", back_populates="columns")
 
@@ -107,7 +107,7 @@ class DatasetRowCell(Base):
     job_id = Column(Integer, nullable=False, index=True)
     table_id = Column(Integer, nullable=False)
     row_index = Column(Integer, nullable=False)
-    column_name = Column(String, nullable=False)
+    column_name = Column(Text, nullable=False)
     value_text = Column(Text, nullable=True)
     dq_passed = Column(Boolean, nullable=True)
     dq_remark = Column(Text, nullable=True)
@@ -139,15 +139,15 @@ class DatasetPhysicalTable(Base):
     job_id = Column(Integer, ForeignKey("metadata.jobs.job_id"), nullable=False, index=True)
     table_id = Column(Integer, nullable=False, index=True)
     # Fully-qualified physical table name (without schema), e.g. 'job_1_tbl_2'
-    physical_table_name = Column(String(256), nullable=False)
-    schema_name = Column(String(64), nullable=False, default="datasets")
+    physical_table_name = Column(Text, nullable=False)
+    schema_name = Column(Text, nullable=False, default="datasets")
     # Ordered list of user-data column names (as stored in the physical table)
-    column_names = Column(PG_ARRAY(String), nullable=False, default=list)
+    column_names = Column(PG_ARRAY(Text), nullable=False, default=list)
     row_count = Column(Integer, nullable=False, default=0)
     # Whether a pre-join base backup physical table also exists
     has_base_backup = Column(Boolean, nullable=False, default=False)
-    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
 
 
@@ -163,9 +163,9 @@ class Rule(Base):
     job_id = Column(Integer, ForeignKey("metadata.jobs.job_id"))
     table_id = Column(Integer)
     
-    column_name = Column(String)
-    data_type = Column(String)
-    rule_type = Column(String)
+    column_name = Column(Text)
+    data_type = Column(Text)
+    rule_type = Column(Text)
     rule_value = Column(Text)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=func.now())
@@ -185,7 +185,7 @@ class TableStats(Base):
     job_id = Column(Integer, ForeignKey("metadata.jobs.job_id"))
     table_id = Column(Integer)
     
-    table_name = Column(String)
+    table_name = Column(Text)
     start_time = Column(DateTime)
     end_time = Column(DateTime)
     total_rows = Column(Integer, default=0)
@@ -199,14 +199,14 @@ class QuarantineLog(Base):
 
     log_id = Column(Integer, primary_key=True)
     job_id = Column(Integer, ForeignKey("metadata.jobs.job_id"))
-    table_name = Column(String)
+    table_name = Column(Text)
     row_id = Column(Integer)
-    column_name = Column(String)
-    error_type = Column(String) 
+    column_name = Column(Text)
+    error_type = Column(Text) 
     error_value = Column(Text)
     description = Column(Text)
     fuzzy_score = Column(Integer, default=0)
-    master_match = Column(String, nullable=True)
+    master_match = Column(Text, nullable=True)
     created_at = Column(DateTime, default=func.now())
 
 class MasterTable(Base):
@@ -221,8 +221,8 @@ class MasterTable(Base):
     job_id = Column(Integer, ForeignKey("metadata.jobs.job_id")) # <--- NEW
     table_id = Column(Integer) # <--- NEW
     
-    table_name = Column(String) 
-    master_value = Column(String)
+    table_name = Column(Text) 
+    master_value = Column(Text)
 
 
 class DbConnection(Base):
@@ -233,14 +233,14 @@ class DbConnection(Base):
     )
 
     connection_id = Column(Integer, primary_key=True, index=True)
-    connection_name = Column(String, nullable=False)
-    host = Column(String, nullable=False)
-    port = Column(String, default="5432")
-    username = Column(String, nullable=False)
-    password = Column(String, nullable=True)
+    connection_name = Column(Text, nullable=False)
+    host = Column(Text, nullable=False)
+    port = Column(Text, default="5432")
+    username = Column(Text, nullable=False)
+    password = Column(Text, nullable=True)
     user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
-    db_type = Column(String(32), nullable=True, default="postgres")
-    dbname = Column(String(128), nullable=True)
+    db_type = Column(Text, nullable=True, default="postgres")
+    dbname = Column(Text, nullable=True)
     created_at = Column(DateTime, default=func.now())
 
 
@@ -262,17 +262,17 @@ class User(Base):
     __table_args__ = {"schema": "auth"}
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    full_name = Column(String(255), nullable=False)
-    username = Column(String(64), unique=True, nullable=True, index=True)
-    email = Column(String(320), unique=True, nullable=False, index=True)
-    password_hash = Column(String(255), nullable=False)
-    role = Column(String(32), nullable=False, default="user")
+    full_name = Column(Text, nullable=False)
+    username = Column(Text, unique=True, nullable=True, index=True)
+    email = Column(Text, unique=True, nullable=False, index=True)
+    password_hash = Column(Text, nullable=False)
+    role = Column(Text, nullable=False, default="user")
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=func.now())
     created_by = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
 
     # Invitation/password-setup architecture (email delivery not implemented yet)
-    invite_token_hash = Column(String(128), nullable=True)
+    invite_token_hash = Column(Text, nullable=True)
     invite_expires_at = Column(DateTime, nullable=True)
     password_configured = Column(Boolean, nullable=False, default=True)
 
@@ -282,18 +282,18 @@ class AccessRequest(Base):
     __table_args__ = {"schema": "auth"}
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    full_name = Column(String(255), nullable=False)
-    username = Column(String(64), nullable=True, index=True)
-    email = Column(String(320), nullable=False, index=True)
-    department = Column(String(255), nullable=True)
+    full_name = Column(Text, nullable=False)
+    username = Column(Text, nullable=True, index=True)
+    email = Column(Text, nullable=False, index=True)
+    department = Column(Text, nullable=True)
     reason = Column(Text, nullable=True)
-    status = Column(String(32), nullable=False, default="pending")
+    status = Column(Text, nullable=False, default="pending")
     requested_at = Column(DateTime, default=func.now())
     # Extended data-access workflow (governance-style requests from logged-in users)
-    dataset_name = Column(String(255), nullable=True)
-    access_type = Column(String(32), nullable=True)
-    duration = Column(String(64), nullable=True)
-    approver_name = Column(String(255), nullable=True)
+    dataset_name = Column(Text, nullable=True)
+    access_type = Column(Text, nullable=True)
+    duration = Column(Text, nullable=True)
+    approver_name = Column(Text, nullable=True)
 
 
 class Role(Base):
@@ -301,7 +301,7 @@ class Role(Base):
     __table_args__ = {"schema": "auth"}
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    name = Column(String(64), unique=True, nullable=False)
+    name = Column(Text, unique=True, nullable=False)
     description = Column(Text, nullable=True)
 
 
@@ -310,7 +310,7 @@ class Permission(Base):
     __table_args__ = {"schema": "auth"}
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    code = Column(String(128), unique=True, nullable=False)
+    code = Column(Text, unique=True, nullable=False)
     description = Column(Text, nullable=True)
 
 
@@ -329,10 +329,10 @@ class AuditLog(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
-    action = Column(String(255), nullable=False)
-    entity_type = Column(String(128), nullable=True)
-    entity_id = Column(String(128), nullable=True)
-    ip_address = Column(String(64), nullable=True)
+    action = Column(Text, nullable=False)
+    entity_type = Column(Text, nullable=True)
+    entity_id = Column(Text, nullable=True)
+    ip_address = Column(Text, nullable=True)
     old_values = Column(Text, nullable=True)
     new_values = Column(Text, nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
@@ -343,9 +343,9 @@ class GovernancePolicy(Base):
     __table_args__ = {"schema": "governance"}
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    policy_name = Column(String(255), nullable=False)
-    domain = Column(String(128), nullable=True, index=True)
-    status = Column(String(64), nullable=False, default="draft")
+    policy_name = Column(Text, nullable=False)
+    domain = Column(Text, nullable=True, index=True)
+    status = Column(Text, nullable=False, default="draft")
     owner_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
 
@@ -355,10 +355,10 @@ class StewardshipTask(Base):
     __table_args__ = {"schema": "governance"}
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    dataset_name = Column(String(255), nullable=False)
+    dataset_name = Column(Text, nullable=False)
     assigned_to_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
-    status = Column(String(64), nullable=False, default="open")
-    severity = Column(String(32), nullable=False, default="medium")
+    status = Column(Text, nullable=False, default="open")
+    severity = Column(Text, nullable=False, default="medium")
     created_at = Column(DateTime, default=func.now(), nullable=False)
 
 
@@ -367,9 +367,9 @@ class LineageNode(Base):
     __table_args__ = {"schema": "governance"}
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    node_key = Column(String(255), nullable=False, unique=True)
-    node_type = Column(String(64), nullable=False)
-    domain = Column(String(128), nullable=True)
+    node_key = Column(Text, nullable=False, unique=True)
+    node_type = Column(Text, nullable=False)
+    domain = Column(Text, nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
 
 
@@ -380,7 +380,7 @@ class LineageEdge(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     from_node_id = Column(Integer, ForeignKey("governance.lineage_nodes.id"), nullable=False)
     to_node_id = Column(Integer, ForeignKey("governance.lineage_nodes.id"), nullable=False)
-    relation_type = Column(String(64), nullable=False, default="depends_on")
+    relation_type = Column(Text, nullable=False, default="depends_on")
     created_at = Column(DateTime, default=func.now(), nullable=False)
 
 
@@ -389,9 +389,9 @@ class DatasetAccess(Base):
     __table_args__ = {"schema": "governance"}
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    dataset_name = Column(String(255), nullable=False, index=True)
+    dataset_name = Column(Text, nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=False, index=True)
-    access_level = Column(String(32), nullable=False, default="read")
+    access_level = Column(Text, nullable=False, default="read")
     pii_allowed = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=func.now(), nullable=False)
 
@@ -401,10 +401,10 @@ class WorkflowApproval(Base):
     __table_args__ = {"schema": "governance"}
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    request_type = Column(String(128), nullable=False)
-    request_ref = Column(String(128), nullable=False)
+    request_type = Column(Text, nullable=False)
+    request_ref = Column(Text, nullable=False)
     owner_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
-    status = Column(String(32), nullable=False, default="pending")
+    status = Column(Text, nullable=False, default="pending")
     created_at = Column(DateTime, default=func.now(), nullable=False)
 
 
@@ -417,9 +417,9 @@ class EnterpriseSchedule(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     job_id = Column(Integer, ForeignKey("metadata.jobs.job_id"), nullable=False, index=True)
-    name = Column(String(255), nullable=False)
-    schedule_type = Column(String(32), nullable=False, default="interval")
-    cron_expression = Column(String(128), nullable=True)
+    name = Column(Text, nullable=False)
+    schedule_type = Column(Text, nullable=False, default="interval")
+    cron_expression = Column(Text, nullable=True)
     interval_minutes = Column(Integer, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     created_by_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
@@ -434,7 +434,7 @@ class EnterpriseScheduleRun(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     schedule_id = Column(Integer, ForeignKey("enterprise.schedules.id"), nullable=True, index=True)
     job_id = Column(Integer, ForeignKey("metadata.jobs.job_id"), nullable=False, index=True)
-    status = Column(String(32), nullable=False, default="queued", index=True)
+    status = Column(Text, nullable=False, default="queued", index=True)
     message = Column(Text, nullable=True)
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
@@ -446,13 +446,13 @@ class EnterpriseApiLog(Base):
     __table_args__ = {"schema": "enterprise"}
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    method = Column(String(16), nullable=False)
-    path = Column(String(512), nullable=False, index=True)
+    method = Column(Text, nullable=False)
+    path = Column(Text, nullable=False, index=True)
     status_code = Column(Integer, nullable=True)
     duration_ms = Column(Integer, nullable=True)
     user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
-    correlation_id = Column(String(64), nullable=True, index=True)
-    ip_address = Column(String(64), nullable=True)
+    correlation_id = Column(Text, nullable=True, index=True)
+    ip_address = Column(Text, nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
 
 
@@ -476,9 +476,9 @@ class EnterpriseQuarantineRecord(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     job_id = Column(Integer, ForeignKey("metadata.jobs.job_id"), nullable=False, index=True)
-    table_name = Column(String(255), nullable=False)
+    table_name = Column(Text, nullable=False)
     open_issues = Column(Integer, nullable=False, default=0)
-    last_error_type = Column(String(128), nullable=True)
+    last_error_type = Column(Text, nullable=True)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
 
@@ -488,9 +488,9 @@ class EnterpriseAccessLog(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
-    resource = Column(String(255), nullable=False, index=True)
-    action = Column(String(128), nullable=False)
-    ip_address = Column(String(64), nullable=True)
+    resource = Column(Text, nullable=False, index=True)
+    action = Column(Text, nullable=False)
+    ip_address = Column(Text, nullable=True)
     meta = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
 
@@ -500,9 +500,9 @@ class EnterpriseComplianceReport(Base):
     __table_args__ = {"schema": "enterprise"}
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    title = Column(String(255), nullable=False)
-    framework = Column(String(64), nullable=False, index=True)
-    status = Column(String(32), nullable=False, default="draft", index=True)
+    title = Column(Text, nullable=False)
+    framework = Column(Text, nullable=False, index=True)
+    status = Column(Text, nullable=False, default="draft", index=True)
     body = Column(Text, nullable=True)
     created_by_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
@@ -513,17 +513,17 @@ class EnterpriseDataset(Base):
     __table_args__ = {"schema": "enterprise"}
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(255), nullable=False, unique=True)
-    domain = Column(String(128), nullable=True, index=True)
+    name = Column(Text, nullable=False, unique=True)
+    domain = Column(Text, nullable=True, index=True)
     owner_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
     job_id = Column(Integer, ForeignKey("metadata.jobs.job_id"), nullable=True, index=True)
-    classification = Column(String(64), nullable=True)
+    classification = Column(Text, nullable=True)
     description = Column(Text, nullable=True)
-    tier = Column(String(32), nullable=True)
+    tier = Column(Text, nullable=True)
     quality_score = Column(Integer, nullable=True)
-    record_count_label = Column(String(64), nullable=True)
+    record_count_label = Column(Text, nullable=True)
     pii = Column(Boolean, nullable=False, default=False)
-    steward_name = Column(String(255), nullable=True)
+    steward_name = Column(Text, nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
     deleted_at = Column(DateTime, nullable=True, index=True)
     purge_at = Column(DateTime, nullable=True, index=True)
@@ -535,10 +535,10 @@ class EnterpriseGlossaryTerm(Base):
     __table_args__ = {"schema": "enterprise"}
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    term = Column(String(255), nullable=False, index=True)
+    term = Column(Text, nullable=False, index=True)
     definition = Column(Text, nullable=False)
-    domain = Column(String(128), nullable=True, index=True)
-    status = Column(String(32), nullable=False, default="draft", index=True)
+    domain = Column(Text, nullable=True, index=True)
+    status = Column(Text, nullable=False, default="draft", index=True)
     tags = Column(JSON, nullable=True)
     related_terms = Column(JSON, nullable=True)
     owner_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
@@ -550,13 +550,13 @@ class EnterpriseBusinessReport(Base):
     __table_args__ = {"schema": "enterprise"}
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    title = Column(String(255), nullable=False)
-    report_type = Column(String(64), nullable=False)
-    dataset_name = Column(String(255), nullable=True)
-    status = Column(String(32), nullable=False, default="Certified")
+    title = Column(Text, nullable=False)
+    report_type = Column(Text, nullable=False)
+    dataset_name = Column(Text, nullable=True)
+    status = Column(Text, nullable=False, default="Certified")
     quality_score = Column(Integer, nullable=True)
-    last_refreshed_label = Column(String(64), nullable=True)
-    external_url = Column(String(512), nullable=True)
+    last_refreshed_label = Column(Text, nullable=True)
+    external_url = Column(Text, nullable=True)
     user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
 
@@ -567,7 +567,7 @@ class EnterpriseAlertSubscription(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=False, index=True)
-    dataset_name = Column(String(255), nullable=False)
+    dataset_name = Column(Text, nullable=False)
     threshold = Column(Integer, nullable=False, default=85)
     created_at = Column(DateTime, default=func.now(), nullable=False)
 
@@ -577,9 +577,9 @@ class EnterprisePolicy(Base):
     __table_args__ = {"schema": "enterprise"}
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    policy_name = Column(String(255), nullable=False)
-    domain = Column(String(128), nullable=True, index=True)
-    status = Column(String(32), nullable=False, default="draft", index=True)
+    policy_name = Column(Text, nullable=False)
+    domain = Column(Text, nullable=True, index=True)
+    status = Column(Text, nullable=False, default="draft", index=True)
     content = Column(Text, nullable=True)
     owner_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
@@ -590,9 +590,9 @@ class EnterpriseAnalyticsMetric(Base):
     __table_args__ = {"schema": "enterprise"}
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    metric_key = Column(String(128), nullable=False, index=True)
+    metric_key = Column(Text, nullable=False, index=True)
     metric_value = Column(JSON, nullable=False)
-    domain = Column(String(128), nullable=True, index=True)
+    domain = Column(Text, nullable=True, index=True)
     captured_at = Column(DateTime, default=func.now(), nullable=False, index=True)
 
 
@@ -602,10 +602,10 @@ class EnterpriseNotification(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
-    channel = Column(String(32), nullable=False, default="in_app")
-    subject = Column(String(255), nullable=False)
+    channel = Column(Text, nullable=False, default="in_app")
+    subject = Column(Text, nullable=False)
     body = Column(Text, nullable=True)
-    severity = Column(String(32), nullable=False, default="info")
+    severity = Column(Text, nullable=False, default="info")
     read_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
 
@@ -615,8 +615,38 @@ class EnterpriseReportExport(Base):
     __table_args__ = {"schema": "enterprise"}
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    report_type = Column(String(64), nullable=False)
-    format = Column(String(16), nullable=False)
+    report_type = Column(Text, nullable=False)
+    format = Column(Text, nullable=False)
     payload = Column(JSON, nullable=True)
     created_by_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class GoldenMergeCandidate(Base):
+    __tablename__ = "golden_merge_candidates"
+    __table_args__ = {"schema": "metadata"}
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    dataset_id = Column(Integer, ForeignKey("enterprise.datasets.id"), nullable=False, index=True)
+    row_group_key = Column(Text, nullable=False)  # join key value(s) that link these rows
+    source_values = Column(JSON, nullable=False)  # {source_label: {col: value, ...}, ...}
+    column_scores = Column(JSON, nullable=False)  # {col: {winner_source: str, score: float, values: {...}}}
+    row_score = Column(Numeric, nullable=False)  # 0-100 overall confidence
+    status = Column(Text, nullable=False, default="pending", index=True)  # pending/auto_merged/approved/rejected
+    golden_values = Column(JSON, nullable=True)  # final merged {col: value}
+    resolved_by_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    merge_config_snapshot = Column(JSON, nullable=True)  # config used when this candidate was scored
+
+
+class GoldenMergeConfig(Base):
+    __tablename__ = "golden_merge_configs"
+    __table_args__ = {"schema": "metadata"}
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    dataset_id = Column(Integer, ForeignKey("enterprise.datasets.id"), nullable=False, unique=True)
+    source_priority = Column(JSON, nullable=False, default=list)  # ordered list of source labels
+    auto_merge_threshold = Column(Numeric, nullable=False, default=95.0)
+    review_threshold = Column(Numeric, nullable=False, default=70.0)
+    column_overrides = Column(JSON, nullable=False, default=dict)  # {col: "always_source_label" | "always_compute"}
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)

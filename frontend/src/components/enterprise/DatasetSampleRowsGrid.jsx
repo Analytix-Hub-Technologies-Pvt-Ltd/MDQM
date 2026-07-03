@@ -213,14 +213,17 @@ export default function DatasetSampleRowsGrid({
       minWidth: 200,
       renderCell({ row }) {
         const text = row.golden_remarks || "";
-        if (!text) return <span className="block px-1.5 text-[11px] text-muted-foreground/40"> </span>;
+        const isGolden = row.is_golden_record === "true";
+        if (!isGolden && !text) return <span className="block px-1.5 text-[11px] text-muted-foreground/40"> </span>;
         return (
-          <span
-            className="block truncate px-1.5 text-[11px] font-medium text-success"
-            title={text}
-          >
-            {text}
-          </span>
+          <div className="flex items-center gap-1.5 px-1.5 py-0.5 text-[11px]" title={text}>
+            {isGolden && (
+              <span className="inline-block rounded bg-purple-100 px-1.5 py-0.5 font-bold uppercase tracking-wider text-purple-800 dark:bg-purple-950/40 dark:text-purple-400 text-[8px] leading-none">
+                Golden
+              </span>
+            )}
+            <span className="text-[10px] text-foreground truncate max-w-[150px]">{text || "Merged record"}</span>
+          </div>
         );
       },
     });

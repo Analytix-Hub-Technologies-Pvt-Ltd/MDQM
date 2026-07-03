@@ -315,7 +315,7 @@ def sync_registered_table_columns_from_source(
                 models.ColumnMetadata.job_id == job.job_id,
                 models.ColumnMetadata.table_id == table.table_id,
             )
-            .order_by(models.ColumnMetadata.column_name.asc())
+            .order_by(models.ColumnMetadata.column_id.asc())
             .all()
         )
         return [{"name": c.column_name, "data_type": c.data_type or "String"} for c in rows]

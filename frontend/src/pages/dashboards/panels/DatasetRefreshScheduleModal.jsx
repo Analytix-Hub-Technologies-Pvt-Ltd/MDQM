@@ -163,8 +163,8 @@ export default function DatasetRefreshScheduleModal({ open, jobId, datasetName, 
       title="Schedule data refresh"
       description={
         datasetName
-          ? `Automatic re-import from the database for “${datasetName}”.`
-          : "Automatic re-import from the database on a timer."
+          ? `Automatic data refresh for “${datasetName}”.`
+          : "Automatic data refresh on a timer."
       }
       maxWidth="max-w-md"
       showDefaultFooter={false}

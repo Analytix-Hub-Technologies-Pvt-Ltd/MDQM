@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from typing import Literal
+from typing import Literal, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
@@ -21,6 +21,7 @@ from permissions.permissions import Permissions
 from permissions.role_map import Roles, normalize_role
 from services import business_user_service as busvc
 from services import enterprise_service as esvc
+from services import golden_merge_service as gmsvc
 from services.lineage_service import lineage_graph_payload, seed_lineage_from_datasets
 from utils.audit import write_audit_log
 
@@ -1392,3 +1393,139 @@ def business_cancel_data_request(
     except Exception:
         pass
     return {"cancelled": True}
+
+
+class GoldenConfigBody(BaseModel):
+    source_priority: list[str] = Field(default_factory=list)
+    auto_merge_threshold: float = 95.0
+    review_threshold: float = 70.0
+    column_overrides: dict[str, str] = Field(default_factory=dict)
+
+
+class GoldenResolveBody(BaseModel):
+    action: Literal["approve", "reject"]
+    golden_values: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.post("/governance/datasets/{dataset_id}/golden/analyze")
+def golden_analyze(
+    request: Request,
+    dataset_id: int,
+    body: GoldenConfigBody,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_any_permission(
+        _role(request),
+        Permissions.DASHBOARD_OWNER,
+        Permissions.ADMIN_VIEW,
+    )
+    try:
+        res = gmsvc.analyze_dataset_for_merge(db, dataset_id, body.model_dump())
+        return res
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/governance/datasets/{dataset_id}/golden/candidates")
+def golden_candidates(
+    request: Request,
+    dataset_id: int,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    status: str = Query("all"),
+):
+    require_any_permission(
+        _role(request),
+        Permissions.DASHBOARD_OWNER,
+        Permissions.DASHBOARD_STEWARD,
+        Permissions.ADMIN_VIEW,
+    )
+    try:
+        return gmsvc.get_merge_candidates(db, dataset_id, page, page_size, status)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/governance/datasets/{dataset_id}/golden/candidates/{candidate_id}/resolve")
+def golden_resolve(
+    request: Request,
+    dataset_id: int,
+    candidate_id: int,
+    body: GoldenResolveBody,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_any_permission(
+        _role(request),
+        Permissions.DASHBOARD_OWNER,
+        Permissions.DASHBOARD_STEWARD,
+        Permissions.ADMIN_VIEW,
+    )
+    try:
+        res = gmsvc.resolve_candidate(db, candidate_id, body.golden_values, body.action, user.id)
+        if body.action == "approve" and body.golden_values:
+            dataset = db.query(models.EnterpriseDataset).filter(models.EnterpriseDataset.id == dataset_id).first()
+            if dataset and dataset.job_id:
+                from services.dataset_join_service import _primary_table
+                primary_table = _primary_table(db, dataset.job_id)
+                if primary_table:
+                    # Retrieve the candidate to get row_group_key
+                    cand = db.query(models.GoldenMergeCandidate).filter(models.GoldenMergeCandidate.id == candidate_id).first()
+                    if cand:
+                        gmsvc.apply_golden_values_to_table(
+                            db,
+                            dataset_id,
+                            dataset.job_id,
+                            primary_table.table_id,
+                            cand.row_group_key,
+                            body.golden_values,
+                            remarks="Golden record manually resolved"
+                        )
+        return res
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/governance/datasets/{dataset_id}/golden/config")
+def golden_get_config(
+    request: Request,
+    dataset_id: int,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_any_permission(
+        _role(request),
+        Permissions.DASHBOARD_OWNER,
+        Permissions.DASHBOARD_STEWARD,
+        Permissions.ADMIN_VIEW,
+    )
+    try:
+        return gmsvc.get_merge_config(db, dataset_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/governance/datasets/{dataset_id}/golden/config")
+def golden_put_config(
+    request: Request,
+    dataset_id: int,
+    body: GoldenConfigBody,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_any_permission(
+        _role(request),
+        Permissions.DASHBOARD_OWNER,
+        Permissions.ADMIN_VIEW,
+    )
+    try:
+        return gmsvc.save_merge_config(db, dataset_id, body.model_dump())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

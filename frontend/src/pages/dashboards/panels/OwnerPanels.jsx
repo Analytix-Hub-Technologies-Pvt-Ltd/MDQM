@@ -797,7 +797,7 @@ function GovernanceDatasetSection() {
       headerClassName: "whitespace-nowrap",
       cellClassName: "whitespace-nowrap",
       render: (_, row) => {
-        if (row.source_kind !== "table" || !row.job_id) {
+        if (!row.job_id) {
           return <span className="text-xs text-muted-foreground">—</span>;
         }
         const sched = refreshSchedules[row.job_id];
@@ -882,7 +882,7 @@ function GovernanceDatasetSection() {
           );
         }
 
-        if (showPostLoad && isTableSource) {
+        if (showPostLoad) {
           actionLinks.push(
             <button
               key="schedule"
@@ -891,7 +891,7 @@ function GovernanceDatasetSection() {
               title={
                 sched?.next_run_time
                   ? "Manage automatic refresh schedule"
-                  : "Set automatic refresh from database"
+                  : "Set automatic refresh schedule"
               }
               onClick={() => setScheduleRow(row)}
             >

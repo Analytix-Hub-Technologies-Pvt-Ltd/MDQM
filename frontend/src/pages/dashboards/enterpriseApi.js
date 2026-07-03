@@ -358,3 +358,25 @@ export async function getAuditLogsPaged({ page = 1, pageSize = 20 } = {}) {
   const total = hasMore ? offset + rows.length + 1 : offset + rows.length;
   return { data: { items: rows, total, page, page_size: limit } };
 }
+
+export async function goldenAnalyze(datasetId, config) {
+  return apiClient.post(`/api/enterprise/governance/datasets/${datasetId}/golden/analyze`, config);
+}
+
+export async function goldenCandidates(datasetId, params) {
+  const res = await apiClient.get(`/api/enterprise/governance/datasets/${datasetId}/golden/candidates`, { params });
+  return { data: unwrapList(res) };
+}
+
+export async function goldenResolve(datasetId, candidateId, body) {
+  return apiClient.post(`/api/enterprise/governance/datasets/${datasetId}/golden/candidates/${candidateId}/resolve`, body);
+}
+
+export async function goldenConfig(datasetId) {
+  return apiClient.get(`/api/enterprise/governance/datasets/${datasetId}/golden/config`);
+}
+
+export async function goldenConfigSave(datasetId, config) {
+  return apiClient.put(`/api/enterprise/governance/datasets/${datasetId}/golden/config`, config);
+}
+

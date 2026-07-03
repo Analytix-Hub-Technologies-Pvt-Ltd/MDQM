@@ -143,7 +143,7 @@ const inferSourcePathFromFile = (file) => {
   return normalized;
 };
 
-export default function JobList() {
+export default function JobList({ readOnly = false }) {
   const [jobs, setJobs] = useState([]);
   const [tables, setTables] = useState({});
   const [expandedJob, setExpandedJob] = useState(null);
@@ -2167,19 +2167,21 @@ export default function JobList() {
       {/* HEADER */}
       <div className="p-4 h-24 border-b border-border flex justify-between items-center pr-8 bg-background">
         <h1 className="text-4xl pl-4 font-thin tracking-tighter uppercase">
-          Job List
+          {readOnly ? "Job Audit Log" : "Job List"}
         </h1>
-        <button
-          onClick={openCreateJobModal}
-          className="bg-[#23243B] text-white px-6 py-3 text-md font-semibold uppercase tracking-widest cursor-pointer hover:bg-black transition-colors flex items-center gap-2"
-        >
-          <Plus size={20} />
-          NEW JOB
-        </button>
+        {!readOnly && (
+          <button
+            onClick={openCreateJobModal}
+            className="bg-[#23243B] text-white px-6 py-3 text-md font-semibold uppercase tracking-widest cursor-pointer hover:bg-black transition-colors flex items-center gap-2"
+          >
+            <Plus size={20} />
+            NEW JOB
+          </button>
+        )}
       </div>
 
       <div className="p-8 flex flex-col gap-4">
-        {(() => {
+        {!readOnly && (() => {
           const incompleteCount = jobs.filter((j) => (j.total_tables || 0) === 0).length;
           if (incompleteCount === 0 || showIncompleteJobs) return null;
           return (
@@ -2207,7 +2209,7 @@ export default function JobList() {
             </div>
           );
         })()}
-        {showIncompleteJobs &&
+        {!readOnly && showIncompleteJobs &&
           jobs.some((j) => (j.total_tables || 0) === 0) && (
             <div className="flex flex-wrap gap-3 self-start">
               <button
@@ -2298,38 +2300,37 @@ export default function JobList() {
                 </div>
 
                 <div className="flex items-center gap-4">
-                  <button
-                    onClick={(e) => {
-                      if (runningJobs[job.job_id]) {
+                  {!readOnly && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
                         e.stopPropagation();
-                        return;
-                      }
-                      if ((job.total_tables || 0) === 0) {
-                        e.stopPropagation();
-                        alert("No tables attached to this job. Upload/import data first.");
-                        return;
-                      }
-                      handleRunJob(job.job_id, e);
-                    }}
-                    disabled={(job.total_tables || 0) === 0 || !!runningJobs[job.job_id]}
-                    className={`min-w-[150px] justify-center text-white px-6 py-3 text-md uppercase tracking-widest flex items-center gap-2 transition-colors ${
-                      (job.total_tables || 0) === 0 || runningJobs[job.job_id]
-                        ? "bg-gray-400 cursor-not-allowed"
-                        : "bg-green-600 cursor-pointer hover:bg-green-700"
-                    }`}
-                  >
-                    {runningJobs[job.job_id] ? (
-                      <>
-                        <Loader2 size={16} className="animate-spin" />
-                        Running...
-                      </>
-                    ) : (
-                      <>
-                        <Play size={15} />
-                        Run Job
-                      </>
-                    )}
-                  </button>
+                        if ((job.total_tables || 0) === 0) {
+                          alert("No tables attached to this job. Upload/import data first.");
+                          return;
+                        }
+                        handleRunJob(job.job_id, e);
+                      }}
+                      disabled={(job.total_tables || 0) === 0 || !!runningJobs[job.job_id]}
+                      className={`min-w-[150px] justify-center text-white px-6 py-3 text-md uppercase tracking-widest flex items-center gap-2 transition-colors ${
+                        (job.total_tables || 0) === 0 || runningJobs[job.job_id]
+                          ? "bg-gray-400 cursor-not-allowed"
+                          : "bg-green-600 cursor-pointer hover:bg-green-700"
+                      }`}
+                    >
+                      {runningJobs[job.job_id] ? (
+                        <>
+                          <Loader2 size={16} className="animate-spin" />
+                          Running...
+                        </>
+                      ) : (
+                        <>
+                          <Play size={15} />
+                          Run Job
+                        </>
+                      )}
+                    </button>
+                  )}
                   <div className="relative">
                     <button
                       onClick={(e) => {
@@ -2348,52 +2349,56 @@ export default function JobList() {
                             setActionMenu({ type: null, id: null })
                           }
                         >
-                          <div
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setActionMenu({ type: null, id: null });
-                              handleOpenEditFlow(job);
-                            }}
-                            className="px-4 py-2 text-xs uppercase tracking-wider hover:bg-muted cursor-pointer flex items-center gap-2"
-                          >
-                            <Edit2 size={12} /> Edit Job
-                          </div>
-                          <div
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setRenameModal({
-                                isOpen: true,
-                                type: "job",
-                                id: job.job_id,
-                                currentName: job.job_name,
-                                newName: job.job_name,
-                              });
-                              setActionMenu({ type: null, id: null });
-                            }}
-                            className="px-4 py-2 text-xs uppercase tracking-wider hover:bg-muted cursor-pointer flex items-center gap-2"
-                          >
-                            <Edit2 size={12} /> Rename Job
-                          </div>
-                          <div
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if ((job.total_tables || 0) === 0) {
-                                alert("No tables attached to this job. Upload/import data first.");
-                                setActionMenu({ type: null, id: null });
-                                return;
-                              }
-                              setActionMenu({ type: null, id: null });
-                              setScheduleContextJobId(job.job_id);
-                              setShowSchedule(true);
-                            }}
-                            className={`px-4 py-2 text-xs uppercase tracking-wider flex items-center gap-2 ${
-                              (job.total_tables || 0) === 0
-                                ? "text-gray-400 cursor-not-allowed bg-muted"
-                                : "hover:bg-muted cursor-pointer"
-                            }`}
-                          >
-                            <Clock3 size={12} /> Schedule
-                          </div>
+                          {!readOnly && (
+                            <>
+                              <div
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActionMenu({ type: null, id: null });
+                                  handleOpenEditFlow(job);
+                                }}
+                                className="px-4 py-2 text-xs uppercase tracking-wider hover:bg-muted cursor-pointer flex items-center gap-2"
+                              >
+                                <Edit2 size={12} /> Edit Job
+                              </div>
+                              <div
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setRenameModal({
+                                    isOpen: true,
+                                    type: "job",
+                                    id: job.job_id,
+                                    currentName: job.job_name,
+                                    newName: job.job_name,
+                                  });
+                                  setActionMenu({ type: null, id: null });
+                                }}
+                                className="px-4 py-2 text-xs uppercase tracking-wider hover:bg-muted cursor-pointer flex items-center gap-2"
+                              >
+                                <Edit2 size={12} /> Rename Job
+                              </div>
+                              <div
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if ((job.total_tables || 0) === 0) {
+                                    alert("No tables attached to this job. Upload/import data first.");
+                                    setActionMenu({ type: null, id: null });
+                                    return;
+                                  }
+                                  setActionMenu({ type: null, id: null });
+                                  setScheduleContextJobId(job.job_id);
+                                  setShowSchedule(true);
+                                }}
+                                className={`px-4 py-2 text-xs uppercase tracking-wider flex items-center gap-2 ${
+                                  (job.total_tables || 0) === 0
+                                    ? "text-gray-400 cursor-not-allowed bg-muted"
+                                    : "hover:bg-muted cursor-pointer"
+                                }`}
+                              >
+                                <Clock3 size={12} /> Schedule
+                              </div>
+                            </>
+                          )}
                           <div
                             onClick={async (e) => {
                               e.stopPropagation();
@@ -2419,7 +2424,7 @@ export default function JobList() {
                           >
                             <Download size={12} /> Download Zip
                           </div>
-                          {schedulesByJob[job.job_id] ? (
+                          {!readOnly && schedulesByJob[job.job_id] ? (
                             schedulesByJob[job.job_id].paused ? (
                               <div
                                 onClick={(e) => {
@@ -2444,7 +2449,7 @@ export default function JobList() {
                               </div>
                             )
                           ) : null}
-                          {schedulesByJob[job.job_id] ? (
+                          {!readOnly && schedulesByJob[job.job_id] ? (
                             <div
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -2456,15 +2461,17 @@ export default function JobList() {
                               <Trash2 size={12} /> Delete Schedule
                             </div>
                           ) : null}
-                          <div
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDelete("job", job.job_id);
-                            }}
-                            className="px-4 py-2 text-xs uppercase tracking-wider text-red-600 hover:bg-red-50 cursor-pointer flex items-center gap-2 border-t border-border"
-                          >
-                            <Trash2 size={12} /> Delete Job
-                          </div>
+                          {!readOnly && (
+                            <div
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDelete("job", job.job_id);
+                              }}
+                              className="px-4 py-2 text-xs uppercase tracking-wider text-red-600 hover:bg-red-50 cursor-pointer flex items-center gap-2 border-t border-border"
+                            >
+                              <Trash2 size={12} /> Delete Job
+                            </div>
+                          )}
                         </div>
                       )}
                   </div>
@@ -2621,21 +2628,23 @@ export default function JobList() {
                                   setActionMenu({ type: null, id: null })
                                 }
                               >
-                                <div
-                                  onClick={() => {
-                                    setRenameModal({
-                                      isOpen: true,
-                                      type: "table",
-                                      id: table.table_id,
-                                      currentName: table.table_name,
-                                      newName: table.table_name,
-                                    });
-                                    setActionMenu({ type: null, id: null });
-                                  }}
-                                  className="px-4 py-2 text-xs uppercase tracking-wider hover:bg-gray-100 cursor-pointer flex items-center gap-2"
-                                >
-                                  <Edit2 size={12} /> Rename Table
-                                </div>
+                                {!readOnly && (
+                                  <div
+                                    onClick={() => {
+                                      setRenameModal({
+                                        isOpen: true,
+                                        type: "table",
+                                        id: table.table_id,
+                                        currentName: table.table_name,
+                                        newName: table.table_name,
+                                      });
+                                      setActionMenu({ type: null, id: null });
+                                    }}
+                                    className="px-4 py-2 text-xs uppercase tracking-wider hover:bg-gray-100 cursor-pointer flex items-center gap-2"
+                                  >
+                                    <Edit2 size={12} /> Rename Table
+                                  </div>
+                                )}
                                 <div
                                   onClick={async (e) => {
                                     e.stopPropagation();
@@ -2657,14 +2666,16 @@ export default function JobList() {
                                 >
                                   <Download size={12} /> Download Excel
                                 </div>
-                                <div
-                                  onClick={() =>
-                                    handleDelete("table", table.table_id)
-                                  }
-                                  className="px-4 py-2 text-xs uppercase tracking-wider text-red-600 hover:bg-red-50 cursor-pointer flex items-center gap-2 border-t border-border"
-                                >
-                                  <Trash2 size={12} /> Remove Table
-                                </div>
+                                {!readOnly && (
+                                  <div
+                                    onClick={() =>
+                                      handleDelete("table", table.table_id)
+                                    }
+                                    className="px-4 py-2 text-xs uppercase tracking-wider text-red-600 hover:bg-red-50 cursor-pointer flex items-center gap-2 border-t border-border"
+                                  >
+                                    <Trash2 size={12} /> Remove Table
+                                  </div>
+                                )}
                               </div>
                             )}
                         </div>
@@ -2673,7 +2684,7 @@ export default function JobList() {
                       {/* THE COLUMN AUDIT (Conditional Rendering) */}
                       {expandedTables[table.table_id] && (
                         <div className="border-x border-b border-border animate-in fade-in slide-in-from-top-2 duration-200">
-                          <ColumnAudit tableId={table.table_id} />
+                          <ColumnAudit tableId={table.table_id} readOnly={readOnly} />
                         </div>
                       )}
                     </div>

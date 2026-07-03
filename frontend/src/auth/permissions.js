@@ -2,6 +2,7 @@ export const PERMISSIONS = {
   DASHBOARD_VIEW: "dashboard.view",
   JOBS_VIEW: "jobs.view",
   JOBS_MANAGE: "jobs.manage",
+  JOBS_INTERNAL: "jobs.internal",
   RULES_VIEW: "rules.view",
   RULES_MANAGE: "rules.manage",
   QUARANTINE_VIEW: "quarantine.view",

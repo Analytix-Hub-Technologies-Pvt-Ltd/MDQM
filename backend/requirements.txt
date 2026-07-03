@@ -10,11 +10,9 @@ click
 colorama
 et_xmlfile
 fastapi
-fuzzywuzzy
 greenlet
 h11
 idna
-Levenshtein
 numpy
 openpyxl
 pandas
@@ -26,7 +24,6 @@ pymysql
 pydantic
 pydantic_core
 python-dateutil
-python-Levenshtein
 python-dotenv
 python-multipart
 RapidFuzz
@@ -42,3 +39,5 @@ ydata-profiling
 groq
 setuptools>=68,<82
 uvicorn
+databricks-sql-connector
+snowflake-connector-python

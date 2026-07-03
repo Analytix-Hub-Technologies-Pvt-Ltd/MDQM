@@ -18,6 +18,7 @@ import StewardshipPage from "./pages/StewardshipPage";
 import DeveloperToolsPage from "./pages/DeveloperToolsPage";
 import ProtectedRoute from "./auth/ProtectedRoute";
 import PermissionGuard from "./auth/PermissionGuard";
+import AdminOnly from "@/components/guards/AdminOnly";
 import { PERMISSIONS } from "./auth/permissions";
 import GovernanceRoute from "./pages/GovernanceRoute";
 import { Card, CardContent } from "@/components/ui/card";
@@ -50,7 +51,15 @@ function AppShell() {
         <Route
           path="/jobs"
           element={
-            <PermissionGuard require={PERMISSIONS.JOBS_VIEW}>
+            <PermissionGuard require={PERMISSIONS.JOBS_INTERNAL}>
+              <JobList />
+            </PermissionGuard>
+          }
+        />
+        <Route
+          path="/jobs/*"
+          element={
+            <PermissionGuard require={PERMISSIONS.JOBS_INTERNAL}>
               <JobList />
             </PermissionGuard>
           }
@@ -129,6 +138,7 @@ function AppShell() {
         >
           <Route index element={<AdminPanel />} />
           <Route path="access-requests" element={<AdminAccessRequestsPage />} />
+          <Route path="jobs" element={<JobList readOnly={true} />} />
         </Route>
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
