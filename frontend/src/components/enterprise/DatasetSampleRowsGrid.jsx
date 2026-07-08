@@ -7,6 +7,7 @@ import { modalLabelClass } from "@/components/layout/AppModal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { DqFailedRemarksCell } from "@/components/enterprise/DqFailedRemarksCell";
 
 const PAGE_SIZES = [10, 25, 50];
 
@@ -190,18 +191,9 @@ export default function DatasetSampleRowsGrid({
       name: "DQ REMARKS",
       resizable: true,
       sortable: false,
-      minWidth: 180,
+      minWidth: 220,
       renderCell({ row }) {
-        const text = row.dq_remarks || "";
-        if (!text) return <span className="block px-1.5 text-[11px] text-muted-foreground/40"> </span>;
-        return (
-          <span
-            className="block truncate px-1.5 text-[11px] text-destructive"
-            title={text}
-          >
-            {text}
-          </span>
-        );
+        return <DqFailedRemarksCell row={row} />;
       },
     });
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import EnterpriseDataPanel, { StatusBadge } from "../../../components/enterprise/EnterpriseDataPanel";
 import { getAllJobs } from "../../../api";
 import {
@@ -16,6 +16,7 @@ import StewardshipTasksTable from "@/components/stewardship/StewardshipTasksTabl
 import { useAuth } from "@/auth/AuthContext";
 import { ROLES } from "@/auth/rolePermissions";
 import GoldenMergePanel from "@/components/enterprise/GoldenMergePanel";
+import StewardCatalogPanel from "./steward/StewardCatalogPanel";
 
 const btnOutline =
   "inline-flex items-center rounded border border-border bg-card px-3 py-2 text-xs font-medium uppercase tracking-wider text-foreground hover:bg-muted";
@@ -50,6 +51,7 @@ const valCols = [
 ];
 
 function ValidationRunPanel() {
+  const [searchParams] = useSearchParams();
   const [jobs, setJobs] = useState([]);
   const [jobId, setJobId] = useState("");
   const [busy, setBusy] = useState(false);
@@ -61,6 +63,11 @@ function ValidationRunPanel() {
       .then((r) => setJobs(Array.isArray(r.data) ? r.data : []))
       .catch(() => setJobs([]));
   }, []);
+
+  useEffect(() => {
+    const fromUrl = searchParams.get("job");
+    if (fromUrl) setJobId(fromUrl);
+  }, [searchParams]);
 
   const run = async () => {
     setErr("");
@@ -237,6 +244,8 @@ function StewardMatchingTab() {
 
 export function renderStewardTab(tabId) {
   switch (tabId) {
+    case "catalog":
+      return <StewardCatalogPanel />;
     case "rules":
       return (
         <div className="enterprise-card p-5 text-sm text-muted-foreground">

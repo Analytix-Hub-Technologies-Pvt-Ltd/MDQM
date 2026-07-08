@@ -21,6 +21,7 @@ export default function StewardDashboard() {
       subtitle="Validation failures, quarantine load, remediation workflow, and stewardship queues."
       accent="teal"
       tabs={TABS}
+      sidebarOnlyTabIds={["catalog"]}
       overview={
         <RoleDashboardCore endpoint="steward">
           <StewardWorkQueuePanel />

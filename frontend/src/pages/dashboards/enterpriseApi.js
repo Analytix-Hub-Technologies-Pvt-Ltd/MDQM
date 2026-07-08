@@ -277,6 +277,20 @@ export async function enterpriseBusinessCatalogChartInsights(datasetId, { refres
   return apiClient.get(`/api/enterprise/business/catalog/${datasetId}/chart-insights${q}`);
 }
 
+export async function enterpriseStewardCatalog(params) {
+  const res = await apiClient.get("/api/enterprise/steward/catalog", { params });
+  return { data: unwrapList(res) };
+}
+
+export async function enterpriseStewardCatalogDetail(datasetId) {
+  return apiClient.get(`/api/enterprise/steward/catalog/${datasetId}/detail`);
+}
+
+export async function enterpriseStewardCatalogChartInsights(datasetId, { refresh = false } = {}) {
+  const q = refresh ? "?refresh=true" : "";
+  return apiClient.get(`/api/enterprise/steward/catalog/${datasetId}/chart-insights${q}`);
+}
+
 export async function enterpriseBusinessQualityScores(params) {
   return apiClient.get("/api/enterprise/business/quality-scores", { params });
 }

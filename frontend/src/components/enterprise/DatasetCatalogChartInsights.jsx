@@ -31,7 +31,7 @@ import { Sparkles, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import RechartsTooltip from "@/components/charts/RechartsTooltip";
 import { getChartColors } from "@/lib/chartTheme";
-import { enterpriseGovernanceDatasetChartInsights, enterpriseBusinessCatalogChartInsights } from "@/pages/dashboards/enterpriseApi";
+import { enterpriseGovernanceDatasetChartInsights, enterpriseBusinessCatalogChartInsights, enterpriseStewardCatalogChartInsights } from "@/pages/dashboards/enterpriseApi";
 import { cn } from "@/lib/utils";
 
 const CHART_TYPE_LABELS = {
@@ -350,7 +350,11 @@ export default function DatasetCatalogChartInsights({
   const colors = useMemo(() => getChartColors(), []);
 
   const fetchInsights =
-    audience === "business" ? enterpriseBusinessCatalogChartInsights : enterpriseGovernanceDatasetChartInsights;
+    audience === "business"
+      ? enterpriseBusinessCatalogChartInsights
+      : audience === "steward"
+        ? enterpriseStewardCatalogChartInsights
+        : enterpriseGovernanceDatasetChartInsights;
 
   const load = useCallback(
     async (refresh = false) => {

@@ -23,13 +23,18 @@ export default function EnterpriseDashboardShell({
   hideTabBar = false,
   showOverview = true,
   defaultTab = null,
+  /** Tab ids reachable via sidebar (?tab=) but omitted from the horizontal tab bar */
+  sidebarOnlyTabIds = [],
 }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const tabDefs = useMemo(
     () => (showOverview ? [{ id: "overview", label: overviewLabel || "Overview" }, ...tabs] : tabs),
     [tabs, overviewLabel, showOverview],
   );
-  const validIds = useMemo(() => new Set(tabDefs.map((t) => t.id)), [tabDefs]);
+  const validIds = useMemo(
+    () => new Set([...tabDefs.map((t) => t.id), ...sidebarOnlyTabIds]),
+    [tabDefs, sidebarOnlyTabIds],
+  );
   const fallbackTab = showOverview ? "overview" : defaultTab || tabs[0]?.id || "overview";
 
   const rawTab = searchParams.get("tab");

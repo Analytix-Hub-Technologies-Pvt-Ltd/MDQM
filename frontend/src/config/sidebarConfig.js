@@ -53,6 +53,7 @@ export const SIDEBAR_CONFIG = {
   [ROLES.DATA_STEWARD]: [
     { group: "Stewardship", items: [
       { label: "Dashboard", path: "/dashboard", icon: LayoutDashboard, permission: PERMISSIONS.DASHBOARD_VIEW },
+      { label: "Data Catalog", path: "/dashboard?tab=catalog", icon: LibraryBig, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "DB Connections", path: "/connections", icon: Database, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "Rules", path: "/rules", icon: ShieldCheck, permission: PERMISSIONS.RULES_VIEW },
       { label: "Stewardship", path: "/stewardship", icon: UserCheck, permission: PERMISSIONS.STEWARDSHIP_VIEW },
