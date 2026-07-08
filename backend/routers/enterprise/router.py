@@ -358,6 +358,7 @@ def governance_datasets(
         _role(request),
         Permissions.DASHBOARD_OWNER,
         Permissions.DASHBOARD_CDO,
+        Permissions.DASHBOARD_STEWARD,
         Permissions.DASHBOARD_BUSINESS_USER,
         Permissions.GOVERNANCE_VIEW,
         Permissions.ADMIN_VIEW,
@@ -507,6 +508,7 @@ def governance_dataset_preview(
         _role(request),
         Permissions.DASHBOARD_OWNER,
         Permissions.DASHBOARD_CDO,
+        Permissions.DASHBOARD_STEWARD,
         Permissions.DASHBOARD_BUSINESS_USER,
         Permissions.GOVERNANCE_VIEW,
         Permissions.ADMIN_VIEW,
@@ -556,6 +558,7 @@ def governance_dataset_chart_insights(
         _role(request),
         Permissions.DASHBOARD_OWNER,
         Permissions.DASHBOARD_CDO,
+        Permissions.DASHBOARD_STEWARD,
         Permissions.DASHBOARD_BUSINESS_USER,
         Permissions.GOVERNANCE_VIEW,
         Permissions.ADMIN_VIEW,
@@ -563,7 +566,17 @@ def governance_dataset_chart_insights(
     refresh = (request.query_params.get("refresh") or "").strip().lower() in ("1", "true", "yes")
     from services.dataset_chart_insights_service import build_dataset_chart_insights
 
-    result = build_dataset_chart_insights(db, dataset_id, refresh=refresh)
+    try:
+        result = build_dataset_chart_insights(db, dataset_id, refresh=refresh)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).exception("chart-insights failed dataset=%s", dataset_id)
+        return {
+            "ok": False,
+            "dataset_id": dataset_id,
+            "charts": [],
+            "error": str(exc) or "Chart insights failed.",
+        }
     if result.get("ok") is False and result.get("error") == "Dataset not found":
         raise HTTPException(status_code=404, detail="Dataset not found")
     return result
@@ -1212,6 +1225,62 @@ def business_catalog(
 ):
     require_permission(_role(request), Permissions.DASHBOARD_BUSINESS_USER)
     return busvc.list_catalog(db, page, page_size, q, username=user.username)
+
+
+@router.get("/steward/catalog")
+def steward_catalog(
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    q: str | None = None,
+    assigned_to_me: bool = Query(False),
+):
+    require_permission(_role(request), Permissions.DASHBOARD_STEWARD)
+    steward_label = None
+    if assigned_to_me:
+        steward_label = (user.full_name or user.username or user.email or "").strip() or None
+    return busvc.list_steward_catalog(
+        db,
+        page,
+        page_size,
+        q,
+        assigned_to_me=assigned_to_me,
+        steward_label=steward_label,
+    )
+
+
+@router.get("/steward/catalog/{dataset_id}/detail")
+def steward_catalog_dataset_detail(
+    dataset_id: int,
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_permission(_role(request), Permissions.DASHBOARD_STEWARD)
+    detail = busvc.build_steward_catalog_dataset_detail(db, dataset_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return detail
+
+
+@router.get("/steward/catalog/{dataset_id}/chart-insights")
+def steward_catalog_chart_insights(
+    dataset_id: int,
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_permission(_role(request), Permissions.DASHBOARD_STEWARD)
+    refresh = (request.query_params.get("refresh") or "").strip().lower() in ("1", "true", "yes")
+    result = busvc.build_steward_catalog_chart_insights(db, dataset_id, refresh=refresh)
+    if result.get("ok") is False:
+        err = result.get("error") or "Request failed"
+        if err == "Dataset not found":
+            raise HTTPException(status_code=404, detail=err)
+        raise HTTPException(status_code=400, detail=err)
+    return result
 
 
 @router.get("/business/catalog/{dataset_id}/detail")

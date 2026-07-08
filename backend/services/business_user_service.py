@@ -667,3 +667,69 @@ def cancel_data_request(db: Session, username: str, request_id: int) -> bool:
     row.status = "cancelled"
     db.commit()
     return True
+
+
+# --- Steward data catalog (full read access; no access-request workflow) ---
+
+
+def enrich_dataset_for_steward(db: Session, row: models.EnterpriseDataset) -> dict[str, Any]:
+    out = enrich_dataset(db, row, username=None)
+    out["access_granted"] = True
+    return out
+
+
+def list_steward_catalog(
+    db: Session,
+    page: int,
+    page_size: int,
+    q: str | None = None,
+    *,
+    assigned_to_me: bool = False,
+    steward_label: str | None = None,
+):
+    offset, page_size = _page_bounds(page, page_size)
+    query = (
+        db.query(models.EnterpriseDataset)
+        .filter(models.EnterpriseDataset.deleted_at.is_(None))
+        .order_by(models.EnterpriseDataset.name.asc())
+    )
+    if q and str(q).strip():
+        term = f"%{str(q).strip()}%"
+        query = query.filter(
+            (models.EnterpriseDataset.name.ilike(term)) | (models.EnterpriseDataset.domain.ilike(term))
+        )
+    if assigned_to_me and steward_label and str(steward_label).strip():
+        label = str(steward_label).strip()
+        query = query.filter(models.EnterpriseDataset.steward_name.ilike(label))
+    total = query.count()
+    rows = query.offset(offset).limit(page_size).all()
+    items = [enrich_dataset_for_steward(db, r) for r in rows]
+    return paginated_response(items, total, page, page_size)
+
+
+def build_steward_catalog_dataset_detail(db: Session, dataset_id: int) -> dict[str, Any] | None:
+    detail = build_business_catalog_dataset_detail(db, dataset_id, username=None)
+    if not detail:
+        return None
+    catalog = detail.get("catalog") or {}
+    catalog["access_granted"] = True
+    detail["catalog"] = catalog
+    dq = detail.get("dq") or {}
+    if not dq.get("has_run"):
+        dq["message"] = "No DQ run recorded yet. Run validation from the Validation tab."
+    detail["dq"] = dq
+    return detail
+
+
+def build_steward_catalog_chart_insights(
+    db: Session,
+    dataset_id: int,
+    *,
+    refresh: bool = False,
+) -> dict[str, Any]:
+    row = db.query(models.EnterpriseDataset).filter(models.EnterpriseDataset.id == dataset_id).first()
+    if not row:
+        return {"ok": False, "error": "Dataset not found"}
+    from services.dataset_chart_insights_service import build_dataset_chart_insights
+
+    return build_dataset_chart_insights(db, dataset_id, refresh=refresh)

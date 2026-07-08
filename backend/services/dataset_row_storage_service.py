@@ -40,6 +40,12 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 import models
+from services.dq_remarks_helper import (
+    attach_dq_remark_fields,
+    build_categorized_dq_remarks,
+    build_dq_remarks_from_column_flags,
+    parse_dq_remarks,
+)
 from services.physical_table_manager import (
     DATASETS_SCHEMA,
     batch_insert_dataframe,
@@ -59,6 +65,18 @@ logger = logging.getLogger(__name__)
 
 _INTERNAL_COLS = frozenset({"_row_index", "_dq_passed", "_is_golden", "_dq_remarks", "_golden_remarks"})
 _LEGACY_RESERVED = frozenset({"job_id", "table_id"})
+_ROW_METADATA_KEYS = frozenset(
+    {"job_id", "table_id", "is_golden_record", "golden_remarks", "dq_remarks", "dq_failed_remarks"}
+)
+
+
+def _strip_grid_metadata(row: dict[str, Any]) -> dict[str, Any]:
+    """Remove DQ / golden-record fields so analytics dataframes only contain user columns."""
+    return {
+        k: v
+        for k, v in row.items()
+        if k not in _ROW_METADATA_KEYS and not k.endswith("__dq_pass") and not k.endswith("__dq_remark")
+    }
 
 
 def _utc_now() -> datetime:
@@ -319,12 +337,9 @@ def _read_physical_table(db, job_id, table_id, *, offset=0, limit=None):
         dq_passed = row_dict.get("_dq_passed")
         dq_remarks = row_dict.get("_dq_remarks")
         failed_cols_map = {}
-        if dq_remarks:
-            parts = str(dq_remarks).split("; ")
-            for part in parts:
-                if ":" in part:
-                    cname, remark = part.split(":", 1)
-                    failed_cols_map[cname.strip()] = remark.strip()
+        dq_failed_remarks = parse_dq_remarks(dq_remarks)
+        for item in dq_failed_remarks:
+            failed_cols_map[item["column"]] = item["message"]
 
         row_out = {}
         # Map user columns back to original names
@@ -343,7 +358,8 @@ def _read_physical_table(db, job_id, table_id, *, offset=0, limit=None):
 
         row_out["is_golden_record"] = "true" if row_dict.get("_is_golden") else "false"
         row_out["golden_remarks"] = str(row_dict.get("_golden_remarks")) if row_dict.get("_golden_remarks") is not None else ""
-        row_out["dq_remarks"] = str(row_dict.get("_dq_remarks")) if row_dict.get("_dq_remarks") is not None else ""
+        attach_dq_remark_fields(row_out, dq_remarks)
+        row_out["dq_failed_remarks"] = dq_failed_remarks
 
         # If ColumnMetadata is missing, fallback to returning keys as-is
         if not cols:
@@ -351,7 +367,7 @@ def _read_physical_table(db, job_id, table_id, *, offset=0, limit=None):
             row_out = {k: (str(row_dict[k]) if row_dict[k] is not None else "") for k in user_keys}
             row_out["is_golden_record"] = "true" if row_dict.get("_is_golden") else "false"
             row_out["golden_remarks"] = str(row_dict.get("_golden_remarks")) if row_dict.get("_golden_remarks") is not None else ""
-            row_out["dq_remarks"] = str(row_dict.get("_dq_remarks")) if row_dict.get("_dq_remarks") is not None else ""
+            attach_dq_remark_fields(row_out, row_dict.get("_dq_remarks"))
 
         out.append(row_out)
     return out
@@ -447,13 +463,27 @@ def _load_flat_rows_from_legacy(db, job_id, table_id, *, offset=0, limit=None):
     by_row = {}
     for cell in cells:
         by_row.setdefault(cell.row_index, []).append(cell)
+
     out = []
     for header in headers:
         row_cells = by_row.get(header.row_index, [])
         flat = {}
+        dq_failed_remarks = []
         if row_cells:
             for cell in row_cells:
                 flat[cell.column_name] = cell.value_text or ""
+                if cell.dq_passed is not None:
+                    flat[f"{cell.column_name}__dq_pass"] = "true" if cell.dq_passed else "false"
+                    flat[f"{cell.column_name}__dq_remark"] = cell.dq_remark or ""
+                    if cell.dq_passed is False:
+                        dq_failed_remarks.append(
+                            {
+                                "category": "Validation",
+                                "column": cell.column_name,
+                                "message": cell.dq_remark or "fail",
+                                "value": cell.value_text,
+                            }
+                        )
         else:
             for k, v in (header.row_data or {}).items():
                 flat[str(k)] = _normalize_value(v)
@@ -461,9 +491,16 @@ def _load_flat_rows_from_legacy(db, job_id, table_id, *, offset=0, limit=None):
         flat["table_id"] = str(header.table_id)
         flat["is_golden_record"] = "true" if header.is_golden_record else "false"
         if header.dq_remarks:
-            flat["dq_remarks"] = header.dq_remarks
+            attach_dq_remark_fields(flat, header.dq_remarks)
+            if not dq_failed_remarks:
+                dq_failed_remarks = flat.get("dq_failed_remarks") or []
+        else:
+            attach_dq_remark_fields(flat, None)
+        flat["dq_failed_remarks"] = dq_failed_remarks
         if header.golden_remarks:
             flat["golden_remarks"] = header.golden_remarks
+        else:
+            flat["golden_remarks"] = ""
         out.append(flat)
     return out
 
@@ -496,13 +533,15 @@ def load_dataframe(db, job_id, table_id, *, nrows=None):
     if _get_registry(db, job_id, table_id) is not None or _physical_table_exists(db, job_id, table_id):
         try:
             rows = _read_physical_table(db, job_id, table_id, offset=0, limit=nrows)
-            return pd.DataFrame(rows) if rows else pd.DataFrame()
+            clean = [_strip_grid_metadata(r) for r in rows] if rows else []
+            return pd.DataFrame(clean) if clean else pd.DataFrame()
         except Exception as exc:
             logger.warning("Physical table read failed (job=%s, table=%s): %s", job_id, table_id, exc)
     if _has_legacy_rows(db, job_id, table_id):
         _migrate_legacy_to_physical(db, job_id, table_id)
         rows = _read_physical_table(db, job_id, table_id, offset=0, limit=nrows)
-        return pd.DataFrame(rows) if rows else None
+        clean = [_strip_grid_metadata(r) for r in rows] if rows else []
+        return pd.DataFrame(clean) if clean else None
     return None
 
 
@@ -576,10 +615,16 @@ def load_table_rows_page(db, job_id, table_name, *, table_id=None, offset=0, lim
                 or 0
             )
             clean = []
+            rows_flat = _load_flat_rows_from_legacy(db, job_id, tid, offset=offset, limit=limit)
             for r in rows_flat:
                 row_clean = {k: v for k, v in r.items() if k not in ("job_id", "table_id") and "__dq_" not in k}
                 row_clean["is_golden_record"] = r.get("is_golden_record", "false")
                 row_clean["golden_remarks"] = r.get("golden_remarks", "")
+                row_clean["dq_remarks"] = r.get("dq_remarks", "")
+                row_clean["dq_failed_remarks"] = r.get("dq_failed_remarks") or []
+                for k, v in r.items():
+                    if k.endswith("__dq_pass") or k.endswith("__dq_remark"):
+                        row_clean[k] = v
                 clean.append(row_clean)
             return clean, int(total)
 
@@ -607,6 +652,8 @@ def load_table_rows_page(db, job_id, table_name, *, table_id=None, offset=0, lim
         row_clean = {str(k): _normalize_value(v) for k, v in r.items()}
         row_clean["is_golden_record"] = "false"
         row_clean["golden_remarks"] = ""
+        row_clean["dq_remarks"] = ""
+        row_clean["dq_failed_remarks"] = []
         if tid is not None:
             row_clean["job_id"] = str(job_id)
             row_clean["table_id"] = str(tid)
@@ -702,10 +749,14 @@ def apply_dq_results(db, job_id, table_id, results):
         for item in results:
             row_index = int(item["row_index"])
             column_flags = item.get("column_flags") or {}
+            row_errors = item.get("row_errors")
+            if row_errors:
+                dq_remarks, _ = build_categorized_dq_remarks(row_errors)
+            elif item.get("dq_remarks"):
+                dq_remarks = item.get("dq_remarks")
+            else:
+                dq_remarks, _ = build_dq_remarks_from_column_flags(column_flags)
             failed_cols = [col for col, flag in column_flags.items() if not flag.get("passed", True)]
-            dq_remarks = "; ".join(
-                f"{col}: {column_flags[col].get('remark', 'fail')}" for col in failed_cols
-            ) or None
             update_rows.append(
                 {
                     "row_idx": row_index + 1,
@@ -740,10 +791,17 @@ def apply_dq_results(db, job_id, table_id, results):
         if not header:
             continue
         header.is_golden_record = bool(item.get("is_golden_record"))
-        header.dq_remarks = item.get("dq_remarks") or None
+        row_errors = item.get("row_errors")
+        if row_errors:
+            dq_remarks, dq_failed = build_categorized_dq_remarks(row_errors)
+        else:
+            dq_remarks = item.get("dq_remarks")
+            dq_failed = item.get("dq_failed_remarks") or parse_dq_remarks(dq_remarks)
+        header.dq_remarks = dq_remarks or None
         header.golden_remarks = item.get("golden_remarks") or None
         column_flags = item.get("column_flags") or {}
         merged_values = item.get("merged_values") or {}
+        failed_by_col = {f["column"]: f for f in dq_failed}
         for col, flag in column_flags.items():
             cell = (
                 db.query(models.DatasetRowCell)
@@ -758,7 +816,8 @@ def apply_dq_results(db, job_id, table_id, results):
             if not cell:
                 continue
             cell.dq_passed = bool(flag.get("passed"))
-            cell.dq_remark = flag.get("remark") or None
+            fail_info = failed_by_col.get(col)
+            cell.dq_remark = (fail_info or {}).get("message") or flag.get("remark") or None
             if col in merged_values:
                 cell.value_text = str(merged_values[col])
 

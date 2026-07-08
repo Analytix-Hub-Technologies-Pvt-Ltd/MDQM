@@ -6,6 +6,7 @@ import models
 
 # --- IMPORT THE NEW LIBRARY ---
 from .rule_library import RuleLibrary
+from services.dq_remarks_helper import build_categorized_dq_remarks
 
 from utils.upload_paths import resolve_table_csv_path
 
@@ -55,9 +56,10 @@ def _evaluate_row_rules(row: pd.Series, rules: list, master_data_cache: dict, da
         )
 
         if not valid:
+            etype = "Fuzzy" if rule.rule_type == "fuzzy_match" else "Validation"
             column_flags[col]["passed"] = False
             column_flags[col]["remark"] = msg
-            etype = "Fuzzy" if rule.rule_type == "fuzzy_match" else "Validation"
+            column_flags[col]["category"] = etype
             if etype == "Fuzzy":
                 fuzzy_errs += 1
             else:
@@ -70,7 +72,7 @@ def _evaluate_row_rules(row: pd.Series, rules: list, master_data_cache: dict, da
 
     is_clean = not row_errors
     is_golden = bool(golden_matches)
-    dq_remarks = "; ".join(f"{e['col']}: {e['msg']}" for e in row_errors) if row_errors else None
+    dq_remarks, dq_failed_remarks = build_categorized_dq_remarks(row_errors)
     golden_remarks = (
         "Fuzzy match — merged multiple source values to master: " + "; ".join(golden_matches)
         if golden_matches
@@ -85,6 +87,7 @@ def _evaluate_row_rules(row: pd.Series, rules: list, master_data_cache: dict, da
         "fuzzy_errs": fuzzy_errs,
         "is_golden_record": is_golden,
         "dq_remarks": dq_remarks,
+        "dq_failed_remarks": dq_failed_remarks,
         "golden_remarks": golden_remarks,
         "merged_values": merged_values,
     }
@@ -176,8 +179,10 @@ def run_data_quality_job(job_id: int, db: Session):
                     {
                         "row_index": row_index,
                         "column_flags": evaluated["column_flags"],
+                        "row_errors": evaluated["row_errors"],
                         "is_golden_record": evaluated["is_golden_record"],
                         "dq_remarks": evaluated["dq_remarks"],
+                        "dq_failed_remarks": evaluated["dq_failed_remarks"],
                         "golden_remarks": evaluated["golden_remarks"],
                         "merged_values": evaluated["merged_values"],
                     }

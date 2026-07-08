@@ -151,7 +151,10 @@ def _column_stats(df: pd.DataFrame) -> list[dict[str, Any]]:
             "null_pct": round(float(s.isna().mean() * 100), 1),
         }
         if pd.api.types.is_numeric_dtype(s):
-            entry["unique"] = int(s.nunique(dropna=True))
+            try:
+                entry["unique"] = int(s.nunique(dropna=True))
+            except TypeError:
+                continue
             if _looks_like_id_column(str(col)):
                 entry["kind"] = "identifier"
             else:
@@ -163,7 +166,10 @@ def _column_stats(df: pd.DataFrame) -> list[dict[str, Any]]:
             entry["kind"] = "date"
         else:
             entry["kind"] = "categorical"
-            entry["unique"] = int(s.nunique(dropna=True))
+            try:
+                entry["unique"] = int(s.nunique(dropna=True))
+            except TypeError:
+                continue
         stats.append(entry)
     return stats
 

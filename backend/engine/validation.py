@@ -101,6 +101,14 @@ def check_no_decimals(value):
 # ==========================================
 # 3. DATE VALIDATIONS
 # ==========================================
+def strip_time_from_date_string(value) -> str:
+    """Return date-only portion from strings like 2024-01-10T00:00:00 or 2024-01-10 00:00:00."""
+    val_str = str(value).strip()
+    if "T" in val_str:
+        return val_str.split("T", 1)[0]
+    return val_str.split(" ", 1)[0]
+
+
 def parse_date(value):
     if pd.isna(value) or str(value).lower() == "nan": return None
     
@@ -108,11 +116,19 @@ def parse_date(value):
     if isinstance(value, pd.Timestamp) or isinstance(value, datetime):
         return value
         
-    # 2. If it is a string, strip the trailing time block before checking
-    val_str = str(value).split(" ")[0] 
+    # 2. If it is a string, strip the time portion (space or ISO "T" separator)
+    val_str = strip_time_from_date_string(value)
     for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%m/%d/%Y", "%Y/%m/%d"):
         try: return datetime.strptime(val_str, fmt)
         except ValueError: continue
+
+    # 3. Fallback: pandas handles ISO timestamps and other common formats
+    try:
+        parsed = pd.to_datetime(str(value).strip(), errors="coerce")
+        if pd.notna(parsed):
+            return parsed.to_pydatetime()
+    except Exception:
+        pass
     return None
 
 def check_is_future(value):

@@ -4701,13 +4701,14 @@ if True:
             raise HTTPException(status_code=400, detail="No active date rule")
 
         try:
+            from engine.validation import strip_time_from_date_string
             df = _load_job_table_df(db, table.job_id, table_id, table.table_name).astype(str)
 
             def fix_date(val):
                 if not val or pd.isna(val): return val
                 
-                # 2. CHOP OFF EXISTING TIMESTAMPS
-                clean_val = str(val).split(" ")[0]
+                # 2. CHOP OFF EXISTING TIMESTAMPS (space or ISO "T")
+                clean_val = strip_time_from_date_string(val)
                 
                 # Clean separators
                 clean_val = clean_val.replace("/", "-").replace(".", "-").replace("\\", "-")

@@ -22,6 +22,7 @@ import models
 from core.deps import get_db
 from core.scheduler import run_scheduled_job, scheduler, scheduler_job_key, serialize_schedule_job
 from engine.orchestrator import run_data_quality_job
+from engine.validation import strip_time_from_date_string
 from schemas.jobs_and_rules import JobCreate, RenamePayload, TableEmailPayload
 from services.source_paths import normalize_local_path, save_table_source_path
 from services.table_outputs import build_job_zip_response, build_table_output_bytes, resolve_table_for_job_and_table
@@ -1236,8 +1237,8 @@ def standardize_table_dates(table_id: int, payload: dict, db: Session = Depends(
         def fix_date(val):
             if not val or pd.isna(val): return val
             
-            # 2. CHOP OFF EXISTING TIMESTAMPS
-            clean_val = str(val).split(" ")[0]
+            # 2. CHOP OFF EXISTING TIMESTAMPS (space or ISO "T")
+            clean_val = strip_time_from_date_string(val)
             
             # Clean separators
             clean_val = clean_val.replace("/", "-").replace(".", "-").replace("\\", "-")
