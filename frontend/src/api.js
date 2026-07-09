@@ -115,6 +115,10 @@ export const getMasterData = async (jobId, tableId) => {
 
 // Add these to your existing frontend/src/api.js
 
+export const bulkSaveTableRules = async (jobId, tableId, rules) => {
+    return apiClient.put(`/jobs/${jobId}/tables/${tableId}/rules/bulk`, { rules });
+};
+
 export const runJobEngine = async (jobId) => {
     return apiClient.post(`/jobs/${jobId}/run`);
 };

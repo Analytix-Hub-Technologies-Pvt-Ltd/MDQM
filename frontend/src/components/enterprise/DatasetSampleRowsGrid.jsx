@@ -11,6 +11,44 @@ import { DqFailedRemarksCell } from "@/components/enterprise/DqFailedRemarksCell
 
 const PAGE_SIZES = [10, 25, 50];
 
+function resolveRowDqPassed(row, columnNames = []) {
+  const explicit = row?.dq_passed;
+  if (explicit === "true" || explicit === true) return true;
+  if (explicit === "false" || explicit === false) return false;
+
+  const remarks = row?.dq_failed_remarks;
+  if (Array.isArray(remarks) && remarks.length) return false;
+  if (row?.dq_remarks?.trim()) return false;
+
+  let hasRuleFlag = false;
+  for (const name of columnNames) {
+    const flag = row?.[`${name}__dq_pass`];
+    if (flag === "false") return false;
+    if (flag === "true") hasRuleFlag = true;
+  }
+  if (hasRuleFlag) return true;
+  return null;
+}
+
+function DqStatusBadge({ row, columnNames }) {
+  const passed = resolveRowDqPassed(row, columnNames);
+  if (passed === null) {
+    return <span className="block px-1.5 text-center text-[11px] text-muted-foreground/40">—</span>;
+  }
+  return (
+    <span
+      className={cn(
+        "inline-flex min-w-[3.5rem] justify-center rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider",
+        passed
+          ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400"
+          : "bg-rose-100 text-rose-800 dark:bg-rose-950/40 dark:text-rose-400",
+      )}
+    >
+      {passed ? "Pass" : "Failed"}
+    </span>
+  );
+}
+
 function formatDetail(d) {
   if (typeof d === "string") return d;
   if (Array.isArray(d)) return d.map((x) => x?.msg || JSON.stringify(x)).join("; ") || "Request failed.";
@@ -157,6 +195,8 @@ export default function DatasetSampleRowsGrid({
   const rangeStart = total === 0 ? 0 : safePageIndex * pageSize + 1;
   const rangeEnd = Math.min((safePageIndex + 1) * pageSize, total);
 
+  const columnNames = useMemo(() => columns.map((c) => c.name), [columns]);
+
   const gridColumns = useMemo(() => {
     const cols = columns.map((c) => ({
       key: c.name,
@@ -185,6 +225,21 @@ export default function DatasetSampleRowsGrid({
         );
       },
     }));
+
+    cols.push({
+      key: "dq_status",
+      name: "DQ STATUS",
+      resizable: true,
+      sortable: false,
+      minWidth: 96,
+      renderCell({ row }) {
+        return (
+          <div className="flex justify-center px-1.5 py-0.5">
+            <DqStatusBadge row={row} columnNames={columnNames} />
+          </div>
+        );
+      },
+    });
 
     cols.push({
       key: "dq_remarks",
@@ -221,7 +276,7 @@ export default function DatasetSampleRowsGrid({
     });
 
     return cols;
-  }, [columns]);
+  }, [columns, columnNames]);
 
   const loadPage = useCallback(async () => {
     if (!enabled || datasetId == null || tableId == null) return;
