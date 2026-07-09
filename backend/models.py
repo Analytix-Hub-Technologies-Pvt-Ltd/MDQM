@@ -42,6 +42,8 @@ class TableMetadata(Base):
     table_name = Column(Text)
     row_count = Column(Integer, default=0)
     data_updated_at = Column(DateTime, nullable=True)
+    # Y = DQ engine ran successfully after last rule save; N = pending or run failed
+    dq_run_status = Column(Text, nullable=False, default="N")
 
     job = relationship("Job", back_populates="tables")
     columns = relationship("ColumnMetadata", back_populates="table", cascade="all, delete-orphan")

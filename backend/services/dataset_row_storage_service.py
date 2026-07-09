@@ -358,6 +358,8 @@ def _read_physical_table(db, job_id, table_id, *, offset=0, limit=None):
 
         row_out["is_golden_record"] = "true" if row_dict.get("_is_golden") else "false"
         row_out["golden_remarks"] = str(row_dict.get("_golden_remarks")) if row_dict.get("_golden_remarks") is not None else ""
+        if dq_passed is not None:
+            row_out["dq_passed"] = "true" if dq_passed else "false"
         attach_dq_remark_fields(row_out, dq_remarks)
         row_out["dq_failed_remarks"] = dq_failed_remarks
 
@@ -497,6 +499,10 @@ def _load_flat_rows_from_legacy(db, job_id, table_id, *, offset=0, limit=None):
         else:
             attach_dq_remark_fields(flat, None)
         flat["dq_failed_remarks"] = dq_failed_remarks
+        if dq_failed_remarks:
+            flat["dq_passed"] = "false"
+        elif any(k.endswith("__dq_pass") and v == "true" for k, v in flat.items()):
+            flat["dq_passed"] = "true"
         if header.golden_remarks:
             flat["golden_remarks"] = header.golden_remarks
         else:

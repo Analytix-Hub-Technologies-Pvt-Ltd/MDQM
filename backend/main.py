@@ -83,6 +83,13 @@ if True:
             # Per-dataset physical tables live in this dedicated schema
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS datasets"))
         models.Base.metadata.create_all(bind=engine)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "ALTER TABLE metadata.table_metadata "
+                    "ADD COLUMN IF NOT EXISTS dq_run_status TEXT NOT NULL DEFAULT 'N'"
+                )
+            )
         # Ensure the datasets schema is present (also called by physical_table_manager)
         from services.physical_table_manager import ensure_datasets_schema
         ensure_datasets_schema(engine)
@@ -342,6 +349,17 @@ if True:
         rule_value: Optional[str] = None
         is_active: bool
         master_data: Optional[List[str]] = [] # For updating fuzzy lists
+
+    class RuleBulkItem(BaseModel):
+        column_name: str
+        rule_type: str
+        data_type: str
+        rule_value: Optional[str] = None
+        is_active: bool = True
+        master_data: Optional[List[str]] = []
+
+    class RulesBulkSave(BaseModel):
+        rules: List[RuleBulkItem]
         
     class RenamePayload(BaseModel):
         name: str
@@ -3148,6 +3166,8 @@ if True:
 
     @app.post("/jobs/{job_id}/run")
     def run_job(job_id: int, db: Session = Depends(get_db)):
+        from services.rule_config_service import mark_job_tables_dq_applied, mark_job_tables_dq_pending
+
         # 1. Check if the job actually exists
         job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
         if not job:
@@ -3159,8 +3179,10 @@ if True:
             for t in tables:
                 _refresh_table_csv_from_source_path(job_id, t.table_id, db)
             run_data_quality_job(job_id, db)
-            return {"message": f"Job {job_id} executed successfully!"}
+            mark_job_tables_dq_applied(db, job_id)
+            return {"message": f"Job {job_id} executed successfully!", "dq_run_status": "Y"}
         except Exception as e:
+            mark_job_tables_dq_pending(db, job_id)
             raise HTTPException(status_code=500, detail=f"Engine failed: {str(e)}")
 
 
@@ -3420,13 +3442,16 @@ if True:
 
     @app.get("/tables/{job_id}/{table_id}/details") # <--- CHANGED URL
     def get_table_details(job_id: int, table_id: int, db: Session = Depends(get_db)):
+        from services.rule_config_service import serialize_rule
+
         # 1. Fetch specific table by BOTH Job ID and Table ID
         table = db.query(models.TableMetadata).filter(
             models.TableMetadata.job_id == job_id,
             models.TableMetadata.table_id == table_id
         ).first()
 
-        if not table: return {"columns": [], "rules": []}
+        if not table:
+            return {"columns": [], "rules": [], "dq_run_status": "N"}
         
         # 2. Get Columns
         columns = db.query(models.ColumnMetadata).filter(
@@ -3440,12 +3465,49 @@ if True:
             models.Rule.table_id == table_id
         ).all()
         
-        return {"columns": columns, "rules": rules}
+        return {
+            "columns": columns,
+            "rules": [serialize_rule(r) for r in rules],
+            "dq_run_status": (table.dq_run_status or "N").upper(),
+            "table_name": table.table_name,
+        }
+
+    @app.put("/jobs/{job_id}/tables/{table_id}/rules/bulk")
+    def bulk_save_table_rules(
+        job_id: int,
+        table_id: int,
+        payload: RulesBulkSave,
+        db: Session = Depends(get_db),
+    ):
+        from services.rule_config_service import bulk_save_table_rules, serialize_rule
+
+        table = (
+            db.query(models.TableMetadata)
+            .filter(models.TableMetadata.job_id == job_id, models.TableMetadata.table_id == table_id)
+            .first()
+        )
+        if not table:
+            raise HTTPException(status_code=404, detail="Table not found")
+        try:
+            items = [item.model_dump() for item in payload.rules]
+            created = bulk_save_table_rules(db, job_id, table_id, items)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return {
+            "message": "Rules saved",
+            "dq_run_status": "N",
+            "rules": [serialize_rule(r) for r in created],
+        }
 
     # --- RULE MANAGEMENT ---
 
     @app.post("/rules/add")
     def add_new_rule(rule: RuleCreate, db: Session = Depends(get_db)):
+        from services.rule_config_service import mark_table_dq_pending
+
         new_rule = models.Rule(
             job_id=rule.job_id,
             table_id=rule.table_id,
@@ -3470,25 +3532,38 @@ if True:
                         table_name=table.table_name,
                         master_value=val
                     ))
+        mark_table_dq_pending(db, rule.job_id, rule.table_id, commit=False)
         db.commit()
-        return {"message": "Rule Added"}
+        return {"message": "Rule Added", "dq_run_status": "N"}
 
     @app.delete("/rules/{rule_id}")
     def delete_rule(rule_id: int, db: Session = Depends(get_db)):
+        from services.rule_config_service import mark_table_dq_pending
+
+        rule = db.query(models.Rule).filter(models.Rule.rule_id == rule_id).first()
+        job_id = rule.job_id if rule else None
+        table_id = rule.table_id if rule else None
         db.query(models.Rule).filter(models.Rule.rule_id == rule_id).delete()
+        if job_id is not None and table_id is not None:
+            mark_table_dq_pending(db, job_id, table_id, commit=False)
         db.commit()
-        return {"status": "deleted"}
+        return {"status": "deleted", "dq_run_status": "N"}
 
     @app.put("/rules/{rule_id}/toggle")
     def toggle_rule(rule_id: int, payload: RuleToggle, db: Session = Depends(get_db)):
+        from services.rule_config_service import mark_table_dq_pending
+
         rule = db.query(models.Rule).filter(models.Rule.rule_id == rule_id).first()
         if rule:
             rule.is_active = payload.is_active
+            mark_table_dq_pending(db, rule.job_id, rule.table_id, commit=False)
             db.commit()
-        return {"status": "updated"}
+        return {"status": "updated", "dq_run_status": "N"}
 
     @app.put("/rules/{rule_id}")
     def update_rule(rule_id: int, payload: RuleUpdate, db: Session = Depends(get_db)):
+        from services.rule_config_service import mark_table_dq_pending
+
         # 1. Get the Rule
         rule = db.query(models.Rule).filter(models.Rule.rule_id == rule_id).first()
         if not rule:
@@ -3518,8 +3593,9 @@ if True:
                         master_value=val
                     ))
         
+        mark_table_dq_pending(db, rule.job_id, rule.table_id, commit=False)
         db.commit()
-        return {"message": "Rule Updated Successfully"}
+        return {"message": "Rule Updated Successfully", "dq_run_status": "N"}
 
     @app.get("/master-data/{job_id}/{table_id}")
     def get_master_data(job_id: int, table_id: int, db: Session = Depends(get_db)):
