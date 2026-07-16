@@ -35,6 +35,7 @@ export default defineConfig({
   base: "/",
   server: {
     port: 5173,
+    allowedHosts: ["app.analytixhub.ai", ".analytixhub.ai"],
     // Optional: use VITE_API_URL= in .env.development (relative) to avoid cross-origin calls
     proxy: {
       "/auth": { target: "http://127.0.0.1:8000", changeOrigin: true },
@@ -56,5 +57,8 @@ export default defineConfig({
       "/redoc": { target: "http://127.0.0.1:8000", changeOrigin: true },
       "/openapi.json": { target: "http://127.0.0.1:8000", changeOrigin: true },
     },
+  },
+  preview: {
+    allowedHosts: ["app.analytixhub.ai", ".analytixhub.ai"],
   },
 });
