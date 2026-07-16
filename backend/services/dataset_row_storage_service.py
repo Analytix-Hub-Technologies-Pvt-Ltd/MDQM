@@ -358,6 +358,11 @@ def _read_physical_table(db, job_id, table_id, *, offset=0, limit=None):
 
         row_out["is_golden_record"] = "true" if row_dict.get("_is_golden") else "false"
         row_out["golden_remarks"] = str(row_dict.get("_golden_remarks")) if row_dict.get("_golden_remarks") is not None else ""
+        if row_dict.get("_row_index") is not None:
+            try:
+                row_out["row_index"] = int(row_dict["_row_index"])
+            except (TypeError, ValueError):
+                row_out["row_index"] = row_dict["_row_index"]
         if dq_passed is not None:
             row_out["dq_passed"] = "true" if dq_passed else "false"
         attach_dq_remark_fields(row_out, dq_remarks)
@@ -369,6 +374,11 @@ def _read_physical_table(db, job_id, table_id, *, offset=0, limit=None):
             row_out = {k: (str(row_dict[k]) if row_dict[k] is not None else "") for k in user_keys}
             row_out["is_golden_record"] = "true" if row_dict.get("_is_golden") else "false"
             row_out["golden_remarks"] = str(row_dict.get("_golden_remarks")) if row_dict.get("_golden_remarks") is not None else ""
+            if row_dict.get("_row_index") is not None:
+                try:
+                    row_out["row_index"] = int(row_dict["_row_index"])
+                except (TypeError, ValueError):
+                    row_out["row_index"] = row_dict["_row_index"]
             attach_dq_remark_fields(row_out, row_dict.get("_dq_remarks"))
 
         out.append(row_out)
@@ -491,6 +501,7 @@ def _load_flat_rows_from_legacy(db, job_id, table_id, *, offset=0, limit=None):
                 flat[str(k)] = _normalize_value(v)
         flat["job_id"] = str(header.job_id)
         flat["table_id"] = str(header.table_id)
+        flat["row_index"] = int(header.row_index)
         flat["is_golden_record"] = "true" if header.is_golden_record else "false"
         if header.dq_remarks:
             attach_dq_remark_fields(flat, header.dq_remarks)
@@ -735,6 +746,131 @@ def snapshot_exists(db, job_id, table_name, *, table_id=None):
         return os.path.isfile(path) and os.path.getsize(path) > 0
     except OSError:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Public: update_table_row_values
+# ---------------------------------------------------------------------------
+
+
+def update_table_row_values(
+    db,
+    job_id: int,
+    table_id: int,
+    row_index: int,
+    values: dict,
+) -> dict:
+    """
+    Update user-column values for one dataset row.
+    Does not allow changing DQ STATUS / DQ REMARKS / golden fields.
+    """
+    if not isinstance(values, dict) or not values:
+        raise ValueError("No values to update")
+
+    cols = (
+        db.query(models.ColumnMetadata)
+        .filter(
+            models.ColumnMetadata.job_id == job_id,
+            models.ColumnMetadata.table_id == table_id,
+        )
+        .all()
+    )
+    allowed = {c.column_name for c in cols}
+    clean: dict[str, str | None] = {}
+    for key, raw in values.items():
+        name = str(key or "").strip()
+        if not name or name not in allowed:
+            continue
+        if raw is None:
+            clean[name] = None
+            continue
+        # Do not name this `text` — that shadows sqlalchemy.text
+        text_val = str(raw)
+        if text_val == "—" or text_val.lower() in {"nan", "none", "null"}:
+            text_val = ""
+        clean[name] = text_val
+
+    if not clean:
+        raise ValueError("No editable columns matched the payload")
+
+    row_idx = int(row_index)
+    tbl_name = get_physical_table_name(job_id, table_id)
+    fqn = full_table_ref(tbl_name)
+    engine = db.get_bind()
+
+    with engine.connect() as conn:
+        phys_exists = table_exists(conn, tbl_name, DATASETS_SCHEMA)
+
+    if phys_exists:
+        set_parts = []
+        params: dict = {"row_idx": row_idx}
+        for i, (col_name, val) in enumerate(clean.items()):
+            safe = sanitize_column_name(col_name)
+            key = f"v{i}"
+            set_parts.append(f'"{safe}" = :{key}')
+            params[key] = val
+        sql = text(f"UPDATE {fqn} SET {', '.join(set_parts)} WHERE _row_index = :row_idx")
+        with engine.begin() as conn:
+            result = conn.execute(sql, params)
+            if result.rowcount == 0:
+                raise ValueError(f"Row {row_idx} not found")
+        return {"row_index": row_idx, "updated_columns": list(clean.keys())}
+
+    # Legacy EAV path
+    header = (
+        db.query(models.DatasetRow)
+        .filter(
+            models.DatasetRow.job_id == job_id,
+            models.DatasetRow.table_id == table_id,
+            models.DatasetRow.row_index == row_idx,
+        )
+        .first()
+    )
+    if not header:
+        # physical uses 1-based; legacy is often 0-based — try row_idx - 1
+        if row_idx > 0:
+            header = (
+                db.query(models.DatasetRow)
+                .filter(
+                    models.DatasetRow.job_id == job_id,
+                    models.DatasetRow.table_id == table_id,
+                    models.DatasetRow.row_index == row_idx - 1,
+                )
+                .first()
+            )
+            if header:
+                row_idx = header.row_index
+    if not header:
+        raise ValueError(f"Row {row_index} not found")
+
+    row_data = dict(header.row_data or {})
+    for col_name, val in clean.items():
+        row_data[col_name] = val
+        cell = (
+            db.query(models.DatasetRowCell)
+            .filter(
+                models.DatasetRowCell.job_id == job_id,
+                models.DatasetRowCell.table_id == table_id,
+                models.DatasetRowCell.row_index == header.row_index,
+                models.DatasetRowCell.column_name == col_name,
+            )
+            .first()
+        )
+        if cell:
+            cell.value_text = val
+        else:
+            db.add(
+                models.DatasetRowCell(
+                    job_id=job_id,
+                    table_id=table_id,
+                    row_index=header.row_index,
+                    column_name=col_name,
+                    value_text=val,
+                )
+            )
+    header.row_data = row_data
+    db.commit()
+    return {"row_index": header.row_index, "updated_columns": list(clean.keys())}
 
 
 # ---------------------------------------------------------------------------

@@ -186,16 +186,29 @@ class ValidationRunBody(BaseModel):
 
 @router.post("/validation/run")
 def validation_run(request: Request, body: ValidationRunBody, db: Session = Depends(_db), user: models.User = Depends(get_current_user)):
-    require_any_permission(_role(request), Permissions.DASHBOARD_STEWARD, Permissions.JOBS_VIEW, Permissions.ADMIN_VIEW)
+    require_any_permission(
+        _role(request),
+        Permissions.DASHBOARD_STEWARD,
+        Permissions.DASHBOARD_OWNER,
+        Permissions.DASHBOARD_CDO,
+        Permissions.JOBS_VIEW,
+        Permissions.ADMIN_VIEW,
+    )
     job = db.query(models.Job).filter(models.Job.job_id == body.job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     t0 = time.perf_counter()
     try:
         run_data_quality_job(body.job_id, db)
+        from services.rule_config_service import mark_job_tables_dq_applied
+
+        mark_job_tables_dq_applied(db, body.job_id)
         ok = True
         msg = "Validation engine completed"
     except Exception as exc:
+        from services.rule_config_service import mark_job_tables_dq_pending
+
+        mark_job_tables_dq_pending(db, body.job_id)
         ok = False
         msg = str(exc)
     duration_ms = int((time.perf_counter() - t0) * 1000)
@@ -544,6 +557,81 @@ def governance_dataset_table_rows(
     if result is None:
         raise HTTPException(status_code=404, detail="Dataset or table not found")
     return result
+
+
+class DatasetRowUpdatePayload(BaseModel):
+    row_index: int
+    values: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.put("/governance/datasets/{dataset_id}/tables/{table_id}/rows")
+def governance_dataset_table_row_update(
+    dataset_id: int,
+    table_id: int,
+    payload: DatasetRowUpdatePayload,
+    request: Request,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Update editable user-column values for one dataset row (not DQ STATUS / remarks)."""
+    require_any_permission(
+        _role(request),
+        Permissions.DASHBOARD_OWNER,
+        Permissions.DASHBOARD_CDO,
+        Permissions.DASHBOARD_STEWARD,
+        Permissions.GOVERNANCE_VIEW,
+        Permissions.ADMIN_VIEW,
+    )
+    row = db.query(models.EnterpriseDataset).filter(models.EnterpriseDataset.id == dataset_id).first()
+    if not row or row.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    job_id = row.job_id or busvc._resolve_job_id(db, row)
+    if not job_id:
+        raise HTTPException(status_code=404, detail="Dataset has no linked job")
+
+    tbl = (
+        db.query(models.TableMetadata)
+        .filter(
+            models.TableMetadata.job_id == job_id,
+            models.TableMetadata.table_id == table_id,
+        )
+        .first()
+    )
+    if not tbl:
+        raise HTTPException(status_code=404, detail="Table not found")
+
+    from services.dataset_row_storage_service import update_table_row_values
+
+    try:
+        result = update_table_row_values(
+            db,
+            job_id,
+            table_id,
+            payload.row_index,
+            payload.values or {},
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to save row: {exc}") from exc
+
+    write_audit_log(
+        db,
+        getattr(user, "id", None),
+        "dataset.row.update",
+        entity_type="dataset_table",
+        entity_id=f"{dataset_id}:{table_id}",
+        new_values={"row_index": payload.row_index, "columns": result.get("updated_columns")},
+    )
+    return {
+        "message": "Row saved",
+        "job_id": job_id,
+        "dataset_id": dataset_id,
+        "table_id": table_id,
+        **result,
+    }
 
 
 @router.get("/governance/datasets/{dataset_id}/chart-insights")
