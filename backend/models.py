@@ -652,3 +652,13 @@ class GoldenMergeConfig(Base):
     column_overrides = Column(JSON, nullable=False, default=dict)  # {col: "always_source_label" | "always_compute"}
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+class DatasetDetails(Base):
+    __tablename__ = "dataset_details"
+    __table_args__ = {'schema': 'dataset_details'}
+
+    dataset_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    dataset_name = Column(Text, nullable=True)
+    dataset_description = Column(Text, nullable=True)
+    update_date = Column(DateTime, nullable=True)
+    created_date = Column(DateTime, nullable=True)
