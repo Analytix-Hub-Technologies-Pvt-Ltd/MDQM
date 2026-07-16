@@ -144,6 +144,13 @@ export async function enterpriseGovernanceDatasetTableRows(
   });
 }
 
+export async function enterpriseGovernanceDatasetTableRowUpdate(datasetId, tableId, { rowIndex, values }) {
+  return apiClient.put(`/api/enterprise/governance/datasets/${datasetId}/tables/${tableId}/rows`, {
+    row_index: rowIndex,
+    values,
+  });
+}
+
 export async function enterpriseGovernanceDatasetChartInsights(datasetId, { refresh = false } = {}) {
   const q = refresh ? "?refresh=true" : "";
   return apiClient.get(`/api/enterprise/governance/datasets/${datasetId}/chart-insights${q}`);

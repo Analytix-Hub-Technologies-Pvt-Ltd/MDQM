@@ -1,15 +1,33 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { DataGrid } from "react-data-grid";
 import "react-data-grid/lib/styles.css";
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Search, Sparkles, X } from "lucide-react";
-import { enterpriseGovernanceDatasetTableRows } from "@/pages/dashboards/enterpriseApi";
-import { modalLabelClass } from "@/components/layout/AppModal";
+import {
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  Filter,
+  Loader2,
+  Search,
+  Sparkles,
+  X,
+} from "lucide-react";
+import {
+  enterpriseGovernanceDatasetTableRows,
+  enterpriseGovernanceDatasetTableRowUpdate,
+  enterpriseValidationRun,
+} from "@/pages/dashboards/enterpriseApi";
+import { runJobEngine } from "@/api";
+import { modalLabelClass, modalInputClass, AppModal } from "@/components/layout/AppModal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { DqFailedRemarksCell } from "@/components/enterprise/DqFailedRemarksCell";
+import DatasetRefreshToastStack from "@/components/business/DatasetRefreshToastStack";
 
 const PAGE_SIZES = [10, 25, 50];
+const EMPTY_DISPLAY = "—";
 
 function resolveRowDqPassed(row, columnNames = []) {
   const explicit = row?.dq_passed;
@@ -47,6 +65,18 @@ function DqStatusBadge({ row, columnNames }) {
       {passed ? "Pass" : "Failed"}
     </span>
   );
+}
+
+function cellDisplayValue(row, columnKey, columnNames) {
+  if (columnKey === "dq_status") {
+    const passed = resolveRowDqPassed(row, columnNames);
+    if (passed === true) return "Pass";
+    if (passed === false) return "Failed";
+    return EMPTY_DISPLAY;
+  }
+  const value = row?.[columnKey];
+  if (value == null || value === "") return EMPTY_DISPLAY;
+  return String(value);
 }
 
 function formatDetail(d) {
@@ -165,9 +195,168 @@ function PaginationBar({ pageIndex, totalPages, loading, onGo }) {
   );
 }
 
+function ColumnMultiFilter({
+  columnKey,
+  label,
+  options,
+  selected,
+  onChange,
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const btnRef = useRef(null);
+  const panelRef = useRef(null);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const active = Array.isArray(selected) && selected.length > 0;
+
+  const filteredOptions = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter((o) => o.toLowerCase().includes(q));
+  }, [options, query]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const update = () => {
+      const rect = btnRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const width = 220;
+      const left = Math.min(Math.max(8, rect.left), window.innerWidth - width - 8);
+      setPos({ top: rect.bottom + 4, left });
+    };
+    update();
+    const onDoc = (e) => {
+      if (
+        panelRef.current?.contains(e.target) ||
+        btnRef.current?.contains(e.target)
+      ) {
+        return;
+      }
+      setOpen(false);
+    };
+    window.addEventListener("scroll", update, true);
+    window.addEventListener("resize", update);
+    document.addEventListener("mousedown", onDoc);
+    return () => {
+      window.removeEventListener("scroll", update, true);
+      window.removeEventListener("resize", update);
+      document.removeEventListener("mousedown", onDoc);
+    };
+  }, [open]);
+
+  const toggleValue = (value) => {
+    const set = new Set(selected || []);
+    if (set.has(value)) set.delete(value);
+    else set.add(value);
+    onChange([...set]);
+  };
+
+  const selectAllVisible = () => {
+    const set = new Set(selected || []);
+    filteredOptions.forEach((o) => set.add(o));
+    onChange([...set]);
+  };
+
+  const clear = () => onChange([]);
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        className={cn(
+          "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors",
+          active
+            ? "bg-primary/15 text-primary"
+            : "text-muted-foreground/70 hover:bg-muted hover:text-foreground",
+        )}
+        title={`Filter ${label}`}
+        aria-label={`Filter ${label}`}
+        aria-expanded={open}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+      >
+        <Filter className="h-3 w-3" strokeWidth={active ? 2.5 : 2} />
+      </button>
+      {open
+        ? createPortal(
+            <div
+              ref={panelRef}
+              className="fixed z-[120] w-[220px] overflow-hidden rounded-lg border border-border bg-card text-card-foreground shadow-xl"
+              style={{ top: pos.top, left: pos.left }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="border-b border-border px-2.5 py-2">
+                <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                  Filter · {label}
+                </p>
+                <Input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search values…"
+                  className="h-7 text-[11px]"
+                />
+              </div>
+              <div className="flex items-center justify-between gap-2 border-b border-border px-2.5 py-1.5">
+                <button
+                  type="button"
+                  className="text-[10px] font-semibold uppercase tracking-wider text-primary hover:underline"
+                  onClick={selectAllVisible}
+                >
+                  Select all
+                </button>
+                <button
+                  type="button"
+                  className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground hover:underline"
+                  onClick={clear}
+                >
+                  Clear
+                </button>
+              </div>
+              <div className="max-h-52 overflow-y-auto py-1">
+                {filteredOptions.length ? (
+                  filteredOptions.map((opt) => {
+                    const checked = (selected || []).includes(opt);
+                    return (
+                      <label
+                        key={opt}
+                        className="flex cursor-pointer items-center gap-2 px-2.5 py-1.5 text-[11px] hover:bg-muted/60"
+                      >
+                        <input
+                          type="checkbox"
+                          className="h-3.5 w-3.5 accent-primary"
+                          checked={checked}
+                          onChange={() => toggleValue(opt)}
+                        />
+                        <span className="truncate" title={opt}>
+                          {opt}
+                        </span>
+                      </label>
+                    );
+                  })
+                ) : (
+                  <p className="px-2.5 py-3 text-[11px] text-muted-foreground">No values</p>
+                )}
+              </div>
+              {active ? (
+                <div className="border-t border-border px-2.5 py-1.5 text-[10px] text-muted-foreground">
+                  {selected.length} selected
+                </div>
+              ) : null}
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+
 /**
  * Server-paginated sample rows grid (Data Owner dataset preview).
  * Uses react-data-grid with page controls — one API page at a time.
+ * Column headers support multi-select value filters.
  */
 export default function DatasetSampleRowsGrid({
   datasetId,
@@ -189,6 +378,36 @@ export default function DatasetSampleRowsGrid({
   const [aiSummary, setAiSummary] = useState("");
   const [aiSource, setAiSource] = useState("");
   const [aiNotice, setAiNotice] = useState("");
+  /** @type {Record<string, string[]>} columnKey -> selected values */
+  const [columnFilters, setColumnFilters] = useState({});
+  const [detailRow, setDetailRow] = useState(null);
+  const [focusColumn, setFocusColumn] = useState(null);
+  const [editValues, setEditValues] = useState({});
+  const [savingRow, setSavingRow] = useState(false);
+  const [saveErr, setSaveErr] = useState("");
+  const [saveMsg, setSaveMsg] = useState("");
+  const [actionToasts, setActionToasts] = useState([]);
+
+  const READONLY_DETAIL_KEYS = useMemo(
+    () => new Set(["dq_status", "dq_remarks", "golden_remarks"]),
+    [],
+  );
+
+  const pushToast = useCallback((toast, autoDismissMs = 5000) => {
+    const id = toast.id || `toast-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const next = { ...toast, id };
+    setActionToasts((prev) => [...prev.filter((t) => t.id !== id), next].slice(-4));
+    if (autoDismissMs > 0 && next.status !== "running") {
+      window.setTimeout(() => {
+        setActionToasts((prev) => prev.filter((t) => t.id !== id));
+      }, autoDismissMs);
+    }
+    return id;
+  }, []);
+
+  const dismissToast = useCallback((id) => {
+    setActionToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1);
   const safePageIndex = Math.min(pageIndex, totalPages - 1);
@@ -197,23 +416,143 @@ export default function DatasetSampleRowsGrid({
 
   const columnNames = useMemo(() => columns.map((c) => c.name), [columns]);
 
+  const filterOptionMap = useMemo(() => {
+    const map = {};
+    const keys = [...columnNames, "dq_status"];
+    for (const key of keys) {
+      const set = new Set();
+      for (const row of rows) {
+        set.add(cellDisplayValue(row, key, columnNames));
+      }
+      map[key] = [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+    }
+    return map;
+  }, [rows, columnNames]);
+
+  const activeFilterCount = useMemo(
+    () => Object.values(columnFilters).filter((v) => Array.isArray(v) && v.length > 0).length,
+    [columnFilters],
+  );
+
+  const filteredRows = useMemo(() => {
+    const entries = Object.entries(columnFilters).filter(([, vals]) => vals?.length);
+    if (!entries.length) return rows;
+    return rows.filter((row) =>
+      entries.every(([key, vals]) => vals.includes(cellDisplayValue(row, key, columnNames))),
+    );
+  }, [rows, columnFilters, columnNames]);
+
+  const setFilterForColumn = useCallback((columnKey, values) => {
+    setColumnFilters((prev) => {
+      const next = { ...prev };
+      if (!values?.length) delete next[columnKey];
+      else next[columnKey] = values;
+      return next;
+    });
+  }, []);
+
+  const clearAllFilters = () => setColumnFilters({});
+
+  const openRowDetail = useCallback(
+    (row, columnKey = null) => {
+      if (!row) return;
+      setDetailRow(row);
+      setFocusColumn(columnKey);
+      setSaveErr("");
+      setSaveMsg("");
+      const draft = {};
+      for (const name of columnNames) {
+        const raw = row[name];
+        draft[name] = raw != null && raw !== "" ? String(raw) : "";
+      }
+      setEditValues(draft);
+    },
+    [columnNames],
+  );
+
+  const closeRowDetail = useCallback(() => {
+    setDetailRow(null);
+    setFocusColumn(null);
+    setEditValues({});
+    setSaveErr("");
+    setSaveMsg("");
+    setSavingRow(false);
+  }, []);
+
+  const detailFields = useMemo(() => {
+    if (!detailRow) return [];
+    const fields = columnNames.map((name) => ({
+      key: name,
+      label: name.replace(/_/g, " ").toUpperCase(),
+      value: cellDisplayValue(detailRow, name, columnNames),
+      remark: detailRow[`${name}__dq_remark`] || "",
+      passFlag: detailRow[`${name}__dq_pass`],
+      readOnly: false,
+    }));
+    fields.push({
+      key: "dq_status",
+      label: "DQ STATUS",
+      value: cellDisplayValue(detailRow, "dq_status", columnNames),
+      remark: "",
+      passFlag: null,
+      readOnly: true,
+    });
+    // Always show DQ remarks field (read-only), even if empty
+    fields.push({
+      key: "dq_remarks",
+      label: "DQ REMARKS",
+      value: detailRow.dq_remarks ? String(detailRow.dq_remarks) : "—",
+      remark: "",
+      passFlag: null,
+      readOnly: true,
+    });
+    if (detailRow.golden_remarks || detailRow.is_golden_record === "true") {
+      fields.push({
+        key: "golden_remarks",
+        label: "GOLDEN RECORD",
+        value: detailRow.golden_remarks || "Golden",
+        remark: "",
+        passFlag: null,
+        readOnly: true,
+      });
+    }
+    return fields;
+  }, [detailRow, columnNames]);
+
   const gridColumns = useMemo(() => {
     const cols = columns.map((c) => ({
       key: c.name,
       name: c.name.replace(/_/g, " ").toUpperCase(),
       resizable: true,
       sortable: true,
-      minWidth: 110,
+      minWidth: 130,
+      renderHeaderCell() {
+        const label = c.name.replace(/_/g, " ").toUpperCase();
+        return (
+          <div className="flex h-full w-full items-center justify-between gap-1 px-1">
+            <span className="truncate text-[10px] font-bold tracking-wider">{label}</span>
+            <ColumnMultiFilter
+              columnKey={c.name}
+              label={label}
+              options={filterOptionMap[c.name] || []}
+              selected={columnFilters[c.name] || []}
+              onChange={(vals) => setFilterForColumn(c.name, vals)}
+            />
+          </div>
+        );
+      },
       renderCell({ row }) {
         const value = row[c.name];
         const text = value != null && value !== "" ? String(value) : "—";
         const passFlag = row[`${c.name}__dq_pass`];
         const remark = row[`${c.name}__dq_remark`];
-        const title = remark ? `${text} — ${remark}` : text;
+        const title = remark
+          ? `${text} — ${remark}`
+          : `${text} (click to open row details)`;
         return (
           <span
             className={cn(
-              "block truncate border-l-2 px-1.5 text-[11px] text-foreground",
+              "block cursor-pointer truncate border-l-2 px-1.5 text-[11px] text-foreground hover:underline",
               passFlag === "false" && "border-l-destructive bg-destructive/5",
               passFlag === "true" && "border-l-success bg-success/5",
               passFlag !== "true" && passFlag !== "false" && "border-l-transparent",
@@ -231,10 +570,27 @@ export default function DatasetSampleRowsGrid({
       name: "DQ STATUS",
       resizable: true,
       sortable: false,
-      minWidth: 96,
+      minWidth: 110,
+      renderHeaderCell() {
+        return (
+          <div className="flex h-full w-full items-center justify-between gap-1 px-1">
+            <span className="truncate text-[10px] font-bold tracking-wider">DQ STATUS</span>
+            <ColumnMultiFilter
+              columnKey="dq_status"
+              label="DQ STATUS"
+              options={filterOptionMap.dq_status || ["Pass", "Failed", EMPTY_DISPLAY]}
+              selected={columnFilters.dq_status || []}
+              onChange={(vals) => setFilterForColumn("dq_status", vals)}
+            />
+          </div>
+        );
+      },
       renderCell({ row }) {
         return (
-          <div className="flex justify-center px-1.5 py-0.5">
+          <div
+            className="flex cursor-pointer justify-center px-1.5 py-0.5"
+            title="Click to open row details"
+          >
             <DqStatusBadge row={row} columnNames={columnNames} />
           </div>
         );
@@ -276,10 +632,10 @@ export default function DatasetSampleRowsGrid({
     });
 
     return cols;
-  }, [columns, columnNames]);
+  }, [columns, columnNames, columnFilters, filterOptionMap, setFilterForColumn]);
 
   const loadPage = useCallback(async () => {
-    if (!enabled || datasetId == null || tableId == null) return;
+    if (!enabled || datasetId == null || tableId == null) return [];
     setLoading(true);
     setErr("");
     try {
@@ -290,14 +646,12 @@ export default function DatasetSampleRowsGrid({
         aiQuery: debouncedSmartQuery,
       });
       const data = res?.data ?? res;
-      const pageRows = data?.rows || [];
+      const pageRows = (data?.rows || []).map((row, i) => ({
+        ...row,
+        _rowId: `${offset + i}`,
+      }));
       const nextTotal = Number(data?.total ?? 0);
-      setRows(
-        pageRows.map((row, i) => ({
-          ...row,
-          _rowId: `${offset + i}`,
-        })),
-      );
+      setRows(pageRows);
       setTotal(nextTotal);
       setMessage(data?.message || "");
       setAiSummary(data?.ai_summary || "");
@@ -309,13 +663,157 @@ export default function DatasetSampleRowsGrid({
       } else {
         setAiNotice("");
       }
+      return pageRows;
     } catch (e) {
       setRows([]);
       setErr(formatDetail(e?.response?.data) || e?.message || "Failed to load rows.");
+      return [];
     } finally {
       setLoading(false);
     }
   }, [datasetId, tableId, enabled, safePageIndex, pageSize, debouncedSmartQuery]);
+
+  const handleSaveRow = useCallback(async () => {
+    if (!detailRow || datasetId == null || tableId == null) return;
+    const rowIndex = detailRow.row_index;
+    if (rowIndex == null || rowIndex === "") {
+      setSaveErr("Cannot save: row index is missing. Reload the grid and try again.");
+      return;
+    }
+    setSavingRow(true);
+    setSaveErr("");
+    setSaveMsg("");
+
+    const runningToastId = `dq-run-${datasetId}-${tableId}`;
+
+    try {
+      const values = {};
+      for (const name of columnNames) {
+        values[name] = editValues[name] ?? "";
+      }
+
+      // 1) Save edited values into backend DB
+      setSaveMsg("Saving row to database…");
+      const saveRes = await enterpriseGovernanceDatasetTableRowUpdate(datasetId, tableId, {
+        rowIndex: Number(rowIndex),
+        values,
+      });
+      const saveData = saveRes?.data ?? saveRes;
+      const jobId = saveData?.job_id;
+
+      pushToast({
+        id: `row-saved-${Date.now()}`,
+        status: "completed",
+        title: "Saved",
+        subtitle: "Record updated",
+        message: "Your changes were saved to the backend database.",
+      });
+      setSaveMsg("Saved to database.");
+
+      // 2) Auto-run DQ (Stewardship validation + Jobs Run DQ fallback for Owner roles)
+      if (jobId != null) {
+        pushToast({
+          id: runningToastId,
+          status: "running",
+          title: "DQ running",
+          subtitle: `Job #${jobId}`,
+          message: "DQ validation is running…",
+          startTime: new Date().toISOString(),
+        });
+        setSaveMsg("Saved. Running DQ…");
+
+        let dqPassed = true;
+        let dqSummary = "Validation engine completed";
+        try {
+          const dqRes = await enterpriseValidationRun({ job_id: Number(jobId) });
+          const dqData = dqRes?.data ?? dqRes;
+          dqPassed = dqData?.passed !== false;
+          dqSummary = dqData?.summary || dqSummary;
+        } catch (dqErr) {
+          // Owner desk may hit 403 on enterprise validation — use /jobs/{id}/run
+          const status = dqErr?.response?.status;
+          if (status === 403) {
+            const jobRes = await runJobEngine(Number(jobId));
+            const jobData = jobRes?.data ?? jobRes;
+            dqPassed = true;
+            dqSummary = jobData?.message || "DQ job executed successfully";
+          } else {
+            throw dqErr;
+          }
+        }
+
+        dismissToast(runningToastId);
+
+        if (!dqPassed) {
+          pushToast({
+            id: `dq-done-${Date.now()}`,
+            status: "failed",
+            title: "DQ finished",
+            subtitle: `Job #${jobId}`,
+            message: dqSummary || "DQ completed with issues. Check status and remarks.",
+          }, 8000);
+          setSaveMsg(`Saved. DQ finished with issues: ${dqSummary || "see remarks"}.`);
+        } else {
+          pushToast({
+            id: `dq-done-${Date.now()}`,
+            status: "completed",
+            title: "DQ completed",
+            subtitle: `Job #${jobId}`,
+            message: "DQ re-run finished. Status and remarks are updated.",
+          }, 7000);
+          setSaveMsg("Saved and DQ re-run completed. Status/remarks refreshed.");
+        }
+      } else {
+        setSaveMsg("Saved. (No linked job — DQ was not run.)");
+      }
+
+      // 3) Reload grid + refresh modal DQ STATUS / DQ REMARKS from DB
+      const pageRows = await loadPage();
+      const refreshed = (pageRows || []).find(
+        (r) => Number(r.row_index) === Number(rowIndex),
+      );
+      if (refreshed) {
+        setDetailRow(refreshed);
+        const draft = {};
+        for (const name of columnNames) {
+          const raw = refreshed[name];
+          draft[name] = raw != null && raw !== "" ? String(raw) : "";
+        }
+        setEditValues(draft);
+      } else {
+        setDetailRow((prev) => {
+          if (!prev) return prev;
+          const next = { ...prev };
+          for (const name of columnNames) {
+            next[name] = values[name] ?? "";
+          }
+          return next;
+        });
+      }
+    } catch (e) {
+      dismissToast(runningToastId);
+      const msg = formatDetail(e?.response?.data) || e?.message || "Failed to save / run DQ.";
+      setSaveErr(msg);
+      pushToast({
+        id: `row-err-${Date.now()}`,
+        status: "failed",
+        title: "Save failed",
+        subtitle: "Could not complete",
+        message: msg,
+      }, 8000);
+    } finally {
+      setSavingRow(false);
+    }
+  }, [
+    detailRow,
+    datasetId,
+    tableId,
+    columnNames,
+    editValues,
+    loadPage,
+    pushToast,
+    dismissToast,
+  ]);
 
   useEffect(() => {
     if (!enabled || datasetId == null || tableId == null) {
@@ -326,6 +824,7 @@ export default function DatasetSampleRowsGrid({
       setSmartQuery("");
       setDebouncedSmartQuery("");
       setAiSummary("");
+      setColumnFilters({});
       return;
     }
     loadPage();
@@ -334,6 +833,7 @@ export default function DatasetSampleRowsGrid({
   useEffect(() => {
     setPageIndex(0);
     setSortColumns([]);
+    setColumnFilters({});
   }, [datasetId, tableId, pageSize]);
 
   useEffect(() => {
@@ -379,7 +879,21 @@ export default function DatasetSampleRowsGrid({
           {total > 0 ? (
             <p className="text-[10px] text-muted-foreground whitespace-nowrap">
               Showing {rangeStart.toLocaleString()}–{rangeEnd.toLocaleString()}
+              {activeFilterCount > 0 ? (
+                <span className="ml-1">
+                  · filtered {filteredRows.length}/{rows.length} on this page
+                </span>
+              ) : null}
             </p>
+          ) : null}
+          {activeFilterCount > 0 ? (
+            <button
+              type="button"
+              className="text-[10px] font-semibold uppercase tracking-wider text-primary hover:underline"
+              onClick={clearAllFilters}
+            >
+              Clear filters ({activeFilterCount})
+            </button>
           ) : null}
         </div>
 
@@ -425,10 +939,19 @@ export default function DatasetSampleRowsGrid({
           <DataGrid
             className={isDark ? "rdg-dark" : "rdg-light"}
             columns={gridColumns}
-            rows={rows}
+            rows={filteredRows}
             rowKeyGetter={(row) => row._rowId}
             sortColumns={sortColumns}
             onSortColumnsChange={setSortColumns}
+            onCellClick={({ row, column }) => {
+              if (!row) return;
+              const key = column?.key;
+              if (key === "dq_remarks" || key === "golden_remarks") {
+                openRowDetail(row, key);
+                return;
+              }
+              openRowDetail(row, key || null);
+            }}
             style={{ height: 320 }}
             rowHeight={34}
             headerRowHeight={38}
@@ -470,9 +993,105 @@ export default function DatasetSampleRowsGrid({
         </div>
       </div>
 
+      {!filteredRows.length && rows.length && !loading ? (
+        <p className="text-xs text-muted-foreground">No rows match the selected filters on this page.</p>
+      ) : null}
       {!rows.length && !loading && !err && !message ? (
         <p className="text-xs text-muted-foreground">No rows in this table yet.</p>
       ) : null}
+
+      <DatasetRefreshToastStack toasts={actionToasts} onDismiss={dismissToast} />
+
+      <AppModal
+        open={!!detailRow}
+        onClose={closeRowDetail}
+        title="Row details"
+        description="Edit values, then Save: stores in DB, shows a toast, then auto-runs Stewardship DQ and refreshes status/remarks."
+        maxWidth="max-w-2xl"
+        showDefaultFooter={false}
+        footer={
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="flex-1"
+              onClick={closeRowDetail}
+              disabled={savingRow}
+            >
+              Close
+            </Button>
+            <Button
+              type="button"
+              className="flex-1"
+              onClick={handleSaveRow}
+              disabled={savingRow || detailRow?.row_index == null}
+            >
+              {savingRow ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              {savingRow ? "Saving & running DQ…" : "Save"}
+            </Button>
+          </div>
+        }
+      >
+        <div className="space-y-3">
+          <p className="text-[11px] text-muted-foreground">
+            Click any cell in the grid to open this form. Editable fields can be changed and saved.
+          </p>
+          {saveErr ? <p className="text-xs text-destructive">{saveErr}</p> : null}
+          {saveMsg ? <p className="text-xs text-emerald-700">{saveMsg}</p> : null}
+          <div className="grid gap-3 sm:grid-cols-2">
+            {detailFields.map((field) => {
+              const focused = focusColumn === field.key;
+              const readOnly = field.readOnly || READONLY_DETAIL_KEYS.has(field.key);
+              return (
+                <label
+                  key={field.key}
+                  className={cn(
+                    "block rounded-lg border p-3",
+                    focused
+                      ? "border-primary bg-primary/5 ring-1 ring-primary/30"
+                      : "border-border bg-muted/20",
+                    field.key === "dq_remarks" || field.key === "golden_remarks"
+                      ? "sm:col-span-2"
+                      : null,
+                  )}
+                >
+                  <span className={modalLabelClass}>
+                    {field.label}
+                    {readOnly ? (
+                      <span className="ml-1 font-normal normal-case text-muted-foreground">(read-only)</span>
+                    ) : null}
+                  </span>
+                  {readOnly ? (
+                    <div
+                      className={cn(
+                        "mt-1 min-h-9 rounded-md border border-[var(--input-border)] bg-muted/50 px-3 py-2 text-sm font-medium text-muted-foreground break-words",
+                      )}
+                    >
+                      {field.value || "—"}
+                    </div>
+                  ) : (
+                    <input
+                      className={cn(
+                        modalInputClass,
+                        field.passFlag === "false" && "border-destructive/40 bg-destructive/5",
+                        field.passFlag === "true" && "border-success/40 bg-success/5",
+                      )}
+                      value={editValues[field.key] ?? ""}
+                      onChange={(e) =>
+                        setEditValues((prev) => ({ ...prev, [field.key]: e.target.value }))
+                      }
+                      disabled={savingRow}
+                    />
+                  )}
+                  {field.remark ? (
+                    <p className="mt-1 text-[10px] text-rose-700">{field.remark}</p>
+                  ) : null}
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      </AppModal>
     </div>
   );
 }
