@@ -27,7 +27,8 @@ function ruleLabel(ruleType) {
   if (t === "unique") return "Unique";
   if (t === "regex") return "Pattern";
   if (t === "fuzzy_match") return "Fuzzy match";
-  if (t === "in_list") return "Allowed values";
+  if (t === "in_list" || t === "exact_values" || t === "exact_value") return "Exact values";
+  if (t === "equals") return "Equals";
   if (t === "range") return "Range";
   return ruleType || "Rule";
 }

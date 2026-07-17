@@ -63,7 +63,7 @@ import {
 import ColumnAudit from "./ColumnAudit";
 
 const RULE_OPTIONS_BY_TYPE = {
-  String: ["fuzzy_match", "contains", "starts_with", "ends_with", "equals", "not_equals", "is_email"],
+  String: ["fuzzy_match", "exact_values", "contains", "starts_with", "ends_with", "equals", "not_equals", "is_email"],
   Integer: ["equals", "not_equals", "greater_than", "less_than", "is_positive", "is_negative"],
   Float: ["equals", "not_equals", "greater_than", "less_than", "is_positive", "is_negative"],
   Date: ["before_date", "after_date", "date_format_check"],
@@ -72,6 +72,7 @@ const RULE_OPTIONS_BY_TYPE = {
 
 const RULE_LABELS = {
   fuzzy_match: "fuzzy match",
+  exact_values: "exact values",
   contains: "contains",
   starts_with: "starts with",
   ends_with: "ends with",
@@ -93,6 +94,7 @@ const RULES_REQUIRING_VALUE = new Set([
   "contains",
   "starts_with",
   "ends_with",
+  "exact_values",
   "equals",
   "not_equals",
   "greater_than",

@@ -18,6 +18,7 @@ import {
   Bell,
   Inbox,
   Database,
+  Sheet,
   FileText,
   BarChart3,
   Award,
@@ -64,7 +65,7 @@ export const SIDEBAR_CONFIG = {
     { group: "Governance desk", items: [
       { label: "Overview", path: "/dashboard", icon: LayoutDashboard, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "DB Connections", path: "/connections", icon: Database, permission: PERMISSIONS.DASHBOARD_VIEW },
-      { label: "Datasets", path: "/dashboard?tab=datasets", icon: Database, permission: PERMISSIONS.DASHBOARD_VIEW },
+      { label: "Datasets", path: "/dashboard?tab=datasets", icon: Sheet, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "Policies", path: "/dashboard?tab=policies", icon: FileText, permission: PERMISSIONS.DASHBOARD_VIEW },
       { label: "Glossary", path: "/dashboard?tab=glossary", icon: BookMarked, permission: PERMISSIONS.GOVERNANCE_VIEW },
       { label: "Business reports", path: "/dashboard?tab=business-reports", icon: BarChart3, permission: PERMISSIONS.DASHBOARD_VIEW },

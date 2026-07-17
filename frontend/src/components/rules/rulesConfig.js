@@ -16,6 +16,7 @@ export const RULE_TYPES = {
     "length_match",
     "fuzzy_match",
     "regex_pattern",
+    "exact_values",
     "contains",
     "starts_with",
     "ends_with",
@@ -43,6 +44,7 @@ export const RULES_REQUIRING_INPUT = [
   "range",
   "equals",
   "not_equals",
+  "exact_values",
   "greater_than",
   "less_than",
   "length_match",
@@ -62,6 +64,9 @@ export function getRulePlaceholder(type) {
       return "e.g. 'EMP-'";
     case "ends_with":
       return "e.g. '.com'";
+    case "exact_values":
+    case "equals":
+      return "e.g. Male or Male,Female";
     case "contains":
       return "e.g. 'urgent'";
     case "regex_pattern":
