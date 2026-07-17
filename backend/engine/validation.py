@@ -22,6 +22,39 @@ def check_contains(value, substring):
     if pd.isna(value) or not value: return True
     return str(substring).lower() in str(value).lower()
 
+def _is_empty_value(value):
+    if pd.isna(value):
+        return True
+    s = str(value).strip()
+    return s == "" or s.lower() == "nan"
+
+def check_exact_values(value, allowed):
+    """Value must exactly match one of the allowed values (comma-separated list supported)."""
+    if _is_empty_value(value):
+        return True
+    allowed_list = [a.strip() for a in str(allowed or "").split(",") if a.strip()]
+    if not allowed_list:
+        return False
+    val = str(value).strip().casefold()
+    return any(val == a.casefold() for a in allowed_list)
+
+def check_equals(value, expected):
+    """Exact equality for strings or numbers."""
+    if _is_empty_value(value):
+        return True
+    if expected is None or str(expected).strip() == "":
+        return False
+    try:
+        return float(value) == float(expected)
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip().casefold() == str(expected).strip().casefold()
+
+def check_not_equals(value, expected):
+    if _is_empty_value(value):
+        return True
+    return not check_equals(value, expected)
+
 def check_starts_with(value, prefix):
     if pd.isna(value) or not value: return True
     return str(value).startswith(prefix)
@@ -181,6 +214,12 @@ def validate_single_value(value, rule_code, rule_value=None):
         if rc == "is_email": return (check_is_email(value), "Invalid Email Format")
         if rc == "min_length": return (check_min_length(value, rule_value), f"Length < {rule_value}")
         if rc == "max_length": return (check_max_length(value, rule_value), f"Length > {rule_value}")
+        if rc in ["exact_values", "exact_value", "in_list"]:
+            return (check_exact_values(value, rule_value), f"Not an exact match for '{rule_value}'")
+        if rc == "equals":
+            return (check_equals(value, rule_value), f"Does not equal '{rule_value}'")
+        if rc == "not_equals":
+            return (check_not_equals(value, rule_value), f"Must not equal '{rule_value}'")
         if rc == "contains": return (check_contains(value, rule_value), f"Does not contain '{rule_value}'")
         if rc == "starts_with": return (check_starts_with(value, rule_value), f"Does not start with '{rule_value}'")
         if rc == "ends_with": return (check_ends_with(value, rule_value), f"Does not end with '{rule_value}'")
