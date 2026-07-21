@@ -387,6 +387,21 @@ class DatasetCreateBody(BaseModel):
     job_id: int | None = Field(None, ge=1)
 
 
+class DatasetUpdateBody(BaseModel):
+    name: str | None = None
+    domain: str | None = None
+    classification: str | None = None
+    description: str | None = None
+
+
+class DataSourceCreateBody(BaseModel):
+    source_type: str
+    data_source_name: str
+    db_connection_id: int | None = Field(None, ge=1)
+    join_configuration: dict | list | None = None
+    mapping_config: dict | list | None = None
+
+
 @router.post("/governance/datasets")
 def governance_dataset_create(request: Request, body: DatasetCreateBody, db: Session = Depends(_db), user: models.User = Depends(get_current_user)):
     require_any_permission(_role(request), Permissions.DASHBOARD_OWNER, Permissions.GOVERNANCE_VIEW, Permissions.ADMIN_VIEW)
@@ -415,9 +430,126 @@ def governance_dataset_create(request: Request, body: DatasetCreateBody, db: Ses
         entity_type="enterprise_dataset",
         entity_id=str(row.id),
         ip_address=request.client.host if request.client else None,
-        new_values={"name": row.name},
+        new_values={"name": row.name, "description": row.description},
     )
-    return {"id": row.id, "name": row.name, "job_id": row.job_id}
+    details = esvc.serialize_dataset_details(db, row.id)
+    return {
+        "id": row.id,
+        "name": row.name,
+        "job_id": row.job_id,
+        "description": row.description,
+        "details": details,
+    }
+
+
+@router.put("/governance/datasets/{dataset_id}")
+def governance_dataset_update(
+    request: Request,
+    dataset_id: int,
+    body: DatasetUpdateBody,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_any_permission(_role(request), Permissions.DASHBOARD_OWNER, Permissions.GOVERNANCE_VIEW, Permissions.ADMIN_VIEW)
+    if body.name is None and body.description is None and body.domain is None and body.classification is None:
+        raise HTTPException(status_code=400, detail="Provide at least one field to update.")
+    try:
+        row = esvc.update_dataset(
+            db,
+            dataset_id,
+            name=body.name,
+            description=body.description,
+            domain=body.domain,
+            classification=body.classification,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Dataset name already exists")
+    if not row:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    write_audit_log(
+        db,
+        user_id=user.id,
+        action="enterprise_dataset_updated",
+        entity_type="enterprise_dataset",
+        entity_id=str(row.id),
+        ip_address=request.client.host if request.client else None,
+        new_values={
+            "name": row.name,
+            "description": row.description,
+            "domain": row.domain,
+            "classification": row.classification,
+        },
+    )
+    details = esvc.serialize_dataset_details(db, row.id)
+    return {
+        "id": row.id,
+        "name": row.name,
+        "job_id": row.job_id,
+        "description": row.description,
+        "details": details,
+    }
+
+
+@router.get("/governance/datasets/{dataset_id}/data-sources")
+def governance_dataset_data_sources_list(
+    request: Request,
+    dataset_id: int,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_any_permission(_role(request), Permissions.DASHBOARD_OWNER, Permissions.GOVERNANCE_VIEW, Permissions.ADMIN_VIEW)
+    ds = (
+        db.query(models.EnterpriseDataset)
+        .filter(
+            models.EnterpriseDataset.id == dataset_id,
+            models.EnterpriseDataset.deleted_at.is_(None),
+        )
+        .first()
+    )
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return {"dataset_id": dataset_id, "items": esvc.list_data_sources(db, dataset_id)}
+
+
+@router.post("/governance/datasets/{dataset_id}/data-sources")
+def governance_dataset_data_source_create(
+    request: Request,
+    dataset_id: int,
+    body: DataSourceCreateBody,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_any_permission(_role(request), Permissions.DASHBOARD_OWNER, Permissions.GOVERNANCE_VIEW, Permissions.ADMIN_VIEW)
+    try:
+        row = esvc.create_data_source(
+            db,
+            dataset_id=dataset_id,
+            source_type=body.source_type,
+            data_source_name=body.data_source_name,
+            db_connection_id=body.db_connection_id,
+            join_configuration=body.join_configuration,
+            mapping_config=body.mapping_config,
+            created_by=user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    write_audit_log(
+        db,
+        user_id=user.id,
+        action="enterprise_data_source_created",
+        entity_type="data_source",
+        entity_id=str(row.id),
+        ip_address=request.client.host if request.client else None,
+        new_values={
+            "dataset_id": dataset_id,
+            "source_type": row.source_type,
+            "data_source_name": row.data_source_name,
+        },
+    )
+    return esvc.serialize_data_source(row)
 
 
 @router.get("/governance/datasets/recycle-bin")

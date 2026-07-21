@@ -5,6 +5,8 @@ CREATE SCHEMA IF NOT EXISTS governance;
 CREATE SCHEMA IF NOT EXISTS metadata;
 CREATE SCHEMA IF NOT EXISTS quarantine;
 CREATE SCHEMA IF NOT EXISTS datasets;
+CREATE SCHEMA IF NOT EXISTS dataset_source;
+CREATE SCHEMA IF NOT EXISTS data_source;
 
 CREATE TABLE metadata.jobs (
 	job_id SERIAL NOT NULL, 
@@ -442,6 +444,36 @@ CREATE TABLE enterprise.datasets (
 	FOREIGN KEY(owner_user_id) REFERENCES auth.users (id), 
 	FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id), 
 	FOREIGN KEY(deleted_by_user_id) REFERENCES auth.users (id)
+);
+
+CREATE TABLE dataset_source.dataset_source (
+	id SERIAL NOT NULL,
+	enterprise_dataset_id INTEGER NOT NULL,
+	dataset_name TEXT NOT NULL,
+	description TEXT,
+	created_by_user_id INTEGER,
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+	PRIMARY KEY (id),
+	UNIQUE (enterprise_dataset_id),
+	FOREIGN KEY(enterprise_dataset_id) REFERENCES enterprise.datasets (id),
+	FOREIGN KEY(created_by_user_id) REFERENCES auth.users (id)
+);
+
+CREATE TABLE data_source.data_sources (
+	id SERIAL NOT NULL,
+	dataset_id INTEGER NOT NULL,
+	source_type TEXT NOT NULL,
+	db_connection_id INTEGER,
+	data_source_name TEXT NOT NULL,
+	join_configuration JSON,
+	mapping_config JSON,
+	created_by INTEGER,
+	created_date TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+	updated_date TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+	PRIMARY KEY (id),
+	FOREIGN KEY(dataset_id) REFERENCES enterprise.datasets (id),
+	FOREIGN KEY(created_by) REFERENCES auth.users (id)
 );
 
 CREATE TABLE enterprise.glossary (

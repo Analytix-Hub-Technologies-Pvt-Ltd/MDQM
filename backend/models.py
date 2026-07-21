@@ -653,12 +653,45 @@ class GoldenMergeConfig(Base):
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
-class DatasetDetails(Base):
-    __tablename__ = "dataset_details"
-    __table_args__ = {'schema': 'dataset_details'}
+class DatasetSource(Base):
+    """Separate catalog of dataset description + audit metadata."""
 
-    dataset_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    dataset_name = Column(Text, nullable=True)
-    dataset_description = Column(Text, nullable=True)
-    update_date = Column(DateTime, nullable=True)
-    created_date = Column(DateTime, nullable=True)
+    __tablename__ = "dataset_source"
+    __table_args__ = {"schema": "dataset_source"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    enterprise_dataset_id = Column(
+        Integer,
+        ForeignKey("enterprise.datasets.id"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    dataset_name = Column(Text, nullable=False)
+    description = Column(Text, nullable=True)
+    created_by_user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class DataSource(Base):
+    """Data sources attached to an enterprise dataset (primary or joined)."""
+
+    __tablename__ = "data_sources"
+    __table_args__ = {"schema": "data_source"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    dataset_id = Column(
+        Integer,
+        ForeignKey("enterprise.datasets.id"),
+        nullable=False,
+        index=True,
+    )
+    source_type = Column(Text, nullable=False)  # file | table
+    db_connection_id = Column(Integer, nullable=True, index=True)
+    data_source_name = Column(Text, nullable=False)
+    join_configuration = Column(JSON, nullable=True)
+    mapping_config = Column(JSON, nullable=True)
+    created_by = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
+    created_date = Column(DateTime, default=func.now(), nullable=False)
+    updated_date = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)

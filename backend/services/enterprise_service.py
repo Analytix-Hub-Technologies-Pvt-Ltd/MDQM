@@ -420,6 +420,138 @@ def create_policy(db: Session, *, policy_name: str, domain: str | None, content:
     return row
 
 
+def _upsert_dataset_details(
+    db: Session,
+    *,
+    enterprise_dataset: models.EnterpriseDataset,
+    created_by_user_id: int | None = None,
+) -> models.DatasetSource:
+    """Keep dataset_source.dataset_source in sync with enterprise catalog row."""
+    details = (
+        db.query(models.DatasetSource)
+        .filter(models.DatasetSource.enterprise_dataset_id == enterprise_dataset.id)
+        .first()
+    )
+    now = datetime.utcnow()
+    if details is None:
+        details = models.DatasetSource(
+            enterprise_dataset_id=enterprise_dataset.id,
+            dataset_name=enterprise_dataset.name,
+            description=enterprise_dataset.description,
+            created_by_user_id=created_by_user_id or enterprise_dataset.owner_user_id,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(details)
+    else:
+        details.dataset_name = enterprise_dataset.name
+        details.description = enterprise_dataset.description
+        details.updated_at = now
+    return details
+
+
+def serialize_dataset_details(db: Session, enterprise_dataset_id: int) -> dict[str, Any] | None:
+    details = (
+        db.query(models.DatasetSource)
+        .filter(models.DatasetSource.enterprise_dataset_id == enterprise_dataset_id)
+        .first()
+    )
+    if not details:
+        return None
+    creator = None
+    if details.created_by_user_id:
+        user = db.query(models.User).filter(models.User.id == details.created_by_user_id).first()
+        if user:
+            creator = {
+                "id": user.id,
+                "full_name": user.full_name,
+                "username": user.username,
+                "email": user.email,
+            }
+    return {
+        "id": details.id,
+        "enterprise_dataset_id": details.enterprise_dataset_id,
+        "dataset_name": details.dataset_name,
+        "description": details.description,
+        "created_by_user_id": details.created_by_user_id,
+        "created_by": creator,
+        "created_at": details.created_at.isoformat() if details.created_at else None,
+        "updated_at": details.updated_at.isoformat() if details.updated_at else None,
+    }
+
+
+def serialize_data_source(row: models.DataSource) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "dataset_id": row.dataset_id,
+        "source_type": row.source_type,
+        "db_connection_id": row.db_connection_id,
+        "data_source_name": row.data_source_name,
+        "join_configuration": row.join_configuration,
+        "mapping_config": row.mapping_config,
+        "created_by": row.created_by,
+        "created_date": row.created_date.isoformat() if row.created_date else None,
+        "updated_date": row.updated_date.isoformat() if row.updated_date else None,
+    }
+
+
+def list_data_sources(db: Session, dataset_id: int) -> list[dict[str, Any]]:
+    rows = (
+        db.query(models.DataSource)
+        .filter(models.DataSource.dataset_id == dataset_id)
+        .order_by(models.DataSource.id.asc())
+        .all()
+    )
+    return [serialize_data_source(r) for r in rows]
+
+
+def create_data_source(
+    db: Session,
+    *,
+    dataset_id: int,
+    source_type: str,
+    data_source_name: str,
+    db_connection_id: int | None = None,
+    join_configuration: dict[str, Any] | list[Any] | None = None,
+    mapping_config: dict[str, Any] | list[Any] | None = None,
+    created_by: int | None = None,
+) -> models.DataSource:
+    ds = (
+        db.query(models.EnterpriseDataset)
+        .filter(
+            models.EnterpriseDataset.id == dataset_id,
+            models.EnterpriseDataset.deleted_at.is_(None),
+        )
+        .first()
+    )
+    if not ds:
+        raise ValueError("Dataset not found")
+
+    kind = (source_type or "").strip().lower()
+    if kind not in ("file", "table"):
+        raise ValueError("source_type must be 'file' or 'table'")
+    name = (data_source_name or "").strip()
+    if not name:
+        raise ValueError("data_source_name is required")
+
+    now = datetime.utcnow()
+    row = models.DataSource(
+        dataset_id=dataset_id,
+        source_type=kind,
+        db_connection_id=db_connection_id,
+        data_source_name=name,
+        join_configuration=join_configuration,
+        mapping_config=mapping_config,
+        created_by=created_by,
+        created_date=now,
+        updated_date=now,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 def create_dataset(
     db: Session,
     *,
@@ -434,11 +566,56 @@ def create_dataset(
         name=name.strip(),
         domain=domain,
         classification=classification,
-        description=description,
+        description=(description or "").strip() or None,
         owner_user_id=owner_user_id,
         job_id=job_id,
     )
     db.add(row)
+    db.flush()
+    _upsert_dataset_details(db, enterprise_dataset=row, created_by_user_id=owner_user_id)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def update_dataset(
+    db: Session,
+    dataset_id: int,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    domain: str | None = None,
+    classification: str | None = None,
+) -> models.EnterpriseDataset | None:
+    row = (
+        db.query(models.EnterpriseDataset)
+        .filter(
+            models.EnterpriseDataset.id == dataset_id,
+            models.EnterpriseDataset.deleted_at.is_(None),
+        )
+        .first()
+    )
+    if not row:
+        return None
+
+    if name is not None:
+        new_name = name.strip()
+        if not new_name:
+            raise ValueError("Dataset name cannot be empty.")
+        row.name = new_name
+        if row.job_id:
+            job = db.query(models.Job).filter(models.Job.job_id == row.job_id).first()
+            if job:
+                job.job_name = new_name
+
+    if description is not None:
+        row.description = description.strip() or None
+    if domain is not None:
+        row.domain = domain.strip() or None
+    if classification is not None:
+        row.classification = classification.strip() or None
+
+    _upsert_dataset_details(db, enterprise_dataset=row)
     db.commit()
     db.refresh(row)
     return row
@@ -1064,6 +1241,7 @@ def build_dataset_inventory_preview(
 
     job_id = row.job_id or busvc._resolve_job_id(db, row)
     score_meta = compute_dataset_scores(db, row)
+    details = serialize_dataset_details(db, row.id)
     base = {
         "dataset": {
             "id": row.id,
@@ -1076,6 +1254,10 @@ def build_dataset_inventory_preview(
             "dq_score": score_meta.get("dq_score"),
             "eda_score_source": score_meta.get("eda_score_source"),
             "dq_score_source": score_meta.get("dq_score_source"),
+            "details": details,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "updated_at": details.get("updated_at") if details else None,
+            "created_by": details.get("created_by") if details else None,
         },
     }
     if not job_id:
@@ -1083,6 +1265,7 @@ def build_dataset_inventory_preview(
             **base,
             "linked_job": None,
             "tables": [],
+            "data_sources": list_data_sources(db, row.id),
             "hint": "No MDQM job is linked to this catalog entry. Create again from Data Owner (links automatically) or ensure the dataset name matches the job name.",
             "refresh": {
                 "available": False,
@@ -1211,6 +1394,7 @@ def build_dataset_inventory_preview(
             else None
         ),
         "join_sources": list_join_sources(job) if job else [],
+        "data_sources": list_data_sources(db, row.id),
         "tables": out_tables,
     }
 

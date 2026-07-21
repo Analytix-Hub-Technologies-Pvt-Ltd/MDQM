@@ -82,6 +82,45 @@ if True:
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS enterprise"))
             # Per-dataset physical tables live in this dedicated schema
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS datasets"))
+            # Dataset description / audit metadata
+            conn.execute(text("CREATE SCHEMA IF NOT EXISTS dataset_source"))
+            # Data sources attached to datasets
+            conn.execute(text("CREATE SCHEMA IF NOT EXISTS data_source"))
+            # Prefer renaming legacy dataset_details → dataset_source before create_all
+            legacy_details = conn.execute(
+                text(
+                    """
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema = 'dataset_details'
+                      AND table_name = 'dataset_details'
+                    """
+                )
+            ).first()
+            new_exists = conn.execute(
+                text(
+                    """
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema = 'dataset_source'
+                      AND table_name = 'dataset_source'
+                    """
+                )
+            ).first()
+            if legacy_details and not new_exists:
+                conn.execute(
+                    text(
+                        "ALTER TABLE dataset_details.dataset_details "
+                        "SET SCHEMA dataset_source"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "ALTER TABLE dataset_source.dataset_details "
+                        "RENAME TO dataset_source"
+                    )
+                )
+            conn.execute(text("DROP SCHEMA IF EXISTS dataset_details CASCADE"))
         models.Base.metadata.create_all(bind=engine)
         with engine.begin() as conn:
             conn.execute(
@@ -90,6 +129,23 @@ if True:
                     "ADD COLUMN IF NOT EXISTS dq_run_status TEXT NOT NULL DEFAULT 'N'"
                 )
             )
+            # Rebuild unused/legacy dataset_source table if it has the old column layout
+            legacy = conn.execute(
+                text(
+                    """
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = 'dataset_source'
+                      AND table_name = 'dataset_source'
+                      AND column_name = 'dataset_description'
+                    """
+                )
+            ).first()
+            if legacy:
+                conn.execute(text("DROP TABLE IF EXISTS dataset_source.dataset_source CASCADE"))
+        # Re-create dataset_source after optional legacy drop
+        models.DatasetSource.__table__.create(bind=engine, checkfirst=True)
+        models.DataSource.__table__.create(bind=engine, checkfirst=True)
         # Ensure the datasets schema is present (also called by physical_table_manager)
         from services.physical_table_manager import ensure_datasets_schema
         ensure_datasets_schema(engine)
@@ -2090,8 +2146,20 @@ if True:
 
         from services.job_source_config_service import read_job_source_config, write_job_source_config
 
-        cfg = read_job_source_config(job)
-        if cfg.get("kind") != "postgres_tables":
+        cfg = read_job_source_config(job) or {}
+        kind = cfg.get("kind")
+        existing_table_count = (
+            db.query(models.TableMetadata)
+            .filter(models.TableMetadata.job_id == job_id)
+            .count()
+        )
+        # Allow first-time attach on empty jobs (name/description create), or update of DB-backed jobs.
+        if kind and kind != "postgres_tables":
+            raise HTTPException(
+                status_code=400,
+                detail="Only database-backed jobs can update dataset source settings.",
+            )
+        if not kind and existing_table_count > 0:
             raise HTTPException(
                 status_code=400,
                 detail="Only database-backed jobs can update dataset source settings.",
