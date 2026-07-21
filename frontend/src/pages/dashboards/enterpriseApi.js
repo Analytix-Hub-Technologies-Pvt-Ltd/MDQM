@@ -114,6 +114,18 @@ export async function enterpriseGovernanceDatasetCreate(body) {
   return apiClient.post("/api/enterprise/governance/datasets", body);
 }
 
+export async function enterpriseGovernanceDatasetUpdate(datasetId, body) {
+  return apiClient.put(`/api/enterprise/governance/datasets/${datasetId}`, body);
+}
+
+export async function enterpriseGovernanceDataSourceCreate(datasetId, body) {
+  return apiClient.post(`/api/enterprise/governance/datasets/${datasetId}/data-sources`, body);
+}
+
+export async function enterpriseGovernanceDataSourcesList(datasetId) {
+  return apiClient.get(`/api/enterprise/governance/datasets/${datasetId}/data-sources`);
+}
+
 export async function enterpriseGovernanceDatasetDelete(datasetId, { mode = "recycle" } = {}) {
   return apiClient.post(`/api/enterprise/governance/datasets/${datasetId}/delete`, { mode });
 }

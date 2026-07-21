@@ -1,17 +1,22 @@
 import { useCallback, useEffect, useState } from "react";
 import { importJobFromDb, refreshJobFromDb, removeJobJoinSource } from "../../../api";
-import { enterpriseGovernanceDatasetPreview, invalidateEdaReportCache } from "../enterpriseApi";
+import {
+  enterpriseGovernanceDatasetPreview,
+  enterpriseGovernanceDatasetUpdate,
+  invalidateEdaReportCache,
+} from "../enterpriseApi";
 import DatasetEdaReportModal from "./DatasetEdaReportModal";
 import EditDatasetSourceModal from "./EditDatasetSourceModal";
 import AddDataSourceModal from "./AddDataSourceModal";
 import DatasetDeleteModal from "./DatasetDeleteModal";
 import ScoreRing from "../../../components/business/ScoreRing";
-import { AppModal, ModalSection, ModalAlert } from "@/components/layout/AppModal";
+import { AppModal, ModalSection, ModalAlert, modalInputClass, modalLabelClass } from "@/components/layout/AppModal";
 import { Button } from "@/components/ui/button";
 import DatasetTableInventoryBlock from "@/components/enterprise/DatasetTableInventoryBlock";
 import DatasetCatalogChartInsights from "@/components/enterprise/DatasetCatalogChartInsights";
 import { formatJoinKeysLabel } from "@/components/enterprise/JoinKeyPairsEditor";
 import GoldenMergePanel from "@/components/enterprise/GoldenMergePanel";
+import { cn } from "@/lib/utils";
 
 function formatJoinColumns(join) {
   const cols = join?.selected_columns || [];
@@ -43,7 +48,7 @@ function formatDetail(d) {
   return "";
 }
 
-export default function DatasetPreviewModal({ datasetId, open, onClose, onDeleted }) {
+export default function DatasetPreviewModal({ datasetId, open, onClose, onDeleted, onUpdated }) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [payload, setPayload] = useState(null);
@@ -57,6 +62,12 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
   const [removeJoinBusy, setRemoveJoinBusy] = useState("");
   const [chartRevision, setChartRevision] = useState(0);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [detailsEditing, setDetailsEditing] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [detailsBusy, setDetailsBusy] = useState(false);
+  const [detailsErr, setDetailsErr] = useState("");
+  const [detailsOk, setDetailsOk] = useState("");
 
   const loadPreview = useCallback(async () => {
     if (datasetId == null) return;
@@ -77,6 +88,9 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
     if (!open || datasetId == null) return;
     setRefreshErr("");
     setRefreshOk("");
+    setDetailsEditing(false);
+    setDetailsErr("");
+    setDetailsOk("");
     loadPreview();
   }, [open, datasetId, loadPreview]);
 
@@ -87,10 +101,50 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
   const canEditDataset = Boolean(job?.job_id && refreshMeta.available);
   const baseTable = (payload?.tables || [])[0];
   const baseColumns = baseTable?.columns || [];
-  const canAddDataSource = Boolean(job?.job_id && baseColumns.length > 0);
+  const canAddDataSource = Boolean(job?.job_id);
   const joinSources = payload?.join_sources || [];
   const activeJoins = joinSources.filter((j) => j.materialized !== false && j.status !== "broken");
   const brokenJoins = joinSources.filter((j) => j.materialized === false || j.status === "broken");
+  const isPrimarySourceAttach = Boolean(job?.job_id && baseColumns.length === 0);
+
+  const startEditDetails = () => {
+    setEditName(ds?.name || "");
+    setEditDescription(ds?.description || "");
+    setDetailsErr("");
+    setDetailsOk("");
+    setDetailsEditing(true);
+  };
+
+  const cancelEditDetails = () => {
+    setDetailsEditing(false);
+    setDetailsErr("");
+  };
+
+  const saveDetails = async () => {
+    if (datasetId == null) return;
+    const n = editName.trim();
+    if (!n) {
+      setDetailsErr("Enter a dataset name.");
+      return;
+    }
+    setDetailsBusy(true);
+    setDetailsErr("");
+    setDetailsOk("");
+    try {
+      await enterpriseGovernanceDatasetUpdate(datasetId, {
+        name: n,
+        description: editDescription,
+      });
+      setDetailsOk("Details saved.");
+      setDetailsEditing(false);
+      await loadPreview();
+      onUpdated?.();
+    } catch (e) {
+      setDetailsErr(formatDetail(e?.response?.data) || e?.message || "Failed to save details.");
+    } finally {
+      setDetailsBusy(false);
+    }
+  };
 
   const handleRunImport = async () => {
     if (!job?.job_id) return;
@@ -174,7 +228,7 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
               ) : null}
               {canEditDataset ? (
                 <Button type="button" variant="outline" size="sm" onClick={() => setEditOpen(true)} className="text-xs uppercase tracking-wide">
-                  Edit dataset
+                  Edit source
                 </Button>
               ) : null}
               {datasetId != null ? (
@@ -212,28 +266,99 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
         <div className="grid gap-4 lg:grid-cols-12 lg:items-start">
           <div className="space-y-4 lg:col-span-7 xl:col-span-8">
             <ModalSection title="Catalog">
-              <p className="text-lg font-semibold text-foreground">{ds?.name ?? "—"}</p>
-              <div className="flex flex-wrap items-center gap-4">
-                {ds?.eda_score != null ? (
-                  <div className="flex items-center gap-2">
-                    <ScoreRing score={ds.eda_score} size={40} />
-                    <span className="text-xs text-muted-foreground">EDA score</span>
+              {detailsEditing ? (
+                <div className="space-y-3">
+                  <div>
+                    <label className={modalLabelClass}>Dataset name</label>
+                    <input
+                      className={modalInputClass}
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      disabled={detailsBusy}
+                    />
                   </div>
-                ) : null}
-                {ds?.dq_score != null ? (
-                  <div className="flex items-center gap-2">
-                    <ScoreRing score={ds.dq_score} size={40} />
-                    <span className="text-xs text-muted-foreground">DQ score</span>
+                  <div>
+                    <label className={modalLabelClass}>Description</label>
+                    <textarea
+                      className={cn(modalInputClass, "min-h-[4.5rem] resize-y")}
+                      value={editDescription}
+                      onChange={(e) => setEditDescription(e.target.value)}
+                      rows={3}
+                      disabled={detailsBusy}
+                    />
                   </div>
-                ) : null}
-              </div>
-              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                {ds?.classification ? <span>Class: {ds.classification}</span> : null}
-                {ds?.catalog_job_id != null ? <span>Linked job id: #{ds.catalog_job_id}</span> : null}
-              </div>
-              {ds?.description ? (
-                <p className="mt-2 whitespace-pre-wrap text-xs text-muted-foreground">{ds.description}</p>
-              ) : null}
+                  {detailsErr ? <p className="text-xs text-destructive">{detailsErr}</p> : null}
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={detailsBusy}
+                      onClick={saveDetails}
+                      className="text-xs uppercase tracking-wide"
+                    >
+                      {detailsBusy ? "Saving…" : "Save details"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={detailsBusy}
+                      onClick={cancelEditDetails}
+                      className="text-xs uppercase tracking-wide"
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-lg font-semibold text-foreground">{ds?.name ?? "—"}</p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={startEditDetails}
+                      className="shrink-0 text-xs uppercase tracking-wide"
+                    >
+                      Edit details
+                    </Button>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-4">
+                    {ds?.eda_score != null ? (
+                      <div className="flex items-center gap-2">
+                        <ScoreRing score={ds.eda_score} size={40} />
+                        <span className="text-xs text-muted-foreground">EDA score</span>
+                      </div>
+                    ) : null}
+                    {ds?.dq_score != null ? (
+                      <div className="flex items-center gap-2">
+                        <ScoreRing score={ds.dq_score} size={40} />
+                        <span className="text-xs text-muted-foreground">DQ score</span>
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                    {ds?.classification ? <span>Class: {ds.classification}</span> : null}
+                    {ds?.catalog_job_id != null ? <span>Linked job id: #{ds.catalog_job_id}</span> : null}
+                    {ds?.created_by?.full_name || ds?.created_by?.username ? (
+                      <span>Created by: {ds.created_by.full_name || ds.created_by.username}</span>
+                    ) : null}
+                    {ds?.details?.created_at || ds?.created_at ? (
+                      <span>Created: {new Date(ds.details?.created_at || ds.created_at).toLocaleString()}</span>
+                    ) : null}
+                    {ds?.updated_at || ds?.details?.updated_at ? (
+                      <span>Updated: {new Date(ds.updated_at || ds.details.updated_at).toLocaleString()}</span>
+                    ) : null}
+                  </div>
+                  {ds?.description ? (
+                    <p className="mt-2 whitespace-pre-wrap text-xs text-muted-foreground">{ds.description}</p>
+                  ) : (
+                    <p className="mt-2 text-xs text-muted-foreground italic">No description</p>
+                  )}
+                  {detailsOk ? <p className="mt-2 text-xs text-success">{detailsOk}</p> : null}
+                </>
+              )}
             </ModalSection>
 
             {payload?.hint ? <ModalAlert variant="warning">{payload.hint}</ModalAlert> : null}
@@ -393,11 +518,23 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
       open={addSourceOpen}
       onClose={() => setAddSourceOpen(false)}
       jobId={job?.job_id}
+      datasetId={datasetId}
       baseColumns={baseColumns}
+      primaryAttach={isPrimarySourceAttach}
       onSaved={async (result) => {
         if (datasetId != null) invalidateEdaReportCache(datasetId);
         await loadPreview();
         setChartRevision((n) => n + 1);
+        onUpdated?.();
+        if (result?.primary) {
+          setRefreshOk(
+            result?.kind === "table"
+              ? "Data source attached. Use Run to load data from the database."
+              : "Data source attached and loaded.",
+          );
+          setAddSourceOpen(false);
+          return;
+        }
         const rows = result?.materialized?.row_count;
         const cols = result?.materialized?.column_count;
         const detail =
@@ -405,6 +542,7 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
             ? ` Join complete — ${rows.toLocaleString()} rows, ${cols} columns.`
             : "";
         setRefreshOk(`Data source joined successfully.${detail}`);
+        setAddSourceOpen(false);
       }}
     />
     <DatasetDeleteModal

@@ -921,6 +921,7 @@ function GovernanceDatasetSection() {
         datasetId={previewDatasetId}
         open={previewDatasetId != null}
         onClose={() => setPreviewDatasetId(null)}
+        onUpdated={() => bump()}
         onDeleted={(info) => {
           bump();
           if (info?.mode === "recycle") setRecycleBinOpen(true);

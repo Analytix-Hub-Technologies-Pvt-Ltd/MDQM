@@ -14,7 +14,11 @@ import {
   previewCsvFileFromPath,
   previewDbTable,
   recommendJobJoinKeys,
+  uploadCsvPathToJob,
+  uploadCsvToJob,
+  updateJobDbSource,
 } from "@/api";
+import { enterpriseGovernanceDatasetUpdate, enterpriseGovernanceDataSourceCreate } from "../enterpriseApi";
 
 const FILE_ACCEPT = ".csv,.xlsx,.xls";
 const FILE_ACCEPT_HINT = "Accepted formats: CSV (.csv), Excel (.xlsx, .xls)";
@@ -47,7 +51,15 @@ function emptyJoinPair() {
   return { left_key: "", right_key: "" };
 }
 
-export default function AddDataSourceModal({ open, onClose, jobId, baseColumns = [], onSaved }) {
+export default function AddDataSourceModal({
+  open,
+  onClose,
+  jobId,
+  baseColumns = [],
+  primaryAttach = false,
+  datasetId = null,
+  onSaved,
+}) {
   const [label, setLabel] = useState("");
   const [nameEdited, setNameEdited] = useState(false);
   const [mode, setMode] = useState("file");
@@ -304,11 +316,13 @@ export default function AddDataSourceModal({ open, onClose, jobId, baseColumns =
   };
 
   const validJoinKeys = joinKeys.filter((p) => p.left_key && p.right_key);
+  const isPrimary = Boolean(primaryAttach) || baseColumnNames.length === 0;
 
   const onSubmit = async (e) => {
     e.preventDefault();
     if (!jobId) return;
-    if (!validJoinKeys.length) {
+
+    if (!isPrimary && !validJoinKeys.length) {
       setError("Add at least one complete join key pair for both datasets.");
       return;
     }
@@ -333,6 +347,75 @@ export default function AddDataSourceModal({ open, onClose, jobId, baseColumns =
     setBusy(true);
     setError("");
     try {
+      const persistDataSource = async ({ sourceType, joinConfiguration = null }) => {
+        if (datasetId == null) return null;
+        const mapping = {
+          selected_columns: selectedColumns,
+          column_aliases: Object.fromEntries(
+            Object.entries(columnAliases).filter(
+              ([col, alias]) => selectedColumns.includes(col) && String(alias || "").trim(),
+            ),
+          ),
+          schema_name: mode === "table" ? selectedSchema : null,
+          table_name: mode === "table" ? selectedTable : null,
+          file_path: mode === "file" && filePath.trim() ? filePath.trim() : null,
+          file_name: mode === "file" && file?.name ? file.name : null,
+        };
+        const res = await enterpriseGovernanceDataSourceCreate(datasetId, {
+          source_type: sourceType,
+          data_source_name: sourceName,
+          db_connection_id:
+            sourceType === "table" && selectedConnectionId ? Number(selectedConnectionId) : null,
+          join_configuration: joinConfiguration,
+          mapping_config: mapping,
+        });
+        return res?.data ?? res;
+      };
+
+      if (isPrimary) {
+        if (mode === "file") {
+          const cols = selectedColumns.length ? selectedColumns : undefined;
+          if (filePath.trim()) {
+            await uploadCsvPathToJob(jobId, filePath.trim(), cols);
+          } else {
+            await uploadCsvToJob(jobId, file, [], "", cols);
+          }
+        } else {
+          await updateJobDbSource(jobId, {
+            ...buildDbPayload(),
+            schema_name: selectedSchema,
+            table_name: selectedTable,
+            selected_columns: selectedColumns,
+          });
+        }
+        if (datasetId != null) {
+          try {
+            await enterpriseGovernanceDatasetUpdate(datasetId, {
+              classification: mode === "file" ? "file" : "table",
+            });
+          } catch {
+            /* optional */
+          }
+        }
+        let dataSourceRow = null;
+        try {
+          dataSourceRow = await persistDataSource({
+            sourceType: mode === "file" ? "file" : "table",
+            joinConfiguration: { role: "primary" },
+          });
+        } catch {
+          /* catalog row is best-effort after physical attach */
+        }
+        onSaved?.({
+          primary: true,
+          kind: mode === "file" ? "file" : "table",
+          data_source: dataSourceRow,
+        });
+        reset();
+        onClose();
+        return;
+      }
+
       const payload = {
         label: sourceName,
         source_kind: mode,
@@ -359,7 +442,24 @@ export default function AddDataSourceModal({ open, onClose, jobId, baseColumns =
       const body = res?.data ?? res;
       if (!body?.materialized) throw new Error("Join did not complete. Dataset was not updated.");
 
-      onSaved?.(body);
+      let dataSourceRow = null;
+      try {
+        dataSourceRow = await persistDataSource({
+          sourceType: mode === "file" ? "file" : "table",
+          joinConfiguration: {
+            role: "join",
+            join_type: DEFAULT_JOIN_TYPE,
+            join_keys: validJoinKeys,
+            left_key: validJoinKeys[0].left_key,
+            right_key: validJoinKeys[0].right_key,
+            join_id: body?.join_id || body?.id || null,
+          },
+        });
+      } catch {
+        /* catalog row is best-effort after join */
+      }
+
+      onSaved?.({ ...body, data_source: dataSourceRow });
       reset();
       onClose();
     } catch (e2) {
@@ -380,7 +480,11 @@ export default function AddDataSourceModal({ open, onClose, jobId, baseColumns =
       open={open}
       onClose={() => { reset(); onClose(); }}
       title="Add data source"
-      description="Attach a CSV, Excel file, or database table and join it to this dataset."
+      description={
+        isPrimary
+          ? "Attach a CSV, Excel file, or database table as the primary source for this dataset."
+          : "Attach a CSV, Excel file, or database table and join it to this dataset."
+      }
       maxWidth="max-w-2xl"
       showDefaultFooter={false}
       bodyClassName="overflow-y-auto max-h-[calc(90vh-8rem)]"
@@ -504,24 +608,26 @@ export default function AddDataSourceModal({ open, onClose, jobId, baseColumns =
           loading={columnsBusy}
         />
 
-        <div className="rounded-xl border border-border bg-muted/30 p-3 space-y-3">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Join configuration</p>
-          <JoinKeyPairsEditor
-            pairs={joinKeys}
-            onChange={setJoinKeys}
-            baseColumns={baseColumnNames}
-            rightColumns={availableColumns}
-            onSuggest={() => suggestJoinKeys({ auto: false })}
-            suggestBusy={suggestBusy}
-            suggestSummary={suggestSummary}
-            suggestSource={suggestSource}
-            keysEdited={keysEdited}
-            onKeysEdited={setKeysEdited}
-          />
-        </div>
+        {!isPrimary ? (
+          <div className="rounded-xl border border-border bg-muted/30 p-3 space-y-3">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Join configuration</p>
+            <JoinKeyPairsEditor
+              pairs={joinKeys}
+              onChange={setJoinKeys}
+              baseColumns={baseColumnNames}
+              rightColumns={availableColumns}
+              onSuggest={() => suggestJoinKeys({ auto: false })}
+              suggestBusy={suggestBusy}
+              suggestSummary={suggestSummary}
+              suggestSource={suggestSource}
+              keysEdited={keysEdited}
+              onKeysEdited={setKeysEdited}
+            />
+          </div>
+        ) : null}
 
         <Button type="submit" disabled={busy || columnsBusy || suggestBusy} className="w-full text-xs uppercase tracking-wide">
-          {busy ? "Joining…" : "Add & join data source"}
+          {busy ? (isPrimary ? "Attaching…" : "Joining…") : isPrimary ? "Attach data source" : "Add & join data source"}
         </Button>
       </form>
     </AppModal>
