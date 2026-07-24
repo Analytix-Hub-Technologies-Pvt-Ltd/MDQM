@@ -80,48 +80,71 @@ if True:
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS metadata"))
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS quarantine"))
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS enterprise"))
-            # Per-dataset physical tables live in this dedicated schema
+            # Per-dataset physical tables + catalog source tables live here
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS datasets"))
-            # Dataset description / audit metadata
-            conn.execute(text("CREATE SCHEMA IF NOT EXISTS dataset_source"))
-            # Data sources attached to datasets
-            conn.execute(text("CREATE SCHEMA IF NOT EXISTS data_source"))
-            # Prefer renaming legacy dataset_details → dataset_source before create_all
-            legacy_details = conn.execute(
-                text(
-                    """
-                    SELECT 1
-                    FROM information_schema.tables
-                    WHERE table_schema = 'dataset_details'
-                      AND table_name = 'dataset_details'
-                    """
-                )
-            ).first()
-            new_exists = conn.execute(
-                text(
-                    """
-                    SELECT 1
-                    FROM information_schema.tables
-                    WHERE table_schema = 'dataset_source'
-                      AND table_name = 'dataset_source'
-                    """
-                )
-            ).first()
-            if legacy_details and not new_exists:
+            # Rename underscored names BEFORE create_all (avoids empty new tables blocking rename)
+            for old_name, new_name in (
+                ("dataset_source", "datasetssource"),
+                ("data_sources", "datasources"),
+            ):
                 conn.execute(
                     text(
-                        "ALTER TABLE dataset_details.dataset_details "
-                        "SET SCHEMA dataset_source"
+                        f"""
+                        DO $$
+                        BEGIN
+                          IF EXISTS (
+                            SELECT 1 FROM information_schema.tables
+                            WHERE table_schema = 'datasets' AND table_name = '{old_name}'
+                          ) AND NOT EXISTS (
+                            SELECT 1 FROM information_schema.tables
+                            WHERE table_schema = 'datasets' AND table_name = '{new_name}'
+                          ) THEN
+                            ALTER TABLE datasets.{old_name} RENAME TO {new_name};
+                          ELSIF EXISTS (
+                            SELECT 1 FROM information_schema.tables
+                            WHERE table_schema = 'datasets' AND table_name = '{old_name}'
+                          ) AND EXISTS (
+                            SELECT 1 FROM information_schema.tables
+                            WHERE table_schema = 'datasets' AND table_name = '{new_name}'
+                          ) THEN
+                            -- Both exist: copy then drop old underscored table
+                            IF '{new_name}' = 'datasetssource' THEN
+                              INSERT INTO datasets.datasetssource (
+                                enterprise_dataset_id, dataset_name, description,
+                                created_by_user_id, created_at, updated_at
+                              )
+                              SELECT
+                                s.enterprise_dataset_id, s.dataset_name, s.description,
+                                s.created_by_user_id, s.created_at, s.updated_at
+                              FROM datasets.dataset_source s
+                              WHERE NOT EXISTS (
+                                SELECT 1 FROM datasets.datasetssource d
+                                WHERE d.enterprise_dataset_id = s.enterprise_dataset_id
+                              );
+                            ELSE
+                              INSERT INTO datasets.datasources (
+                                dataset_id, source_type, db_connection_id, data_source_name,
+                                join_configuration, mapping_config, created_by,
+                                created_date, updated_date
+                              )
+                              SELECT
+                                s.dataset_id, s.source_type, s.db_connection_id, s.data_source_name,
+                                s.join_configuration, s.mapping_config, s.created_by,
+                                s.created_date, s.updated_date
+                              FROM datasets.data_sources s
+                              WHERE NOT EXISTS (
+                                SELECT 1 FROM datasets.datasources d WHERE d.id = s.id
+                              );
+                            END IF;
+                            DROP TABLE datasets.{old_name} CASCADE;
+                          END IF;
+                        END $$;
+                        """
                     )
                 )
-                conn.execute(
-                    text(
-                        "ALTER TABLE dataset_source.dataset_details "
-                        "RENAME TO dataset_source"
-                    )
-                )
-            conn.execute(text("DROP SCHEMA IF EXISTS dataset_details CASCADE"))
         models.Base.metadata.create_all(bind=engine)
+        models.DatasetSource.__table__.create(bind=engine, checkfirst=True)
+        models.DataSource.__table__.create(bind=engine, checkfirst=True)
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -129,23 +152,194 @@ if True:
                     "ADD COLUMN IF NOT EXISTS dq_run_status TEXT NOT NULL DEFAULT 'N'"
                 )
             )
-            # Rebuild unused/legacy dataset_source table if it has the old column layout
-            legacy = conn.execute(
+            # Backfill datasetssource from enterprise catalog if empty/missing rows
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO datasets.datasetssource (
+                      enterprise_dataset_id, dataset_name, description,
+                      created_by_user_id, created_at, updated_at
+                    )
+                    SELECT
+                      d.id,
+                      d.name,
+                      d.description,
+                      d.owner_user_id,
+                      d.created_at,
+                      COALESCE(d.created_at, NOW())
+                    FROM enterprise.datasets d
+                    WHERE NOT EXISTS (
+                      SELECT 1 FROM datasets.datasetssource s
+                      WHERE s.enterprise_dataset_id = d.id
+                    )
+                    """
+                )
+            )
+            for old_schema, table_name in (
+                ("dataset_source", "dataset_source"),
+                ("dataset_details", "dataset_details"),
+                ("data_source", "data_sources"),
+            ):
+                target_name = (
+                    "datasetssource"
+                    if table_name in ("dataset_source", "dataset_details")
+                    else "datasources"
+                )
+                old_exists = conn.execute(
+                    text(
+                        """
+                        SELECT 1
+                        FROM information_schema.tables
+                        WHERE table_schema = :schema
+                          AND table_name = :table
+                        """
+                    ),
+                    {"schema": old_schema, "table": table_name},
+                ).first()
+                new_exists = conn.execute(
+                    text(
+                        """
+                        SELECT 1
+                        FROM information_schema.tables
+                        WHERE table_schema = 'datasets'
+                          AND table_name = :table
+                        """
+                    ),
+                    {"table": target_name},
+                ).first()
+                if old_exists and not new_exists:
+                    if table_name != target_name:
+                        conn.execute(
+                            text(
+                                f"ALTER TABLE {old_schema}.{table_name} "
+                                f"RENAME TO {target_name}"
+                            )
+                        )
+                    conn.execute(
+                        text(
+                            f"ALTER TABLE {old_schema}.{target_name} "
+                            f"SET SCHEMA datasets"
+                        )
+                    )
+                elif old_exists and new_exists:
+                    if target_name == "datasetssource":
+                        conn.execute(
+                            text(
+                                f"""
+                                INSERT INTO datasets.datasetssource (
+                                  enterprise_dataset_id, dataset_name, description,
+                                  created_by_user_id, created_at, updated_at
+                                )
+                                SELECT
+                                  s.enterprise_dataset_id, s.dataset_name, s.description,
+                                  s.created_by_user_id, s.created_at, s.updated_at
+                                FROM {old_schema}.{table_name} s
+                                WHERE NOT EXISTS (
+                                  SELECT 1 FROM datasets.datasetssource d
+                                  WHERE d.enterprise_dataset_id = s.enterprise_dataset_id
+                                )
+                                """
+                            )
+                        )
+                    else:
+                        conn.execute(
+                            text(
+                                f"""
+                                INSERT INTO datasets.datasources (
+                                  dataset_id, source_type, db_connection_id, data_source_name,
+                                  join_configuration, mapping_config, created_by,
+                                  created_date, updated_date
+                                )
+                                SELECT
+                                  s.dataset_id, s.source_type, s.db_connection_id, s.data_source_name,
+                                  s.join_configuration, s.mapping_config, s.created_by,
+                                  s.created_date, s.updated_date
+                                FROM {old_schema}.{table_name} s
+                                WHERE NOT EXISTS (
+                                  SELECT 1 FROM datasets.datasources d
+                                  WHERE d.id = s.id
+                                )
+                                """
+                            )
+                        )
+
+            # Rehydrate datasets.datasources from wrongly-inlined enterprise.datasets.data_sources JSON
+            has_json_col = conn.execute(
                 text(
                     """
                     SELECT 1
                     FROM information_schema.columns
-                    WHERE table_schema = 'dataset_source'
-                      AND table_name = 'dataset_source'
-                      AND column_name = 'dataset_description'
+                    WHERE table_schema = 'enterprise'
+                      AND table_name = 'datasets'
+                      AND column_name = 'data_sources'
                     """
                 )
             ).first()
-            if legacy:
-                conn.execute(text("DROP TABLE IF EXISTS dataset_source.dataset_source CASCADE"))
-        # Re-create dataset_source after optional legacy drop
-        models.DatasetSource.__table__.create(bind=engine, checkfirst=True)
-        models.DataSource.__table__.create(bind=engine, checkfirst=True)
+            if has_json_col:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO datasets.datasources (
+                          dataset_id, source_type, db_connection_id, data_source_name,
+                          join_configuration, mapping_config, created_by,
+                          created_date, updated_date
+                        )
+                        SELECT
+                          d.id,
+                          COALESCE(elem->>'source_type', 'file'),
+                          NULLIF(elem->>'db_connection_id', '')::integer,
+                          COALESCE(elem->>'data_source_name', 'source'),
+                          elem->'join_configuration',
+                          elem->'mapping_config',
+                          NULLIF(elem->>'created_by', '')::integer,
+                          COALESCE(NULLIF(elem->>'created_date', '')::timestamp, NOW()),
+                          COALESCE(NULLIF(elem->>'updated_date', '')::timestamp, NOW())
+                        FROM enterprise.datasets d
+                        CROSS JOIN LATERAL jsonb_array_elements(
+                          COALESCE(d.data_sources::jsonb, '[]'::jsonb)
+                        ) AS elem
+                        WHERE jsonb_typeof(COALESCE(d.data_sources::jsonb, '[]'::jsonb)) = 'array'
+                          AND jsonb_array_length(COALESCE(d.data_sources::jsonb, '[]'::jsonb)) > 0
+                          AND NOT EXISTS (
+                            SELECT 1 FROM datasets.datasources s WHERE s.dataset_id = d.id
+                          )
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO datasets.datasetssource (
+                          enterprise_dataset_id, dataset_name, description,
+                          created_by_user_id, created_at, updated_at
+                        )
+                        SELECT
+                          d.id,
+                          d.name,
+                          d.description,
+                          d.created_by_user_id,
+                          d.created_at,
+                          COALESCE(d.updated_at, d.created_at, NOW())
+                        FROM enterprise.datasets d
+                        WHERE NOT EXISTS (
+                          SELECT 1 FROM datasets.datasetssource s
+                          WHERE s.enterprise_dataset_id = d.id
+                        )
+                        """
+                    )
+                )
+                conn.execute(text("ALTER TABLE enterprise.datasets DROP COLUMN IF EXISTS data_sources"))
+                conn.execute(text("ALTER TABLE enterprise.datasets DROP COLUMN IF EXISTS updated_at"))
+                conn.execute(text("ALTER TABLE enterprise.datasets DROP COLUMN IF EXISTS created_by_user_id"))
+
+            # Drop legacy underscored tables if both old+new somehow exist
+            conn.execute(text("DROP TABLE IF EXISTS datasets.dataset_source CASCADE"))
+            conn.execute(text("DROP TABLE IF EXISTS datasets.data_sources CASCADE"))
+
+            # Drop legacy side schemas — tables now live under datasets
+            conn.execute(text("DROP SCHEMA IF EXISTS dataset_details CASCADE"))
+            conn.execute(text("DROP SCHEMA IF EXISTS dataset_source CASCADE"))
+            conn.execute(text("DROP SCHEMA IF EXISTS data_source CASCADE"))
         # Ensure the datasets schema is present (also called by physical_table_manager)
         from services.physical_table_manager import ensure_datasets_schema
         ensure_datasets_schema(engine)

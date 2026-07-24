@@ -653,11 +653,12 @@ class GoldenMergeConfig(Base):
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
-class DatasetSource(Base):
-    """Separate catalog of dataset description + audit metadata."""
 
-    __tablename__ = "dataset_source"
-    __table_args__ = {"schema": "dataset_source"}
+class DatasetSource(Base):
+    """Dataset description + audit metadata (lives in schema datasets)."""
+
+    __tablename__ = "datasetssource"
+    __table_args__ = {"schema": "datasets"}
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     enterprise_dataset_id = Column(
@@ -677,8 +678,8 @@ class DatasetSource(Base):
 class DataSource(Base):
     """Data sources attached to an enterprise dataset (primary or joined)."""
 
-    __tablename__ = "data_sources"
-    __table_args__ = {"schema": "data_source"}
+    __tablename__ = "datasources"
+    __table_args__ = {"schema": "datasets"}
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     dataset_id = Column(

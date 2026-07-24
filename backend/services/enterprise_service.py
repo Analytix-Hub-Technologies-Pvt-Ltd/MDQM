@@ -426,7 +426,7 @@ def _upsert_dataset_details(
     enterprise_dataset: models.EnterpriseDataset,
     created_by_user_id: int | None = None,
 ) -> models.DatasetSource:
-    """Keep dataset_source.dataset_source in sync with enterprise catalog row."""
+    """Keep datasets.datasetssource in sync with enterprise catalog row."""
     details = (
         db.query(models.DatasetSource)
         .filter(models.DatasetSource.enterprise_dataset_id == enterprise_dataset.id)

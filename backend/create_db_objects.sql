@@ -5,8 +5,6 @@ CREATE SCHEMA IF NOT EXISTS governance;
 CREATE SCHEMA IF NOT EXISTS metadata;
 CREATE SCHEMA IF NOT EXISTS quarantine;
 CREATE SCHEMA IF NOT EXISTS datasets;
-CREATE SCHEMA IF NOT EXISTS dataset_source;
-CREATE SCHEMA IF NOT EXISTS data_source;
 
 CREATE TABLE metadata.jobs (
 	job_id SERIAL NOT NULL, 
@@ -446,7 +444,7 @@ CREATE TABLE enterprise.datasets (
 	FOREIGN KEY(deleted_by_user_id) REFERENCES auth.users (id)
 );
 
-CREATE TABLE dataset_source.dataset_source (
+CREATE TABLE datasets.datasetssource (
 	id SERIAL NOT NULL,
 	enterprise_dataset_id INTEGER NOT NULL,
 	dataset_name TEXT NOT NULL,
@@ -460,7 +458,7 @@ CREATE TABLE dataset_source.dataset_source (
 	FOREIGN KEY(created_by_user_id) REFERENCES auth.users (id)
 );
 
-CREATE TABLE data_source.data_sources (
+CREATE TABLE datasets.datasources (
 	id SERIAL NOT NULL,
 	dataset_id INTEGER NOT NULL,
 	source_type TEXT NOT NULL,
