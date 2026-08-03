@@ -24,6 +24,9 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const backendTarget = (
+  process.env.VITE_PROXY_TARGET || process.env.VITE_API_URL || "http://127.0.0.1:8001"
+).replace(/\/$/, "");
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -38,25 +41,25 @@ export default defineConfig({
     allowedHosts: ["app.analytixhub.ai", "analytixhub.ai"],
     // Optional: use VITE_API_URL= in .env.development (relative) to avoid cross-origin calls
     proxy: {
-      // MDQM backend (avoid port 8000 if another app like Nexora is bound there)
-      "/auth": { target: "http://127.0.0.1:8001", changeOrigin: true },
-      "/db": { target: "http://127.0.0.1:8001", changeOrigin: true },
-      "/jobs": { target: "http://127.0.0.1:8001", changeOrigin: true },
-      "/tables": { target: "http://127.0.0.1:8001", changeOrigin: true },
-      "/files": { target: "http://127.0.0.1:8001", changeOrigin: true },
-      "/schedules": { target: "http://127.0.0.1:8001", changeOrigin: true },
-      "/schedule-job": { target: "http://127.0.0.1:8001", changeOrigin: true },
-      "/dashboard": { target: "http://127.0.0.1:8001", changeOrigin: true },
-      "/rules": { target: "http://127.0.0.1:8001", changeOrigin: true },
-      "/quarantine": { target: "http://127.0.0.1:8001", changeOrigin: true },
-      "/master-data": { target: "http://127.0.0.1:8001", changeOrigin: true },
-      "/admin": { target: "http://127.0.0.1:8001", changeOrigin: true },
-      "/access-request": { target: "http://127.0.0.1:8001", changeOrigin: true },
-      "/api": { target: "http://127.0.0.1:8001", changeOrigin: true },
-      "/health": { target: "http://127.0.0.1:8001", changeOrigin: true },
-      "/docs": { target: "http://127.0.0.1:8001", changeOrigin: true },
-      "/redoc": { target: "http://127.0.0.1:8001", changeOrigin: true },
-      "/openapi.json": { target: "http://127.0.0.1:8001", changeOrigin: true },
+      // MDQM backend; override with VITE_PROXY_TARGET if your local backend runs on a different port.
+      "/auth": { target: backendTarget, changeOrigin: true },
+      "/db": { target: backendTarget, changeOrigin: true },
+      "/jobs": { target: backendTarget, changeOrigin: true },
+      "/tables": { target: backendTarget, changeOrigin: true },
+      "/files": { target: backendTarget, changeOrigin: true },
+      "/schedules": { target: backendTarget, changeOrigin: true },
+      "/schedule-job": { target: backendTarget, changeOrigin: true },
+      "/dashboard": { target: backendTarget, changeOrigin: true },
+      "/rules": { target: backendTarget, changeOrigin: true },
+      "/quarantine": { target: backendTarget, changeOrigin: true },
+      "/master-data": { target: backendTarget, changeOrigin: true },
+      "/admin": { target: backendTarget, changeOrigin: true },
+      "/access-request": { target: backendTarget, changeOrigin: true },
+      "/api": { target: backendTarget, changeOrigin: true },
+      "/health": { target: backendTarget, changeOrigin: true },
+      "/docs": { target: backendTarget, changeOrigin: true },
+      "/redoc": { target: backendTarget, changeOrigin: true },
+      "/openapi.json": { target: backendTarget, changeOrigin: true },
     },
   },
   preview: {

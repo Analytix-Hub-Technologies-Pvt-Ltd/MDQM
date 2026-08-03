@@ -349,6 +349,13 @@ export default function AddDataSourceModal({
     try {
       const persistDataSource = async ({ sourceType, joinConfiguration = null }) => {
         if (datasetId == null) return null;
+        const serverPath = mode === "file" && filePath.trim() ? filePath.trim() : null;
+        const uploadedName = mode === "file" && file?.name ? file.name : null;
+        // Prefer full server path; otherwise store uploaded file name (or schema.table for DB)
+        let sourceFile = serverPath || uploadedName || null;
+        if (!sourceFile && mode === "table" && selectedTable) {
+          sourceFile = selectedSchema ? `${selectedSchema}.${selectedTable}` : selectedTable;
+        }
         const mapping = {
           selected_columns: selectedColumns,
           column_aliases: Object.fromEntries(
@@ -358,12 +365,13 @@ export default function AddDataSourceModal({
           ),
           schema_name: mode === "table" ? selectedSchema : null,
           table_name: mode === "table" ? selectedTable : null,
-          file_path: mode === "file" && filePath.trim() ? filePath.trim() : null,
-          file_name: mode === "file" && file?.name ? file.name : null,
+          file_path: serverPath,
+          file_name: uploadedName || (serverPath ? serverPath.split(/[/\\]/).pop() || null : null),
         };
         const res = await enterpriseGovernanceDataSourceCreate(datasetId, {
           source_type: sourceType,
           data_source_name: sourceName,
+          source_file: sourceFile,
           db_connection_id:
             sourceType === "table" && selectedConnectionId ? Number(selectedConnectionId) : null,
           join_configuration: joinConfiguration,
@@ -429,6 +437,28 @@ export default function AddDataSourceModal({
         ),
       };
 
+      // Save mapping_config to datasets.datasources first so it is stored even if join fails later
+      let dataSourceRow = null;
+      try {
+        dataSourceRow = await persistDataSource({
+          sourceType: mode === "file" ? "file" : "table",
+          joinConfiguration: {
+            role: "join",
+            join_type: DEFAULT_JOIN_TYPE,
+            join_keys: validJoinKeys,
+            left_key: validJoinKeys[0].left_key,
+            right_key: validJoinKeys[0].right_key,
+            status: "pending_join",
+          },
+        });
+      } catch (catalogErr) {
+        throw new Error(
+          formatDetail(catalogErr?.response?.data) ||
+            catalogErr?.message ||
+            "Failed to save mapping_config to datasources.",
+        );
+      }
+
       let res;
       if (mode === "table") {
         Object.assign(payload, buildDbPayload());
@@ -441,23 +471,6 @@ export default function AddDataSourceModal({
 
       const body = res?.data ?? res;
       if (!body?.materialized) throw new Error("Join did not complete. Dataset was not updated.");
-
-      let dataSourceRow = null;
-      try {
-        dataSourceRow = await persistDataSource({
-          sourceType: mode === "file" ? "file" : "table",
-          joinConfiguration: {
-            role: "join",
-            join_type: DEFAULT_JOIN_TYPE,
-            join_keys: validJoinKeys,
-            left_key: validJoinKeys[0].left_key,
-            right_key: validJoinKeys[0].right_key,
-            join_id: body?.join_id || body?.id || null,
-          },
-        });
-      } catch {
-        /* catalog row is best-effort after join */
-      }
 
       onSaved?.({ ...body, data_source: dataSourceRow });
       reset();
@@ -629,6 +642,7 @@ export default function AddDataSourceModal({
         <Button type="submit" disabled={busy || columnsBusy || suggestBusy} className="w-full text-xs uppercase tracking-wide">
           {busy ? (isPrimary ? "Attaching…" : "Joining…") : isPrimary ? "Attach data source" : "Add & join data source"}
         </Button>
+        {error ? <ModalAlert variant="danger">{error}</ModalAlert> : null}
       </form>
     </AppModal>
   );

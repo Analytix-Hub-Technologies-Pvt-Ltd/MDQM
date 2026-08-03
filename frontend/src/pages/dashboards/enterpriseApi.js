@@ -126,6 +126,20 @@ export async function enterpriseGovernanceDataSourcesList(datasetId) {
   return apiClient.get(`/api/enterprise/governance/datasets/${datasetId}/data-sources`);
 }
 
+export async function enterpriseGovernanceDataSourceMappingUpdate(datasetId, dataSourceId, body) {
+  return apiClient.put(
+    `/api/enterprise/governance/datasets/${datasetId}/data-sources/${dataSourceId}/mapping`,
+    body,
+  );
+}
+
+export async function enterpriseGovernanceRecommendColumnMapping(datasetId, body) {
+  return apiClient.post(
+    `/api/enterprise/governance/datasets/${datasetId}/recommend-column-mapping`,
+    body,
+  );
+}
+
 export async function enterpriseGovernanceDatasetDelete(datasetId, { mode = "recycle" } = {}) {
   return apiClient.post(`/api/enterprise/governance/datasets/${datasetId}/delete`, { mode });
 }

@@ -16,6 +16,7 @@ import DatasetTableInventoryBlock from "@/components/enterprise/DatasetTableInve
 import DatasetCatalogChartInsights from "@/components/enterprise/DatasetCatalogChartInsights";
 import { formatJoinKeysLabel } from "@/components/enterprise/JoinKeyPairsEditor";
 import GoldenMergePanel from "@/components/enterprise/GoldenMergePanel";
+import PostJoinColumnMappingPanel from "@/components/enterprise/PostJoinColumnMappingPanel";
 import { cn } from "@/lib/utils";
 
 function formatJoinColumns(join) {
@@ -68,6 +69,9 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
   const [detailsBusy, setDetailsBusy] = useState(false);
   const [detailsErr, setDetailsErr] = useState("");
   const [detailsOk, setDetailsOk] = useState("");
+  /** Only show LLM column mapping after a successful join in this session */
+  const [showPostJoinMapping, setShowPostJoinMapping] = useState(false);
+  const [mappingFocusId, setMappingFocusId] = useState(null);
 
   const loadPreview = useCallback(async () => {
     if (datasetId == null) return;
@@ -91,6 +95,8 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
     setDetailsEditing(false);
     setDetailsErr("");
     setDetailsOk("");
+    setShowPostJoinMapping(false);
+    setMappingFocusId(null);
     loadPreview();
   }, [open, datasetId, loadPreview]);
 
@@ -486,6 +492,21 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
               />
             ))}
 
+            {showPostJoinMapping && (payload?.data_sources || []).length > 0 ? (
+              <PostJoinColumnMappingPanel
+                datasetId={datasetId}
+                dataSources={payload.data_sources}
+                baseColumns={baseColumns}
+                autoOpenForId={mappingFocusId}
+                onSaved={async () => {
+                  await loadPreview();
+                  setRefreshOk("Column mapping saved.");
+                  setShowPostJoinMapping(false);
+                  setMappingFocusId(null);
+                }}
+              />
+            ) : null}
+
             {!loading && !err && !(payload?.tables || []).length && !payload?.hint ? (
               <p className="text-xs text-muted-foreground">No tables on the linked job yet.</p>
             ) : null}
@@ -541,7 +562,10 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
           rows != null && cols != null
             ? ` Join complete — ${rows.toLocaleString()} rows, ${cols} columns.`
             : "";
-        setRefreshOk(`Data source joined successfully.${detail}`);
+        setRefreshOk(`Data source joined successfully.${detail} Map columns with LLM below.`);
+        const dsId = result?.data_source?.id ?? null;
+        setShowPostJoinMapping(true);
+        if (dsId != null) setMappingFocusId(dsId);
         setAddSourceOpen(false);
       }}
     />

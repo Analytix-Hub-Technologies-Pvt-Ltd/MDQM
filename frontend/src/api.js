@@ -258,8 +258,18 @@ export const addJobJoinSource = async (jobId, payload, file = null) => {
     if (file) {
         const formData = new FormData();
         formData.append("payload_json", JSON.stringify(payload));
-        formData.append("file", file);
-        return apiClient.post(`/jobs/${jobId}/join-sources`, formData, MULTIPART_UPLOAD_CONFIG);
+        formData.append("file", file, file.name || "upload.csv");
+        return apiClient.post(`/jobs/${jobId}/join-sources`, formData, {
+            ...MULTIPART_UPLOAD_CONFIG,
+            // Let the browser set multipart boundary (do not force application/json)
+            headers: { "Content-Type": "multipart/form-data" },
+            transformRequest: [(data, headers) => {
+                if (data instanceof FormData && headers) {
+                    delete headers["Content-Type"];
+                }
+                return data;
+            }],
+        });
     }
     return apiClient.post(`/jobs/${jobId}/join-sources`, payload);
 };
