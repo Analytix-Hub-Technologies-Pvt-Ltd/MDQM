@@ -397,9 +397,23 @@ class DatasetUpdateBody(BaseModel):
 class DataSourceCreateBody(BaseModel):
     source_type: str
     data_source_name: str
+    source_file: str | None = None  # server path or uploaded file name
     db_connection_id: int | None = Field(None, ge=1)
     join_configuration: dict | list | None = None
     mapping_config: dict | list | None = None
+
+
+class DataSourceMappingUpdateBody(BaseModel):
+    column_mappings: list[dict] | None = None
+    mapping_config: dict | None = None
+
+
+class ColumnMappingRecommendBody(BaseModel):
+    data_source_id: int | None = Field(None, ge=1)
+    base_columns: list[str] | None = None
+    source_columns: list[str] | None = None
+    base_label: str | None = None
+    source_label: str | None = None
 
 
 @router.post("/governance/datasets")
@@ -524,11 +538,27 @@ def governance_dataset_data_source_create(
 ):
     require_any_permission(_role(request), Permissions.DASHBOARD_OWNER, Permissions.GOVERNANCE_VIEW, Permissions.ADMIN_VIEW)
     try:
+        # Prefer explicit source_file; fall back to mapping_config path/name for older clients
+        source_file = (body.source_file or "").strip() or None
+        if not source_file and isinstance(body.mapping_config, dict):
+            mc = body.mapping_config
+            path = (mc.get("file_path") or "").strip() if isinstance(mc.get("file_path"), str) else ""
+            fname = (mc.get("file_name") or "").strip() if isinstance(mc.get("file_name"), str) else ""
+            table = (mc.get("table_name") or "").strip() if isinstance(mc.get("table_name"), str) else ""
+            schema = (mc.get("schema_name") or "").strip() if isinstance(mc.get("schema_name"), str) else ""
+            if path:
+                source_file = path
+            elif fname:
+                source_file = fname
+            elif table:
+                source_file = f"{schema}.{table}" if schema else table
+
         row = esvc.create_data_source(
-            db,
+            db=db,
             dataset_id=dataset_id,
             source_type=body.source_type,
             data_source_name=body.data_source_name,
+            source_file=source_file,
             db_connection_id=body.db_connection_id,
             join_configuration=body.join_configuration,
             mapping_config=body.mapping_config,
@@ -547,9 +577,103 @@ def governance_dataset_data_source_create(
             "dataset_id": dataset_id,
             "source_type": row.source_type,
             "data_source_name": row.data_source_name,
+            "source_file": row.source_file,
         },
     )
     return esvc.serialize_data_source(row)
+
+
+@router.put("/governance/datasets/{dataset_id}/data-sources/{data_source_id}/mapping")
+def governance_dataset_data_source_mapping_update(
+    request: Request,
+    dataset_id: int,
+    data_source_id: int,
+    body: DataSourceMappingUpdateBody,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_any_permission(_role(request), Permissions.DASHBOARD_OWNER, Permissions.GOVERNANCE_VIEW, Permissions.ADMIN_VIEW)
+    row = esvc.update_data_source_mapping(
+        db,
+        dataset_id=dataset_id,
+        data_source_id=data_source_id,
+        column_mappings=body.column_mappings,
+        mapping_config=body.mapping_config,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Data source not found")
+    write_audit_log(
+        db,
+        user_id=user.id,
+        action="enterprise_data_source_mapping_updated",
+        entity_type="data_source",
+        entity_id=str(row.id),
+        ip_address=request.client.host if request.client else None,
+        new_values={"dataset_id": dataset_id, "data_source_id": data_source_id},
+    )
+    return esvc.serialize_data_source(row)
+
+
+@router.post("/governance/datasets/{dataset_id}/recommend-column-mapping")
+def governance_dataset_recommend_column_mapping(
+    request: Request,
+    dataset_id: int,
+    body: ColumnMappingRecommendBody,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    require_any_permission(_role(request), Permissions.DASHBOARD_OWNER, Permissions.GOVERNANCE_VIEW, Permissions.ADMIN_VIEW)
+    from services.dataset_column_mapping_service import recommend_column_mappings
+
+    ds = (
+        db.query(models.EnterpriseDataset)
+        .filter(
+            models.EnterpriseDataset.id == dataset_id,
+            models.EnterpriseDataset.deleted_at.is_(None),
+        )
+        .first()
+    )
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    base_columns = [str(c).strip() for c in (body.base_columns or []) if str(c).strip()]
+    source_columns = [str(c).strip() for c in (body.source_columns or []) if str(c).strip()]
+    source_label = body.source_label or "joined source"
+
+    if body.data_source_id:
+        src = (
+            db.query(models.DataSource)
+            .filter(
+                models.DataSource.id == body.data_source_id,
+                models.DataSource.dataset_id == dataset_id,
+            )
+            .first()
+        )
+        if not src:
+            raise HTTPException(status_code=404, detail="Data source not found")
+        source_label = src.data_source_name or source_label
+        cfg = src.mapping_config if isinstance(src.mapping_config, dict) else {}
+        if not source_columns:
+            selected = cfg.get("selected_columns")
+            if isinstance(selected, list):
+                source_columns = [str(c).strip() for c in selected if str(c).strip()]
+
+    if not base_columns and ds.job_id:
+        cols = (
+            db.query(models.ColumnMetadata.column_name)
+            .filter(models.ColumnMetadata.job_id == ds.job_id)
+            .order_by(models.ColumnMetadata.column_id.asc())
+            .all()
+        )
+        base_columns = [c[0] for c in cols if c and c[0]]
+
+    result = recommend_column_mappings(
+        base_columns=base_columns,
+        source_columns=source_columns,
+        base_label=body.base_label or ds.name or "base dataset",
+        source_label=source_label,
+    )
+    return {"dataset_id": dataset_id, **result}
 
 
 @router.get("/governance/datasets/recycle-bin")

@@ -312,6 +312,46 @@ def _harmonize_join_key_column(df: pd.DataFrame, column: str) -> pd.DataFrame:
     return out
 
 
+def _unique_column_name(desired: str, taken: set[str]) -> str:
+    """Pick a column name not already in `taken` (case-insensitive / sanitized)."""
+    from services.physical_table_manager import sanitize_column_name
+
+    base = sanitize_column_name(desired) or "col"
+    candidate = base
+    n = 2
+    taken_l = {sanitize_column_name(t) for t in taken}
+    while candidate in taken_l:
+        candidate = f"{base}_{n}"
+        n += 1
+    return candidate
+
+
+def _col_key(name: str) -> str:
+    """Normalize a column label the same way Postgres physical DDL does."""
+    from services.physical_table_manager import sanitize_column_name
+
+    return sanitize_column_name(name)
+
+
+def _dedupe_dataframe_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure every column label sanitizes to a unique Postgres identifier."""
+    if df is None or (df.empty and len(df.columns) == 0):
+        return df
+    out = df.copy()
+    seen: set[str] = set()
+    new_cols: list[str] = []
+    for col in out.columns:
+        name = str(col)
+        key = _col_key(name)
+        if key in seen:
+            name = _unique_column_name(f"{name}_joined", seen)
+            key = _col_key(name)
+        seen.add(key)
+        new_cols.append(name)
+    out.columns = new_cols
+    return out
+
+
 def materialize_dataset_with_joins(
     db: Session,
     job_id: int,
@@ -330,12 +370,14 @@ def materialize_dataset_with_joins(
     cfg = _job_cfg(job)
     joins = joins_override if joins_override is not None else (cfg.get("join_sources") or [])
     result = normalize_dataframe_columns(_load_base_dataframe(db, job))
+    result = _dedupe_dataframe_columns(result)
 
     for join in joins:
         if not isinstance(join, dict):
             continue
         right_df = load_join_source_df(job.job_id, join)
         right_df = normalize_dataframe_columns(right_df)
+        right_df = _dedupe_dataframe_columns(right_df)
         selected = normalize_selected_columns(join.get("selected_columns"))
         key_pairs = normalize_join_keys(join)
         join_type = str(join.get("join_type") or "outer").lower()
@@ -372,8 +414,20 @@ def materialize_dataset_with_joins(
         keep_cols = list(dict.fromkeys(resolved_selected))
         right_subset = right_df[[c for c in keep_cols if c in right_df.columns]].copy()
 
-        overlap = (set(result.columns) & set(right_subset.columns)) - set(left_cols) - set(right_cols)
-        rename = {c: f"{c}_joined" for c in overlap}
+        # Overlap by sanitized Postgres name: "MIDDLE NAME" == "middle_name"
+        left_keys = {_col_key(c): str(c) for c in result.columns}
+        key_left_keys = {_col_key(c) for c in left_cols}
+        key_right_keys = {_col_key(c) for c in right_cols}
+        rename: dict[str, str] = {}
+        taken = set(left_keys.keys())
+        for rc in list(right_subset.columns):
+            rc_key = _col_key(rc)
+            if rc_key in key_right_keys or rc_key in key_left_keys:
+                continue
+            if rc_key in left_keys:
+                new_name = _unique_column_name(f"{rc}_joined", taken)
+                rename[str(rc)] = new_name
+                taken.add(_col_key(new_name))
         if rename:
             right_subset = right_subset.rename(columns=rename)
             right_cols = [rename.get(c, c) for c in right_cols]
@@ -387,11 +441,14 @@ def materialize_dataset_with_joins(
                     col = f"{src_name}_joined"
                 if not col or col in right_cols:
                     continue
-                if alias_name in result.columns or alias_name in right_subset.columns:
-                    raise ValueError(
-                        f"Column alias '{alias_name}' for '{src_name}' conflicts with an existing column name."
-                    )
+                alias_key = _col_key(alias_name)
+                conflict = any(_col_key(c) == alias_key for c in result.columns) or any(
+                    _col_key(c) == alias_key for c in right_subset.columns if c != col
+                )
+                if conflict:
+                    alias_name = _unique_column_name(str(alias_name), taken | {_col_key(c) for c in right_subset.columns})
                 alias_rename[col] = alias_name
+                taken.add(_col_key(alias_name))
             if alias_rename:
                 right_subset = right_subset.rename(columns=alias_rename)
 
@@ -410,12 +467,15 @@ def materialize_dataset_with_joins(
             if drop_cols:
                 result = result.drop(columns=list(dict.fromkeys(drop_cols)))
 
+        result = _dedupe_dataframe_columns(result)
+
         if join_type == "inner" and rows_before > 0 and right_rows > 0 and len(result) == 0:
             raise ValueError(
                 f"Inner join '{join.get('label')}' matched no rows. Check join keys "
                 f"({format_join_keys_display(join)}) and value formats."
             )
 
+    result = _dedupe_dataframe_columns(result)
     snapshot_fn(db, job_id, primary.table_id, primary.table_name, result)
     return {
         "row_count": int(len(result)),
@@ -517,6 +577,20 @@ def add_join_source(
             try:
                 os.remove(join_file_dest)
             except OSError:
+                pass
+        # Failed join can leave the physical table empty after a partial replace.
+        # Restore previous materialized state (existing joins) or base backup.
+        try:
+            materialize_dataset_with_joins(db, job.job_id, snapshot_fn, joins_override=joins)
+        except Exception:
+            try:
+                from services.dataset_row_storage_service import load_base_backup, save_dataframe
+
+                primary = _primary_table(db, job.job_id)
+                base_df = load_base_backup(db, job.job_id)
+                if primary is not None and base_df is not None and not base_df.empty:
+                    save_dataframe(db, job.job_id, primary.table_id, base_df, commit=True)
+            except Exception:
                 pass
         raise
 

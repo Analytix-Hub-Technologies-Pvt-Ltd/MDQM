@@ -106,8 +106,15 @@ def table_exists(conn: Connection, table_name: str, schema: str = DATASETS_SCHEM
 def _build_column_ddl(user_columns: list[str]) -> str:
     """Build the column list fragment for a CREATE TABLE statement."""
     parts: list[str] = ["_row_index BIGSERIAL PRIMARY KEY"]
+    seen: set[str] = set()
     for col in user_columns:
         safe = sanitize_column_name(col)
+        if safe in seen:
+            n = 2
+            while f"{safe}_{n}" in seen:
+                n += 1
+            safe = f"{safe}_{n}"
+        seen.add(safe)
         parts.append(f'"{safe}" TEXT')
     parts += [
         "_dq_passed    BOOLEAN",

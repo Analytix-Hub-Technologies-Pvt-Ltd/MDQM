@@ -459,18 +459,19 @@ CREATE TABLE datasets.datasetssource (
 );
 
 CREATE TABLE datasets.datasources (
-	id SERIAL NOT NULL,
-	dataset_id INTEGER NOT NULL,
-	source_type TEXT NOT NULL,
-	db_connection_id INTEGER,
-	data_source_name TEXT NOT NULL,
-	join_configuration JSON,
-	mapping_config JSON,
-	created_by INTEGER,
-	created_date TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-	updated_date TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-	PRIMARY KEY (id),
-	FOREIGN KEY(dataset_id) REFERENCES enterprise.datasets (id),
+	id SERIAL NOT NULL, 
+	dataset_id INTEGER NOT NULL, 
+	source_type TEXT NOT NULL, 
+	source_file TEXT,
+	db_connection_id INTEGER, 
+	data_source_name TEXT NOT NULL, 
+	join_configuration JSON, 
+	mapping_config JSON, 
+	created_by INTEGER, 
+	created_date TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	updated_date TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(dataset_id) REFERENCES enterprise.datasets (id), 
 	FOREIGN KEY(created_by) REFERENCES auth.users (id)
 );
 

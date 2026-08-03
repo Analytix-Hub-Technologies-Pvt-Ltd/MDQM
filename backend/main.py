@@ -73,6 +73,9 @@ if True:
             f"[mdqm] Initializing schemas on {POSTGRES_HOST}/{POSTGRES_DB}...",
             file=sys.stderr,
             flush=True,
+           
+
+
         )
         with engine.begin() as conn:
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS auth"))
@@ -340,6 +343,38 @@ if True:
             conn.execute(text("DROP SCHEMA IF EXISTS dataset_details CASCADE"))
             conn.execute(text("DROP SCHEMA IF EXISTS dataset_source CASCADE"))
             conn.execute(text("DROP SCHEMA IF EXISTS data_source CASCADE"))
+
+            # Ensure datasources.source_file exists and backfill from mapping_config
+            conn.execute(
+                text(
+                    "ALTER TABLE datasets.datasources "
+                    "ADD COLUMN IF NOT EXISTS source_file TEXT"
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    UPDATE datasets.datasources
+                    SET source_file = COALESCE(
+                      NULLIF(BTRIM(mapping_config->>'file_path'), ''),
+                      NULLIF(BTRIM(mapping_config->>'file_name'), ''),
+                      CASE
+                        WHEN NULLIF(BTRIM(mapping_config->>'table_name'), '') IS NOT NULL THEN
+                          CASE
+                            WHEN NULLIF(BTRIM(mapping_config->>'schema_name'), '') IS NOT NULL
+                            THEN BTRIM(mapping_config->>'schema_name')
+                              || '.'
+                              || BTRIM(mapping_config->>'table_name')
+                            ELSE BTRIM(mapping_config->>'table_name')
+                          END
+                        ELSE NULL
+                      END
+                    )
+                    WHERE source_file IS NULL
+                      AND mapping_config IS NOT NULL
+                    """
+                )
+            )
         # Ensure the datasets schema is present (also called by physical_table_manager)
         from services.physical_table_manager import ensure_datasets_schema
         ensure_datasets_schema(engine)
@@ -2606,8 +2641,10 @@ if True:
         except HTTPException:
             raise
         except ValueError as e:
+            print(f"[mdqm] join-sources ValueError job={job_id}: {e}", file=sys.stderr, flush=True)
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
+            print(f"[mdqm] join-sources failed job={job_id}: {e}", file=sys.stderr, flush=True)
             raise HTTPException(status_code=400, detail=f"Failed to add join source: {e}")
         finally:
             if temp_path and file and os.path.isfile(temp_path):

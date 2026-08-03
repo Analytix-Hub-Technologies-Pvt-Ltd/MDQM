@@ -480,6 +480,19 @@ def serialize_dataset_details(db: Session, enterprise_dataset_id: int) -> dict[s
     }
 
 
+# def serialize_data_source(row: models.DataSource) -> dict[str, Any]:
+#     return {
+#         "id": row.id,
+#         "dataset_id": row.dataset_id,
+#         "source_type": row.source_type,
+#         "db_connection_id": row.db_connection_id,
+#         "data_source_name": row.data_source_name,
+#         "join_configuration": row.join_configuration,
+#         "mapping_config": row.mapping_config,
+#         "created_by": row.created_by,
+#         "created_date": row.created_date.isoformat() if row.created_date else None,
+#         "updated_date": row.updated_date.isoformat() if row.updated_date else None,
+#     }
 def serialize_data_source(row: models.DataSource) -> dict[str, Any]:
     return {
         "id": row.id,
@@ -487,6 +500,7 @@ def serialize_data_source(row: models.DataSource) -> dict[str, Any]:
         "source_type": row.source_type,
         "db_connection_id": row.db_connection_id,
         "data_source_name": row.data_source_name,
+        "source_file": row.source_file,   # <-- Add this line
         "join_configuration": row.join_configuration,
         "mapping_config": row.mapping_config,
         "created_by": row.created_by,
@@ -505,12 +519,24 @@ def list_data_sources(db: Session, dataset_id: int) -> list[dict[str, Any]]:
     return [serialize_data_source(r) for r in rows]
 
 
+# def create_data_source(
+#     db: Session,
+#     *,
+#     dataset_id: int,
+#     source_type: str,
+#     data_source_name: str,
+#     db_connection_id: int | None = None,
+#     join_configuration: dict[str, Any] | list[Any] | None = None,
+#     mapping_config: dict[str, Any] | list[Any] | None = None,
+#     created_by: int | None = None,
+# ) -> models.DataSource:
 def create_data_source(
     db: Session,
     *,
     dataset_id: int,
     source_type: str,
     data_source_name: str,
+    source_file: str | None = None,
     db_connection_id: int | None = None,
     join_configuration: dict[str, Any] | list[Any] | None = None,
     mapping_config: dict[str, Any] | list[Any] | None = None,
@@ -535,18 +561,79 @@ def create_data_source(
         raise ValueError("data_source_name is required")
 
     now = datetime.utcnow()
+    # Avoid FK failures if caller passes a stale/missing user id
+    safe_created_by = created_by
+    if created_by is not None:
+        user_ok = db.query(models.User.id).filter(models.User.id == created_by).first()
+        if not user_ok:
+            safe_created_by = None
+
+    # row = models.DataSource(
+    #     dataset_id=dataset_id,
+    #     source_type=kind,
+    #     db_connection_id=db_connection_id,
+    #     data_source_name=name,
+    #     join_configuration=join_configuration,
+    #     mapping_config=mapping_config,
+    #     created_by=safe_created_by,
+    #     created_date=now,
+    #     updated_date=now,
+    # )
+    file_ref = (source_file or "").strip() or None
     row = models.DataSource(
         dataset_id=dataset_id,
         source_type=kind,
+        source_file=file_ref,
         db_connection_id=db_connection_id,
         data_source_name=name,
         join_configuration=join_configuration,
         mapping_config=mapping_config,
-        created_by=created_by,
+        created_by=safe_created_by,
         created_date=now,
         updated_date=now,
     )
     db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def update_data_source_mapping(
+    db: Session,
+    *,
+    dataset_id: int,
+    data_source_id: int,
+    column_mappings: list[dict[str, Any]] | None = None,
+    mapping_config: dict[str, Any] | list[Any] | None = None,
+) -> models.DataSource | None:
+    row = (
+        db.query(models.DataSource)
+        .filter(
+            models.DataSource.id == data_source_id,
+            models.DataSource.dataset_id == dataset_id,
+        )
+        .first()
+    )
+    if not row:
+        return None
+
+    current = row.mapping_config if isinstance(row.mapping_config, dict) else {}
+    next_cfg = dict(current)
+    if isinstance(mapping_config, dict):
+        next_cfg.update(mapping_config)
+    if column_mappings is not None:
+        cleaned: list[dict[str, str]] = []
+        for item in column_mappings:
+            if not isinstance(item, dict):
+                continue
+            base = str(item.get("base_column") or "").strip()
+            source = str(item.get("source_column") or "").strip()
+            if base and source:
+                cleaned.append({"base_column": base, "source_column": source})
+        next_cfg["column_mappings"] = cleaned
+
+    row.mapping_config = next_cfg
+    row.updated_date = datetime.utcnow()
     db.commit()
     db.refresh(row)
     return row

@@ -675,6 +675,28 @@ class DatasetSource(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
 
+# class DataSource(Base):
+#     """Data sources attached to an enterprise dataset (primary or joined)."""
+
+#     __tablename__ = "datasources"
+#     __table_args__ = {"schema": "datasets"}
+
+#     id = Column(Integer, primary_key=True, autoincrement=True)
+#     dataset_id = Column(
+#         Integer,
+#         ForeignKey("enterprise.datasets.id"),
+#         nullable=False,
+#         index=True,
+#     )
+#     source_type = Column(Text, nullable=False)  # file | table
+#     db_connection_id = Column(Integer, nullable=True, index=True)
+#     data_source_name = Column(Text, nullable=False)
+#     join_configuration = Column(JSON, nullable=True)
+#     mapping_config = Column(JSON, nullable=True)
+#     created_by = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
+#     created_date = Column(DateTime, default=func.now(), nullable=False)
+#     updated_date = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
 class DataSource(Base):
     """Data sources attached to an enterprise dataset (primary or joined)."""
 
@@ -688,11 +710,25 @@ class DataSource(Base):
         nullable=False,
         index=True,
     )
+
     source_type = Column(Text, nullable=False)  # file | table
+    source_file = Column(Text, nullable=True)   # file path (for uploaded files)
+
     db_connection_id = Column(Integer, nullable=True, index=True)
     data_source_name = Column(Text, nullable=False)
     join_configuration = Column(JSON, nullable=True)
     mapping_config = Column(JSON, nullable=True)
-    created_by = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
+
+    created_by = Column(
+        Integer,
+        ForeignKey("auth.users.id"),
+        nullable=True,
+        index=True,
+    )
     created_date = Column(DateTime, default=func.now(), nullable=False)
-    updated_date = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+    updated_date = Column(
+        DateTime,
+        default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
