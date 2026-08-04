@@ -445,16 +445,14 @@ CREATE TABLE enterprise.datasets (
 );
 
 CREATE TABLE datasets.datasets (
-	id SERIAL NOT NULL,
-	enterprise_dataset_id INTEGER NOT NULL,
+	id INTEGER NOT NULL,
 	dataset_name TEXT NOT NULL,
 	description TEXT,
 	created_by_user_id INTEGER,
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
 	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
 	PRIMARY KEY (id),
-	UNIQUE (enterprise_dataset_id),
-	FOREIGN KEY(enterprise_dataset_id) REFERENCES enterprise.datasets (id),
+	FOREIGN KEY(id) REFERENCES enterprise.datasets (id),
 	FOREIGN KEY(created_by_user_id) REFERENCES auth.users (id)
 );
 

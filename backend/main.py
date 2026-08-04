@@ -86,22 +86,42 @@ if True:
             # Per-dataset physical tables + catalog source tables live here
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS datasets"))
             # Rename legacy table names BEFORE create_all (avoids empty new tables blocking rename)
-            # If an incomplete datasets.datasets exists (missing enterprise_dataset_id), drop it first
+            # Drop incomplete/legacy datasets.datasets that still have enterprise_dataset_id,
+            # then rebuild from datasetssource (or leave rename path to recreate).
             conn.execute(
                 text(
                     """
                     DO $$
                     BEGIN
                       IF EXISTS (
-                        SELECT 1 FROM information_schema.tables
-                        WHERE table_schema = 'datasets' AND table_name = 'datasets'
-                      ) AND NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
                         WHERE table_schema = 'datasets'
                           AND table_name = 'datasets'
                           AND column_name = 'enterprise_dataset_id'
                       ) THEN
+                        CREATE TABLE IF NOT EXISTS datasets.datasets_new (
+                          id INTEGER PRIMARY KEY,
+                          dataset_name TEXT NOT NULL,
+                          description TEXT,
+                          created_by_user_id INTEGER REFERENCES auth.users(id),
+                          created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+                          updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+                          FOREIGN KEY (id) REFERENCES enterprise.datasets(id)
+                        );
+                        INSERT INTO datasets.datasets_new (
+                          id, dataset_name, description,
+                          created_by_user_id, created_at, updated_at
+                        )
+                        SELECT
+                          s.enterprise_dataset_id, s.dataset_name, s.description,
+                          s.created_by_user_id, s.created_at, s.updated_at
+                        FROM datasets.datasets s
+                        WHERE EXISTS (
+                          SELECT 1 FROM enterprise.datasets e WHERE e.id = s.enterprise_dataset_id
+                        )
+                        ON CONFLICT (id) DO NOTHING;
                         DROP TABLE datasets.datasets CASCADE;
+                        ALTER TABLE datasets.datasets_new RENAME TO datasets;
                       END IF;
                     END $$;
                     """
@@ -135,16 +155,17 @@ if True:
                             -- Both exist: copy then drop old table
                             IF '{new_name}' = 'datasets' THEN
                               INSERT INTO datasets.datasets (
-                                enterprise_dataset_id, dataset_name, description,
+                                id, dataset_name, description,
                                 created_by_user_id, created_at, updated_at
                               )
                               SELECT
-                                s.enterprise_dataset_id, s.dataset_name, s.description,
+                                s.enterprise_dataset_id,
+                                s.dataset_name, s.description,
                                 s.created_by_user_id, s.created_at, s.updated_at
                               FROM datasets.{old_name} s
                               WHERE NOT EXISTS (
                                 SELECT 1 FROM datasets.datasets d
-                                WHERE d.enterprise_dataset_id = s.enterprise_dataset_id
+                                WHERE d.id = s.enterprise_dataset_id
                               );
                             ELSE
                               INSERT INTO datasets.datasources (
@@ -178,11 +199,51 @@ if True:
                 )
             )
             # Backfill datasets.datasets from enterprise catalog if empty/missing rows
+            # Drop legacy enterprise_dataset_id if a rename left it on the table
+            conn.execute(
+                text(
+                    """
+                    DO $$
+                    BEGIN
+                      IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'datasets'
+                          AND table_name = 'datasets'
+                          AND column_name = 'enterprise_dataset_id'
+                      ) THEN
+                        CREATE TABLE datasets.datasets_new (
+                          id INTEGER PRIMARY KEY,
+                          dataset_name TEXT NOT NULL,
+                          description TEXT,
+                          created_by_user_id INTEGER REFERENCES auth.users(id),
+                          created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+                          updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+                          FOREIGN KEY (id) REFERENCES enterprise.datasets(id)
+                        );
+                        INSERT INTO datasets.datasets_new (
+                          id, dataset_name, description,
+                          created_by_user_id, created_at, updated_at
+                        )
+                        SELECT
+                          s.enterprise_dataset_id, s.dataset_name, s.description,
+                          s.created_by_user_id, s.created_at, s.updated_at
+                        FROM datasets.datasets s
+                        WHERE EXISTS (
+                          SELECT 1 FROM enterprise.datasets e WHERE e.id = s.enterprise_dataset_id
+                        )
+                        ON CONFLICT (id) DO NOTHING;
+                        DROP TABLE datasets.datasets CASCADE;
+                        ALTER TABLE datasets.datasets_new RENAME TO datasets;
+                      END IF;
+                    END $$;
+                    """
+                )
+            )
             conn.execute(
                 text(
                     """
                     INSERT INTO datasets.datasets (
-                      enterprise_dataset_id, dataset_name, description,
+                      id, dataset_name, description,
                       created_by_user_id, created_at, updated_at
                     )
                     SELECT
@@ -195,7 +256,7 @@ if True:
                     FROM enterprise.datasets d
                     WHERE NOT EXISTS (
                       SELECT 1 FROM datasets.datasets s
-                      WHERE s.enterprise_dataset_id = d.id
+                      WHERE s.id = d.id
                     )
                     """
                 )
@@ -252,7 +313,7 @@ if True:
                             text(
                                 f"""
                                 INSERT INTO datasets.datasets (
-                                  enterprise_dataset_id, dataset_name, description,
+                                  id, dataset_name, description,
                                   created_by_user_id, created_at, updated_at
                                 )
                                 SELECT
@@ -261,7 +322,7 @@ if True:
                                 FROM {old_schema}.{table_name} s
                                 WHERE NOT EXISTS (
                                   SELECT 1 FROM datasets.datasets d
-                                  WHERE d.enterprise_dataset_id = s.enterprise_dataset_id
+                                  WHERE d.id = s.enterprise_dataset_id
                                 )
                                 """
                             )
@@ -335,7 +396,7 @@ if True:
                     text(
                         """
                         INSERT INTO datasets.datasets (
-                          enterprise_dataset_id, dataset_name, description,
+                          id, dataset_name, description,
                           created_by_user_id, created_at, updated_at
                         )
                         SELECT
@@ -348,7 +409,7 @@ if True:
                         FROM enterprise.datasets d
                         WHERE NOT EXISTS (
                           SELECT 1 FROM datasets.datasets s
-                          WHERE s.enterprise_dataset_id = d.id
+                          WHERE s.id = d.id
                         )
                         """
                     )

@@ -655,18 +655,19 @@ class GoldenMergeConfig(Base):
 
 
 class DatasetSource(Base):
-    """Dataset description + audit metadata (lives in schema datasets)."""
+    """Dataset description + audit metadata (lives in schema datasets).
+
+    ``id`` matches ``enterprise.datasets.id`` (1:1 extension row).
+    """
 
     __tablename__ = "datasets"
     __table_args__ = {"schema": "datasets"}
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    enterprise_dataset_id = Column(
+    id = Column(
         Integer,
         ForeignKey("enterprise.datasets.id"),
-        nullable=False,
-        unique=True,
-        index=True,
+        primary_key=True,
+        autoincrement=False,
     )
     dataset_name = Column(Text, nullable=False)
     description = Column(Text, nullable=True)

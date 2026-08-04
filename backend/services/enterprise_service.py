@@ -426,16 +426,16 @@ def _upsert_dataset_details(
     enterprise_dataset: models.EnterpriseDataset,
     created_by_user_id: int | None = None,
 ) -> models.DatasetSource:
-    """Keep datasets.datasets in sync with enterprise catalog row."""
+    """Keep datasets.datasets in sync with enterprise catalog row (id = enterprise id)."""
     details = (
         db.query(models.DatasetSource)
-        .filter(models.DatasetSource.enterprise_dataset_id == enterprise_dataset.id)
+        .filter(models.DatasetSource.id == enterprise_dataset.id)
         .first()
     )
     now = datetime.utcnow()
     if details is None:
         details = models.DatasetSource(
-            enterprise_dataset_id=enterprise_dataset.id,
+            id=enterprise_dataset.id,
             dataset_name=enterprise_dataset.name,
             description=enterprise_dataset.description,
             created_by_user_id=created_by_user_id or enterprise_dataset.owner_user_id,
@@ -453,7 +453,7 @@ def _upsert_dataset_details(
 def serialize_dataset_details(db: Session, enterprise_dataset_id: int) -> dict[str, Any] | None:
     details = (
         db.query(models.DatasetSource)
-        .filter(models.DatasetSource.enterprise_dataset_id == enterprise_dataset_id)
+        .filter(models.DatasetSource.id == enterprise_dataset_id)
         .first()
     )
     if not details:
@@ -470,7 +470,6 @@ def serialize_dataset_details(db: Session, enterprise_dataset_id: int) -> dict[s
             }
     return {
         "id": details.id,
-        "enterprise_dataset_id": details.enterprise_dataset_id,
         "dataset_name": details.dataset_name,
         "description": details.description,
         "created_by_user_id": details.created_by_user_id,

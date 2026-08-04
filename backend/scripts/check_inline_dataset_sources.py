@@ -29,8 +29,7 @@ def main() -> None:
         if any(t[0] == "datasets" for t in tables):
             for r in db.execute(
                 text(
-                    "SELECT id, enterprise_dataset_id, dataset_name "
-                    "FROM datasets.datasets ORDER BY id LIMIT 5"
+                    "SELECT id, dataset_name FROM datasets.datasets ORDER BY id LIMIT 5"
                 )
             ):
                 print(" ", r)
