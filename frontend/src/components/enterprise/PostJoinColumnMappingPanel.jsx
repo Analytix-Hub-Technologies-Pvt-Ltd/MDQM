@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Sparkles } from "lucide-react";
+import { CheckCircle2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ModalSection, ModalAlert } from "@/components/layout/AppModal";
 import ColumnMappingEditor, {
@@ -21,6 +21,13 @@ function formatDetail(d) {
     return d.msg || JSON.stringify(d);
   }
   return "";
+}
+
+function normalizeColumnName(name) {
+  return String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
 }
 
 /**
@@ -54,17 +61,35 @@ export default function PostJoinColumnMappingPanel({
     [sources, selectedId],
   );
 
+  const joinKeyColumns = useMemo(() => {
+    const config = selected?.join_configuration;
+    const pairs = Array.isArray(config?.join_keys)
+      ? config.join_keys
+      : config?.left_key && config?.right_key
+        ? [{ left_key: config.left_key, right_key: config.right_key }]
+        : [];
+    return {
+      base: new Set(pairs.map((pair) => normalizeColumnName(pair?.left_key)).filter(Boolean)),
+      source: new Set(pairs.map((pair) => normalizeColumnName(pair?.right_key)).filter(Boolean)),
+    };
+  }, [selected]);
+
   const sourceColumns = useMemo(() => {
     const cfg = selected?.mapping_config;
     if (cfg && Array.isArray(cfg.selected_columns)) {
-      return cfg.selected_columns.map(String).filter(Boolean);
+      return cfg.selected_columns
+        .map(String)
+        .filter((column) => column && !joinKeyColumns.source.has(normalizeColumnName(column)));
     }
     return [];
-  }, [selected]);
+  }, [selected, joinKeyColumns]);
 
   const baseNames = useMemo(
-    () => (baseColumns || []).map((c) => (typeof c === "string" ? c : c?.name)).filter(Boolean),
-    [baseColumns],
+    () =>
+      (baseColumns || [])
+        .map((c) => (typeof c === "string" ? c : c?.name))
+        .filter((column) => column && !joinKeyColumns.base.has(normalizeColumnName(column))),
+    [baseColumns, joinKeyColumns],
   );
 
   useEffect(() => {
@@ -89,14 +114,25 @@ export default function PostJoinColumnMappingPanel({
     const cfg = selected.mapping_config;
     const existing = cfg && Array.isArray(cfg.column_mappings) ? cfg.column_mappings : [];
     const cleaned = existing
-      .filter((p) => p?.base_column && p?.source_column)
+      .filter(
+        (p) =>
+          p?.base_column &&
+          p?.source_column &&
+          !joinKeyColumns.base.has(normalizeColumnName(p.base_column)) &&
+          !joinKeyColumns.source.has(normalizeColumnName(p.source_column)),
+      )
       .map((p) => ({ base_column: p.base_column, source_column: p.source_column }));
     setPairs(cleaned.length ? cleaned : [emptyMappingPair()]);
     setError("");
-    setOk("");
     setSummary("");
     setSourceTag("");
-  }, [selected?.id]);
+  }, [selected?.id, joinKeyColumns]);
+
+  useEffect(() => {
+    if (!ok) return undefined;
+    const timer = window.setTimeout(() => setOk(""), 4000);
+    return () => window.clearTimeout(timer);
+  }, [ok]);
 
   // Auto LLM suggest when opened after a fresh join
   useEffect(() => {
@@ -123,7 +159,11 @@ export default function PostJoinColumnMappingPanel({
         source_label: selected?.data_source_name,
       });
       const body = res?.data ?? res;
-      const mapped = Array.isArray(body?.column_mappings) ? body.column_mappings : [];
+      const mapped = (Array.isArray(body?.column_mappings) ? body.column_mappings : []).filter(
+        (pair) =>
+          !joinKeyColumns.base.has(normalizeColumnName(pair?.base_column)) &&
+          !joinKeyColumns.source.has(normalizeColumnName(pair?.source_column)),
+      );
       if (mapped.length) {
         setPairs(
           mapped.map((p) => ({
@@ -170,9 +210,18 @@ export default function PostJoinColumnMappingPanel({
 
   return (
     <ModalSection title="Column mapping (LLM)">
+      {ok ? (
+        <div
+          role="status"
+          className="fixed right-5 top-5 z-[100] flex items-center gap-2 rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800 shadow-lg dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-200"
+        >
+          <CheckCircle2 className="h-4 w-4 shrink-0" />
+          Column mapping saved successfully.
+        </div>
+      ) : null}
       <p className="mb-3 text-xs text-muted-foreground">
         After joining a data source, map base dataset columns to the joined source columns. AI can suggest matches;
-        review and save to <span className="font-semibold text-foreground">mapping_config</span>.
+        join-key columns are excluded. Review and save to <span className="font-semibold text-foreground">mapping_config</span>.
       </p>
 
       {sources.length > 1 ? (
@@ -240,11 +289,18 @@ export default function PostJoinColumnMappingPanel({
           >
             {saveBusy ? "Saving…" : "Save column mapping"}
           </Button>
+          {ok ? (
+            <ModalAlert variant="success">
+              <span className="flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4 shrink-0" />
+                Column mapping saved successfully.
+              </span>
+            </ModalAlert>
+          ) : null}
         </div>
       )}
 
       {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
-      {ok ? <p className="mt-2 text-xs text-success">{ok}</p> : null}
     </ModalSection>
   );
 }

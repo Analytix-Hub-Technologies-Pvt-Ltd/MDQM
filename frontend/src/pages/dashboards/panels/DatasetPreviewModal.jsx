@@ -111,6 +111,10 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
   const baseColumns = baseTable?.columns || [];
   const canAddDataSource = Boolean(job?.job_id);
   const joinSources = payload?.join_sources || [];
+  const dataSources = payload?.data_sources || [];
+  const hasJoinDataSource = dataSources.some(
+    (source) => source?.join_configuration?.role === "join",
+  );
   const activeJoins = joinSources.filter((j) => j.materialized !== false && j.status !== "broken");
   const brokenJoins = joinSources.filter((j) => j.materialized === false || j.status === "broken");
   const isPrimarySourceAttach = Boolean(job?.job_id && baseColumns.length === 0);
@@ -532,16 +536,15 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
               />
             ))}
 
-            {showPostJoinMapping && (payload?.data_sources || []).length > 0 ? (
+            {(hasJoinDataSource || (showPostJoinMapping && dataSources.length > 0)) ? (
               <PostJoinColumnMappingPanel
                 datasetId={datasetId}
-                dataSources={payload.data_sources}
+                dataSources={dataSources}
                 baseColumns={baseColumns}
                 autoOpenForId={mappingFocusId}
                 onSaved={async () => {
                   await loadPreview();
                   setRefreshOk("Column mapping saved.");
-                  setShowPostJoinMapping(false);
                   setMappingFocusId(null);
                 }}
               />
