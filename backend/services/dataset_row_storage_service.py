@@ -2,9 +2,9 @@
 
 Architecture
 ------------
-Primary storage  : datasets.job_{job_id}_tbl_{table_id}
+Primary storage  : raw_column.raw_job_{job_id}_table_{table_id}_data
                    One real PostgreSQL table per dataset, created on first write.
-Base backup      : datasets.job_{job_id}_base
+Base backup      : raw_column.raw_job_{job_id}_base_data
                    Snapshot of the primary table before any join is applied.
 Registry         : metadata.dataset_physical_tables
                    Tracks existence, column list, and row count for every physical table.
@@ -978,7 +978,7 @@ def persist_table_snapshot(db, job_id, table_id, df, *, commit=True):
 
 def storage_label(job_id, table_name, *, db_stored):
     if db_stored:
-        return f"db://datasets/job_{job_id}/{table_name}"
+        return f"db://raw_column/job_{job_id}/{table_name}"
     return f"legacy://uploads/job_{job_id}/{table_name}.csv"
 
 

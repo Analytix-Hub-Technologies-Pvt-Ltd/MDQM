@@ -21,8 +21,10 @@ from sqlalchemy.engine import Connection, Engine
 
 logger = logging.getLogger(__name__)
 
-# Schema that holds all physical per-dataset tables
-DATASETS_SCHEMA = "datasets"
+# Schema that holds all physical per-dataset raw tables.
+RAW_COLUMNS_SCHEMA = "raw_column"
+# Existing imports use this name for the physical storage schema.
+DATASETS_SCHEMA = RAW_COLUMNS_SCHEMA
 
 # DQ / bookkeeping columns appended to every physical table.
 # These are hidden from end-users in the read path.
@@ -72,12 +74,12 @@ def sanitize_column_name(raw: str) -> str:
 
 def get_physical_table_name(job_id: int, table_id: int) -> str:
     """Return the bare physical table name (no schema prefix)."""
-    return f"job_{job_id}_tbl_{table_id}"
+    return f"raw_job_{job_id}"
 
 
 def get_base_backup_table_name(job_id: int) -> str:
     """Return the bare physical table name for the pre-join base backup."""
-    return f"job_{job_id}_base"
+    return f"raw_job_{job_id}_backup"
 
 
 def full_table_ref(table_name: str, schema: str = DATASETS_SCHEMA) -> str:
@@ -184,6 +186,128 @@ def drop_base_backup_table(conn: Connection, job_id: int) -> None:
     logger.info("Dropped base backup table %s", tbl)
 
 
+def migrate_legacy_physical_tables(engine: Engine) -> int:
+    """Move legacy datasets.job_* physical tables into raw_column."""
+    table_pattern = re.compile(r"^job_(\d+)_tbl_(\d+)$")
+    base_pattern = re.compile(r"^job_(\d+)_base$")
+    moved = 0
+    with engine.begin() as conn:
+        conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {RAW_COLUMNS_SCHEMA}"))
+        legacy_tables = conn.execute(
+            text(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'datasets'
+                  AND (table_name LIKE 'job_%_tbl_%' OR table_name LIKE 'job_%_base')
+                """
+            )
+        ).fetchall()
+        for (old_name,) in legacy_tables:
+            table_match = table_pattern.fullmatch(old_name)
+            base_match = base_pattern.fullmatch(old_name)
+            if table_match:
+                job_id, table_id = map(int, table_match.groups())
+                new_name = get_physical_table_name(job_id, table_id)
+            elif base_match:
+                job_id, table_id = int(base_match.group(1)), None
+                new_name = get_base_backup_table_name(job_id)
+            else:
+                continue
+            if table_exists(conn, new_name, RAW_COLUMNS_SCHEMA):
+                continue
+            conn.execute(text(f"ALTER TABLE datasets.{old_name} RENAME TO {new_name}"))
+            conn.execute(text(f"ALTER TABLE datasets.{new_name} SET SCHEMA {RAW_COLUMNS_SCHEMA}"))
+            if table_id is not None:
+                conn.execute(
+                    text(
+                        """
+                        UPDATE metadata.dataset_physical_tables
+                        SET physical_table_name = :name, schema_name = :schema
+                        WHERE job_id = :job_id AND table_id = :table_id
+                        """
+                    ),
+                    {
+                        "name": new_name,
+                        "schema": RAW_COLUMNS_SCHEMA,
+                        "job_id": job_id,
+                        "table_id": table_id,
+                    },
+                )
+            moved += 1
+        conn.execute(
+            text(
+                """
+                UPDATE metadata.dataset_physical_tables
+                SET schema_name = :schema
+                WHERE physical_table_name LIKE 'raw_job_%'
+                """
+            ),
+            {"schema": RAW_COLUMNS_SCHEMA},
+        )
+    return moved
+
+
+def migrate_raw_table_names(engine: Engine) -> int:
+    """Rename raw_job_*_table_*_data and *_base_data tables to shorter names."""
+    data_pattern = re.compile(r"^raw_job_(\d+)_table_\d+_data$")
+    backup_pattern = re.compile(r"^raw_job_(\d+)_base_data$")
+    renamed = 0
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = :schema
+                  AND (table_name LIKE 'raw_job_%_table_%_data'
+                       OR table_name LIKE 'raw_job_%_base_data')
+                """
+            ),
+            {"schema": RAW_COLUMNS_SCHEMA},
+        ).fetchall()
+        for (old_name,) in rows:
+            data_match = data_pattern.fullmatch(old_name)
+            backup_match = backup_pattern.fullmatch(old_name)
+            if data_match:
+                job_id = int(data_match.group(1))
+                new_name = f"raw_job_{job_id}"
+                table_id_row = conn.execute(
+                    text(
+                        """
+                        SELECT table_id
+                        FROM metadata.dataset_physical_tables
+                        WHERE physical_table_name = :old_name
+                        LIMIT 1
+                        """
+                    ),
+                    {"old_name": old_name},
+                ).first()
+                table_id = table_id_row[0] if table_id_row else None
+            elif backup_match:
+                job_id = int(backup_match.group(1))
+                new_name = f"raw_job_{job_id}_backup"
+                table_id = None
+            else:
+                continue
+            if table_exists(conn, new_name, RAW_COLUMNS_SCHEMA):
+                continue
+            conn.execute(text(f"ALTER TABLE {RAW_COLUMNS_SCHEMA}.{old_name} RENAME TO {new_name}"))
+            if table_id is not None:
+                conn.execute(
+                    text(
+                        """
+                        UPDATE metadata.dataset_physical_tables
+                        SET physical_table_name = :new_name
+                        WHERE job_id = :job_id AND table_id = :table_id
+                        """
+                    ),
+                    {"new_name": new_name, "job_id": job_id, "table_id": table_id},
+                )
+            renamed += 1
+    return renamed
+
+
 # ---------------------------------------------------------------------------
 # Bulk-insert via PostgreSQL COPY (fast path)
 # ---------------------------------------------------------------------------
@@ -268,8 +392,8 @@ def batch_insert_dataframe(
 # ---------------------------------------------------------------------------
 
 
-def ensure_datasets_schema(engine: Engine) -> None:
-    """Create the 'datasets' schema if it does not already exist."""
+def ensure_raw_columns_schema(engine: Engine) -> None:
+    """Create the raw_column schema if it does not already exist."""
     with engine.begin() as conn:
         conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {DATASETS_SCHEMA}"))
     logger.info("Ensured schema '%s' exists", DATASETS_SCHEMA)

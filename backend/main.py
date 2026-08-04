@@ -458,10 +458,20 @@ if True:
                     """
                 )
             )
-        # Ensure the datasets schema is present (also called by physical_table_manager)
-        from services.physical_table_manager import ensure_datasets_schema
-        ensure_datasets_schema(engine)
-        print("[mdqm] Database schema ready (including datasets schema for physical tables).", file=sys.stderr, flush=True)
+        # Raw physical dataset tables are stored in their own raw_column schema.
+        from services.physical_table_manager import (
+            ensure_raw_columns_schema,
+            migrate_legacy_physical_tables,
+            migrate_raw_table_names,
+        )
+        ensure_raw_columns_schema(engine)
+        moved = migrate_legacy_physical_tables(engine)
+        renamed = migrate_raw_table_names(engine)
+        if moved:
+            print(f"[mdqm] Moved {moved} physical table(s) to raw_column.", file=sys.stderr, flush=True)
+        if renamed:
+            print(f"[mdqm] Renamed {renamed} physical raw table(s).", file=sys.stderr, flush=True)
+        print("[mdqm] Database schema ready (including raw_column physical storage).", file=sys.stderr, flush=True)
 
     def _migrate_job_source_config():
         from services.job_source_config_service import migrate_job_source_json_to_columns
