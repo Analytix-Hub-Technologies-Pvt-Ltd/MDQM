@@ -528,6 +528,35 @@ def governance_dataset_data_sources_list(
     return {"dataset_id": dataset_id, "items": esvc.list_data_sources(db, dataset_id)}
 
 
+@router.post("/governance/datasets/{dataset_id}/remove-source")
+def governance_dataset_source_remove(
+    request: Request,
+    dataset_id: int,
+    db: Session = Depends(_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Clear attached source data but preserve the enterprise dataset catalog record."""
+    require_any_permission(_role(request), Permissions.DASHBOARD_OWNER, Permissions.GOVERNANCE_VIEW, Permissions.ADMIN_VIEW)
+    row = esvc.remove_dataset_source(db, dataset_id=dataset_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    write_audit_log(
+        db,
+        user_id=user.id,
+        action="enterprise_dataset_source_removed",
+        entity_type="enterprise_dataset",
+        entity_id=str(dataset_id),
+        ip_address=request.client.host if request.client else None,
+        new_values={"source_removed": True},
+    )
+    return {
+        "dataset_id": dataset_id,
+        "name": row.name,
+        "source_removed": True,
+        "message": "Data source removed. The dataset remains in the catalog.",
+    }
+
+
 @router.post("/governance/datasets/{dataset_id}/data-sources")
 def governance_dataset_data_source_create(
     request: Request,

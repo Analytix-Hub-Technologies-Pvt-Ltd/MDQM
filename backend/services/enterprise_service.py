@@ -17,7 +17,7 @@ from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session
 
 import models
-from services.job_source_config_service import read_job_source_config
+from services.job_source_config_service import read_job_source_config, write_job_source_config
 
 DEFAULT_DATASET_RECYCLE_DAYS = 7
 
@@ -516,6 +516,104 @@ def list_data_sources(db: Session, dataset_id: int) -> list[dict[str, Any]]:
         .all()
     )
     return [serialize_data_source(r) for r in rows]
+
+
+def remove_dataset_source(
+    db: Session,
+    *,
+    dataset_id: int,
+) -> models.EnterpriseDataset | None:
+    """Clear primary-source data while keeping the enterprise dataset record."""
+    dataset = (
+        db.query(models.EnterpriseDataset)
+        .filter(
+            models.EnterpriseDataset.id == dataset_id,
+            models.EnterpriseDataset.deleted_at.is_(None),
+        )
+        .first()
+    )
+    if not dataset:
+        return None
+
+    job = (
+        db.query(models.Job).filter(models.Job.job_id == dataset.job_id).first()
+        if dataset.job_id is not None
+        else None
+    )
+    if job:
+        from services.dataset_join_service import legacy_base_snapshot_path, list_join_sources
+        from services.dataset_row_storage_service import delete_snapshot
+        from services.physical_table_manager import drop_base_backup_table
+
+        for join in list_join_sources(job):
+            path = join.get("file_path")
+            if path and os.path.isfile(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+        tables = (
+            db.query(models.TableMetadata)
+            .filter(models.TableMetadata.job_id == job.job_id)
+            .all()
+        )
+        for table in tables:
+            try:
+                delete_snapshot(db, job.job_id, table.table_id)
+            except Exception:
+                pass
+
+        try:
+            with db.get_bind().begin() as conn:
+                drop_base_backup_table(conn, job.job_id)
+        except Exception:
+            pass
+        legacy_backup = legacy_base_snapshot_path(job.job_id)
+        if os.path.isfile(legacy_backup):
+            try:
+                os.remove(legacy_backup)
+            except OSError:
+                pass
+
+        db.query(models.EnterpriseValidationResult).filter(
+            models.EnterpriseValidationResult.job_id == job.job_id
+        ).delete(synchronize_session=False)
+        db.query(models.EnterpriseQuarantineRecord).filter(
+            models.EnterpriseQuarantineRecord.job_id == job.job_id
+        ).delete(synchronize_session=False)
+        db.query(models.DatasetBaseBackupRow).filter(
+            models.DatasetBaseBackupRow.job_id == job.job_id
+        ).delete(synchronize_session=False)
+        db.query(models.QuarantineLog).filter(
+            models.QuarantineLog.job_id == job.job_id
+        ).delete(synchronize_session=False)
+        db.query(models.MasterTable).filter(
+            models.MasterTable.job_id == job.job_id
+        ).delete(synchronize_session=False)
+        db.query(models.ColumnMetadata).filter(
+            models.ColumnMetadata.job_id == job.job_id
+        ).delete(synchronize_session=False)
+        db.query(models.Rule).filter(models.Rule.job_id == job.job_id).delete(
+            synchronize_session=False
+        )
+        db.query(models.TableStats).filter(
+            models.TableStats.job_id == job.job_id
+        ).delete(synchronize_session=False)
+        db.query(models.TableMetadata).filter(
+            models.TableMetadata.job_id == job.job_id
+        ).delete(synchronize_session=False)
+
+        write_job_source_config(job, None)
+        job.status = "Pending"
+
+    db.query(models.DataSource).filter(
+        models.DataSource.dataset_id == dataset_id
+    ).delete(synchronize_session=False)
+    dataset.classification = None
+    db.commit()
+    db.refresh(dataset)
+    return dataset
 
 
 # def create_data_source(
@@ -1185,6 +1283,13 @@ def permanent_delete_dataset(db: Session, dataset_id: int) -> models.EnterpriseD
     # Clean up golden record merge configs and candidates to prevent ForeignKeyViolation
     db.query(models.GoldenMergeCandidate).filter(models.GoldenMergeCandidate.dataset_id == dataset_id).delete()
     db.query(models.GoldenMergeConfig).filter(models.GoldenMergeConfig.dataset_id == dataset_id).delete()
+    db.query(models.DataSource).filter(models.DataSource.dataset_id == dataset_id).delete(
+        synchronize_session=False
+    )
+    # datasets.datasets is a 1:1 extension of enterprise.datasets; remove it first.
+    db.query(models.DatasetSource).filter(models.DatasetSource.id == dataset_id).delete(
+        synchronize_session=False
+    )
 
     db.delete(row)
     if job_id:
@@ -1516,7 +1621,17 @@ def build_dataset_table_rows_page(
         .first()
     )
     if not tbl:
-        return None
+        # A source can be removed while a client grid still has its former table id.
+        # Return an empty page rather than surfacing a transient 404 in the UI.
+        return {
+            "dataset_id": dataset_id,
+            "table_id": table_id,
+            "offset": max(0, int(offset)),
+            "limit": max(1, min(int(limit), 200)),
+            "total": 0,
+            "rows": [],
+            "message": "This table is no longer attached to the dataset.",
+        }
 
     if not snapshot_exists(db, job_id, tbl.table_name, table_id=tbl.table_id):
         return {
