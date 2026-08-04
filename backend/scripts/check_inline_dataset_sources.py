@@ -15,8 +15,8 @@ def main() -> None:
                 FROM information_schema.tables
                 WHERE table_schema = 'datasets'
                   AND table_name IN (
-                    'datasets', 'datasetssource', 'datasources',
-                    'dataset_source', 'data_sources'
+                    'datasets', 'datasources',
+                    'datasetssource', 'dataset_source', 'data_sources'
                   )
                 ORDER BY table_name
                 """

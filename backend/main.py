@@ -85,8 +85,28 @@ if True:
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS enterprise"))
             # Per-dataset physical tables + catalog source tables live here
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS datasets"))
-            # Rename legacy / intermediate table names BEFORE create_all
-            # (avoids empty new tables blocking rename)
+            # Rename legacy table names BEFORE create_all (avoids empty new tables blocking rename)
+            # If an incomplete datasets.datasets exists (missing enterprise_dataset_id), drop it first
+            conn.execute(
+                text(
+                    """
+                    DO $$
+                    BEGIN
+                      IF EXISTS (
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_schema = 'datasets' AND table_name = 'datasets'
+                      ) AND NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'datasets'
+                          AND table_name = 'datasets'
+                          AND column_name = 'enterprise_dataset_id'
+                      ) THEN
+                        DROP TABLE datasets.datasets CASCADE;
+                      END IF;
+                    END $$;
+                    """
+                )
+            )
             for old_name, new_name in (
                 ("dataset_source", "datasets"),
                 ("datasetssource", "datasets"),
