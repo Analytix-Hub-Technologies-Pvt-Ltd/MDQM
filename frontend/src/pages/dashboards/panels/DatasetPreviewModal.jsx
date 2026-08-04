@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { importJobFromDb, refreshJobFromDb, removeJobJoinSource } from "../../../api";
 import {
   enterpriseGovernanceDatasetPreview,
+  enterpriseGovernanceDatasetSourceRemove,
   enterpriseGovernanceDatasetUpdate,
   invalidateEdaReportCache,
 } from "../enterpriseApi";
@@ -60,6 +61,7 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
   const [edaOpen, setEdaOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [addSourceOpen, setAddSourceOpen] = useState(false);
+  const [removeSourceBusy, setRemoveSourceBusy] = useState(false);
   const [removeJoinBusy, setRemoveJoinBusy] = useState("");
   const [chartRevision, setChartRevision] = useState(0);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -190,6 +192,32 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
     setEdaOpen(true);
   };
 
+  const handleRemoveSource = async () => {
+    if (datasetId == null || removeSourceBusy) return;
+    const confirmed = window.confirm(
+      "Remove this data source? The dataset will remain in the catalog, but its loaded tables, joined sources, and source configuration will be cleared.",
+    );
+    if (!confirmed) return;
+
+    setRemoveSourceBusy(true);
+    setRefreshErr("");
+    setRefreshOk("");
+    try {
+      await enterpriseGovernanceDatasetSourceRemove(datasetId);
+      invalidateEdaReportCache(datasetId);
+      setRefreshOk("Data source removed. This dataset is now empty and remains in the catalog.");
+      setShowPostJoinMapping(false);
+      setMappingFocusId(null);
+      await loadPreview();
+      setChartRevision((n) => n + 1);
+      onUpdated?.();
+    } catch (e) {
+      setRefreshErr(formatDetail(e?.response?.data) || e?.message || "Failed to remove data source.");
+    } finally {
+      setRemoveSourceBusy(false);
+    }
+  };
+
   const handleRemoveJoin = async (joinId) => {
     if (!job?.job_id || !joinId) return;
     setRemoveJoinBusy(joinId);
@@ -230,6 +258,18 @@ export default function DatasetPreviewModal({ datasetId, open, onClose, onDelete
               {canAddDataSource ? (
                 <Button type="button" variant="default" size="sm" onClick={() => setAddSourceOpen(true)} className="text-xs uppercase tracking-wide">
                   Add data source
+                </Button>
+              ) : null}
+              {datasetId != null ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={removeSourceBusy}
+                  onClick={handleRemoveSource}
+                  className="text-xs uppercase tracking-wide text-destructive hover:text-destructive"
+                >
+                  {removeSourceBusy ? "Removing…" : "Remove data source"}
                 </Button>
               ) : null}
               {canEditDataset ? (

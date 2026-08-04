@@ -118,6 +118,10 @@ export async function enterpriseGovernanceDatasetUpdate(datasetId, body) {
   return apiClient.put(`/api/enterprise/governance/datasets/${datasetId}`, body);
 }
 
+export async function enterpriseGovernanceDatasetSourceRemove(datasetId) {
+  return apiClient.post(`/api/enterprise/governance/datasets/${datasetId}/remove-source`);
+}
+
 export async function enterpriseGovernanceDataSourceCreate(datasetId, body) {
   return apiClient.post(`/api/enterprise/governance/datasets/${datasetId}/data-sources`, body);
 }
