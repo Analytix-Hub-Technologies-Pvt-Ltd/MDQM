@@ -30,6 +30,7 @@ if True:
 
     from utils.upload_paths import (
         job_temp_upload_path,
+        job_source_upload_path,
         rename_table_csv,
         resolve_table_csv_path,
     )
@@ -3304,8 +3305,6 @@ if True:
                 df = pd.read_excel(temp_file_path)
             else:
                 df = pd.read_csv(temp_file_path)
-            if os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
 
             parsed_columns = None
             if selected_columns:
@@ -3365,6 +3364,14 @@ if True:
             normalized_source_path = _normalize_local_path(source_path or "")
             if normalized_source_path and os.path.isfile(normalized_source_path):
                 _save_table_source_path(job_id, next_table_id, normalized_source_path)
+            else:
+                # Browser uploads have no client path available to the server. Preserve
+                # the original file locally so Manual Refresh can reload it later.
+                saved_upload_path = job_source_upload_path(job_id, next_table_id, file.filename)
+                shutil.copy2(temp_file_path, saved_upload_path)
+                _save_table_source_path(job_id, next_table_id, saved_upload_path)
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
 
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
             logger.info(

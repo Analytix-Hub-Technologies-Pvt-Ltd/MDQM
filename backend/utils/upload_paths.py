@@ -48,6 +48,13 @@ def job_temp_upload_path(job_id: int, filename: str) -> str:
     return os.path.join(base, f"tmp_{safe}")
 
 
+def job_source_upload_path(job_id: int, table_id: int, filename: str) -> str:
+    """Persistent server-side copy of a browser-uploaded source file."""
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in (filename or "source.csv"))[:200]
+    base = ensure_cache_subdir("sources", f"job_{job_id}")
+    return os.path.join(base, f"table_{table_id}_{safe}")
+
+
 def eda_cache_dir(job_id: int) -> str:
     """EDA HTML report cache — stored under .cache, not uploads/."""
     return ensure_cache_subdir("eda", f"job_{job_id}")
