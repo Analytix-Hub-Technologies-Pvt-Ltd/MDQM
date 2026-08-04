@@ -657,7 +657,7 @@ class GoldenMergeConfig(Base):
 class DatasetSource(Base):
     """Dataset description + audit metadata (lives in schema datasets)."""
 
-    __tablename__ = "datasetssource"
+    __tablename__ = "datasets"
     __table_args__ = {"schema": "datasets"}
 
     id = Column(Integer, primary_key=True, autoincrement=True)

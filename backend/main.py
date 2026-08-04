@@ -85,9 +85,11 @@ if True:
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS enterprise"))
             # Per-dataset physical tables + catalog source tables live here
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS datasets"))
-            # Rename underscored names BEFORE create_all (avoids empty new tables blocking rename)
+            # Rename legacy / intermediate table names BEFORE create_all
+            # (avoids empty new tables blocking rename)
             for old_name, new_name in (
-                ("dataset_source", "datasetssource"),
+                ("dataset_source", "datasets"),
+                ("datasetssource", "datasets"),
                 ("data_sources", "datasources"),
             ):
                 conn.execute(
@@ -110,18 +112,18 @@ if True:
                             SELECT 1 FROM information_schema.tables
                             WHERE table_schema = 'datasets' AND table_name = '{new_name}'
                           ) THEN
-                            -- Both exist: copy then drop old underscored table
-                            IF '{new_name}' = 'datasetssource' THEN
-                              INSERT INTO datasets.datasetssource (
+                            -- Both exist: copy then drop old table
+                            IF '{new_name}' = 'datasets' THEN
+                              INSERT INTO datasets.datasets (
                                 enterprise_dataset_id, dataset_name, description,
                                 created_by_user_id, created_at, updated_at
                               )
                               SELECT
                                 s.enterprise_dataset_id, s.dataset_name, s.description,
                                 s.created_by_user_id, s.created_at, s.updated_at
-                              FROM datasets.dataset_source s
+                              FROM datasets.{old_name} s
                               WHERE NOT EXISTS (
-                                SELECT 1 FROM datasets.datasetssource d
+                                SELECT 1 FROM datasets.datasets d
                                 WHERE d.enterprise_dataset_id = s.enterprise_dataset_id
                               );
                             ELSE
@@ -134,7 +136,7 @@ if True:
                                 s.dataset_id, s.source_type, s.db_connection_id, s.data_source_name,
                                 s.join_configuration, s.mapping_config, s.created_by,
                                 s.created_date, s.updated_date
-                              FROM datasets.data_sources s
+                              FROM datasets.{old_name} s
                               WHERE NOT EXISTS (
                                 SELECT 1 FROM datasets.datasources d WHERE d.id = s.id
                               );
@@ -155,11 +157,11 @@ if True:
                     "ADD COLUMN IF NOT EXISTS dq_run_status TEXT NOT NULL DEFAULT 'N'"
                 )
             )
-            # Backfill datasetssource from enterprise catalog if empty/missing rows
+            # Backfill datasets.datasets from enterprise catalog if empty/missing rows
             conn.execute(
                 text(
                     """
-                    INSERT INTO datasets.datasetssource (
+                    INSERT INTO datasets.datasets (
                       enterprise_dataset_id, dataset_name, description,
                       created_by_user_id, created_at, updated_at
                     )
@@ -172,7 +174,7 @@ if True:
                       COALESCE(d.created_at, NOW())
                     FROM enterprise.datasets d
                     WHERE NOT EXISTS (
-                      SELECT 1 FROM datasets.datasetssource s
+                      SELECT 1 FROM datasets.datasets s
                       WHERE s.enterprise_dataset_id = d.id
                     )
                     """
@@ -184,7 +186,7 @@ if True:
                 ("data_source", "data_sources"),
             ):
                 target_name = (
-                    "datasetssource"
+                    "datasets"
                     if table_name in ("dataset_source", "dataset_details")
                     else "datasources"
                 )
@@ -225,11 +227,11 @@ if True:
                         )
                     )
                 elif old_exists and new_exists:
-                    if target_name == "datasetssource":
+                    if target_name == "datasets":
                         conn.execute(
                             text(
                                 f"""
-                                INSERT INTO datasets.datasetssource (
+                                INSERT INTO datasets.datasets (
                                   enterprise_dataset_id, dataset_name, description,
                                   created_by_user_id, created_at, updated_at
                                 )
@@ -238,7 +240,7 @@ if True:
                                   s.created_by_user_id, s.created_at, s.updated_at
                                 FROM {old_schema}.{table_name} s
                                 WHERE NOT EXISTS (
-                                  SELECT 1 FROM datasets.datasetssource d
+                                  SELECT 1 FROM datasets.datasets d
                                   WHERE d.enterprise_dataset_id = s.enterprise_dataset_id
                                 )
                                 """
@@ -312,7 +314,7 @@ if True:
                 conn.execute(
                     text(
                         """
-                        INSERT INTO datasets.datasetssource (
+                        INSERT INTO datasets.datasets (
                           enterprise_dataset_id, dataset_name, description,
                           created_by_user_id, created_at, updated_at
                         )
@@ -325,7 +327,7 @@ if True:
                           COALESCE(d.updated_at, d.created_at, NOW())
                         FROM enterprise.datasets d
                         WHERE NOT EXISTS (
-                          SELECT 1 FROM datasets.datasetssource s
+                          SELECT 1 FROM datasets.datasets s
                           WHERE s.enterprise_dataset_id = d.id
                         )
                         """

@@ -444,7 +444,7 @@ CREATE TABLE enterprise.datasets (
 	FOREIGN KEY(deleted_by_user_id) REFERENCES auth.users (id)
 );
 
-CREATE TABLE datasets.datasetssource (
+CREATE TABLE datasets.datasets (
 	id SERIAL NOT NULL,
 	enterprise_dataset_id INTEGER NOT NULL,
 	dataset_name TEXT NOT NULL,

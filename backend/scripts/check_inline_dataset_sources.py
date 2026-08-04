@@ -1,4 +1,4 @@
-"""Verify tables: datasets.datasetssource and datasets.datasources."""
+"""Verify tables: datasets.datasets and datasets.datasources."""
 
 from sqlalchemy import text
 from database import SessionLocal
@@ -15,7 +15,7 @@ def main() -> None:
                 FROM information_schema.tables
                 WHERE table_schema = 'datasets'
                   AND table_name IN (
-                    'datasetssource', 'datasources',
+                    'datasets', 'datasetssource', 'datasources',
                     'dataset_source', 'data_sources'
                   )
                 ORDER BY table_name
@@ -25,12 +25,12 @@ def main() -> None:
         print([t[0] for t in tables])
 
         print()
-        print("=== Sample datasets.datasetssource ===")
-        if any(t[0] == "datasetssource" for t in tables):
+        print("=== Sample datasets.datasets ===")
+        if any(t[0] == "datasets" for t in tables):
             for r in db.execute(
                 text(
                     "SELECT id, enterprise_dataset_id, dataset_name "
-                    "FROM datasets.datasetssource ORDER BY id LIMIT 5"
+                    "FROM datasets.datasets ORDER BY id LIMIT 5"
                 )
             ):
                 print(" ", r)
