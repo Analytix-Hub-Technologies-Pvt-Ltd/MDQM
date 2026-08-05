@@ -1,4 +1,4 @@
-"""DDL manager for per-dataset physical PostgreSQL tables (schema: datasets).
+"""DDL manager for per-dataset physical PostgreSQL tables (schema: raw).
 
 Responsibilities
 ----------------
@@ -22,7 +22,9 @@ from sqlalchemy.engine import Connection, Engine
 logger = logging.getLogger(__name__)
 
 # Schema that holds all physical per-dataset raw tables.
-RAW_COLUMNS_SCHEMA = "raw_column"
+RAW_COLUMNS_SCHEMA = "raw"
+# Previous schema name, retained only for the startup migration below.
+LEGACY_RAW_COLUMNS_SCHEMA = "raw_column"
 # Existing imports use this name for the physical storage schema.
 DATASETS_SCHEMA = RAW_COLUMNS_SCHEMA
 
@@ -187,7 +189,7 @@ def drop_base_backup_table(conn: Connection, job_id: int) -> None:
 
 
 def migrate_legacy_physical_tables(engine: Engine) -> int:
-    """Move legacy datasets.job_* physical tables into raw_column."""
+    """Move legacy datasets.job_* physical tables into raw."""
     table_pattern = re.compile(r"^job_(\d+)_tbl_(\d+)$")
     base_pattern = re.compile(r"^job_(\d+)_base$")
     moved = 0
@@ -392,8 +394,100 @@ def batch_insert_dataframe(
 # ---------------------------------------------------------------------------
 
 
+def migrate_raw_column_schema(engine: Engine) -> int:
+    """Rename the old ``raw_column`` schema to ``raw`` without losing tables."""
+    moved = 0
+    with engine.begin() as conn:
+        legacy_exists = conn.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.schemata
+                WHERE schema_name = :schema
+                """
+            ),
+            {"schema": LEGACY_RAW_COLUMNS_SCHEMA},
+        ).first()
+        if not legacy_exists:
+            return moved
+
+        target_exists = conn.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.schemata
+                WHERE schema_name = :schema
+                """
+            ),
+            {"schema": RAW_COLUMNS_SCHEMA},
+        ).first()
+        if not target_exists:
+            conn.execute(
+                text(
+                    f"ALTER SCHEMA {LEGACY_RAW_COLUMNS_SCHEMA} "
+                    f"RENAME TO {RAW_COLUMNS_SCHEMA}"
+                )
+            )
+            moved = 1
+        else:
+            legacy_tables = conn.execute(
+                text(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = :schema
+                    """
+                ),
+                {"schema": LEGACY_RAW_COLUMNS_SCHEMA},
+            ).fetchall()
+            for (table_name,) in legacy_tables:
+                if table_exists(conn, table_name, RAW_COLUMNS_SCHEMA):
+                    logger.warning(
+                        "Retaining %s.%s because raw.%s already exists",
+                        LEGACY_RAW_COLUMNS_SCHEMA,
+                        table_name,
+                        table_name,
+                    )
+                    continue
+                conn.execute(
+                    text(
+                        f"ALTER TABLE {LEGACY_RAW_COLUMNS_SCHEMA}.{table_name} "
+                        f"SET SCHEMA {RAW_COLUMNS_SCHEMA}"
+                    )
+                )
+                moved += 1
+            remaining = conn.execute(
+                text(
+                    """
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema = :schema
+                    LIMIT 1
+                    """
+                ),
+                {"schema": LEGACY_RAW_COLUMNS_SCHEMA},
+            ).first()
+            if not remaining:
+                conn.execute(text(f"DROP SCHEMA {LEGACY_RAW_COLUMNS_SCHEMA}"))
+
+        conn.execute(
+            text(
+                """
+                UPDATE metadata.dataset_physical_tables
+                SET schema_name = :new_schema
+                WHERE schema_name = :old_schema
+                """
+            ),
+            {
+                "new_schema": RAW_COLUMNS_SCHEMA,
+                "old_schema": LEGACY_RAW_COLUMNS_SCHEMA,
+            },
+        )
+    return moved
+
+
 def ensure_raw_columns_schema(engine: Engine) -> None:
-    """Create the raw_column schema if it does not already exist."""
+    """Create the raw schema if it does not already exist."""
     with engine.begin() as conn:
         conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {DATASETS_SCHEMA}"))
     logger.info("Ensured schema '%s' exists", DATASETS_SCHEMA)

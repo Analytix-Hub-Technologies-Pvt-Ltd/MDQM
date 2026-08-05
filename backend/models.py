@@ -130,7 +130,7 @@ class DatasetBaseBackupRow(Base):
 
 
 class DatasetPhysicalTable(Base):
-    """Registry: one row per physical per-dataset table in the raw_column schema."""
+    """Registry: one row per physical per-dataset table in the raw schema."""
     __tablename__ = "dataset_physical_tables"
     __table_args__ = (
         UniqueConstraint("job_id", "table_id", name="uq_metadata_dataset_physical_tables_job_table"),
@@ -142,7 +142,7 @@ class DatasetPhysicalTable(Base):
     table_id = Column(Integer, nullable=False, index=True)
     # Fully-qualified physical table name (without schema), e.g. 'raw_job_1_table_2_data'
     physical_table_name = Column(Text, nullable=False)
-    schema_name = Column(Text, nullable=False, default="raw_column")
+    schema_name = Column(Text, nullable=False, default="raw")
     # Ordered list of user-data column names (as stored in the physical table)
     column_names = Column(PG_ARRAY(Text), nullable=False, default=list)
     row_count = Column(Integer, nullable=False, default=0)

@@ -897,13 +897,19 @@ def compute_dataset_scores(
 
 
 def dataset_source_kind(
-    db: Session, row: models.EnterpriseDataset, job_id: int | None
+    db: Session,
+    row: models.EnterpriseDataset,
+    job_id: int | None,
+    *,
+    job: models.Job | None = None,
+    source_config: dict[str, Any] | None = None,
 ) -> str:
     """file | table | join | unknown"""
     if job_id:
-        job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+        if job is None:
+            job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
         if job:
-            cfg = read_job_source_config(job)
+            cfg = source_config if isinstance(source_config, dict) else read_job_source_config(job)
             if isinstance(cfg, dict):
                 joins = cfg.get("join_sources") or []
                 if isinstance(joins, list) and len(joins) > 0:
@@ -933,8 +939,14 @@ def _resolve_db_connection_name(db: Session, cfg: dict[str, Any]) -> str | None:
     return None
 
 
-def _resolve_dataset_file_name(db: Session, job: models.Job) -> str:
-    cfg = read_job_source_config(job)
+def _resolve_dataset_file_name(
+    db: Session,
+    job: models.Job,
+    *,
+    source_config: dict[str, Any] | None = None,
+    first_table: models.TableMetadata | None = None,
+) -> str:
+    cfg = source_config if isinstance(source_config, dict) else read_job_source_config(job)
     if isinstance(cfg, dict):
         snap = cfg.get("base_snapshot_path")
         if snap:
@@ -950,12 +962,13 @@ def _resolve_dataset_file_name(db: Session, job: models.Job) -> str:
                 if file_name:
                     return os.path.basename(file_name)
 
-    first_table = (
-        db.query(models.TableMetadata)
-        .filter(models.TableMetadata.job_id == job.job_id)
-        .order_by(models.TableMetadata.table_id.asc())
-        .first()
-    )
+    if first_table is None:
+        first_table = (
+            db.query(models.TableMetadata)
+            .filter(models.TableMetadata.job_id == job.job_id)
+            .order_by(models.TableMetadata.table_id.asc())
+            .first()
+        )
     if first_table:
         from utils.upload_paths import resolve_table_csv_path
 
@@ -973,13 +986,20 @@ def _resolve_dataset_file_name(db: Session, job: models.Job) -> str:
 
 
 def format_dataset_source_details(
-    db: Session, row: models.EnterpriseDataset, job_id: int | None
+    db: Session,
+    row: models.EnterpriseDataset,
+    job_id: int | None,
+    *,
+    job: models.Job | None = None,
+    source_config: dict[str, Any] | None = None,
+    first_table: models.TableMetadata | None = None,
 ) -> str:
     """Short source label for the datasets table (file name or DB connection name)."""
-    kind = dataset_source_kind(db, row, job_id)
+    kind = dataset_source_kind(db, row, job_id, job=job, source_config=source_config)
     if kind == "join":
-        job = db.query(models.Job).filter(models.Job.job_id == job_id).first() if job_id else None
-        cfg = read_job_source_config(job) if job else {}
+        if job is None and job_id:
+            job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+        cfg = source_config if isinstance(source_config, dict) else (read_job_source_config(job) if job else {})
         joins = cfg.get("join_sources") or [] if isinstance(cfg, dict) else []
         join_count = len(joins) if isinstance(joins, list) else 0
         if isinstance(cfg, dict) and cfg.get("kind") == "postgres_tables":
@@ -997,21 +1017,23 @@ def format_dataset_source_details(
         return joined
 
     if kind == "file":
-        job = (
-            db.query(models.Job).filter(models.Job.job_id == job_id).first() if job_id else None
-        )
+        if job is None and job_id:
+            job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
         if job:
-            return _resolve_dataset_file_name(db, job)
+            return _resolve_dataset_file_name(
+                db, job, source_config=source_config, first_table=first_table
+            )
         return "CSV file"
 
     if not job_id:
         return (row.description or "—")[:120]
 
-    job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+    if job is None:
+        job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
     if not job:
         return row.classification or "—"
 
-    cfg = read_job_source_config(job)
+    cfg = source_config if isinstance(source_config, dict) else read_job_source_config(job)
     if isinstance(cfg, dict) and cfg.get("kind") == "postgres_tables":
         conn_name = _resolve_db_connection_name(db, cfg)
         if conn_name:
@@ -1024,13 +1046,20 @@ def format_dataset_source_details(
 
 
 def format_dataset_source_tooltip(
-    db: Session, row: models.EnterpriseDataset, job_id: int | None
+    db: Session,
+    row: models.EnterpriseDataset,
+    job_id: int | None,
+    *,
+    job: models.Job | None = None,
+    source_config: dict[str, Any] | None = None,
+    first_table: models.TableMetadata | None = None,
 ) -> str:
     """Full source details for hover tooltips."""
-    kind = dataset_source_kind(db, row, job_id)
+    kind = dataset_source_kind(db, row, job_id, job=job, source_config=source_config)
     if kind == "join":
-        job = db.query(models.Job).filter(models.Job.job_id == job_id).first() if job_id else None
-        cfg = read_job_source_config(job) if job else {}
+        if job is None and job_id:
+            job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+        cfg = source_config if isinstance(source_config, dict) else (read_job_source_config(job) if job else {})
         joins = cfg.get("join_sources") or [] if isinstance(cfg, dict) else []
         join_count = len(joins) if isinstance(joins, list) else 0
         base_hint = "table" if isinstance(cfg, dict) and cfg.get("kind") == "postgres_tables" else "CSV"
@@ -1045,21 +1074,26 @@ def format_dataset_source_tooltip(
         return f"Join · {base_hint} + {joined}"
 
     if kind == "file":
-        job = (
-            db.query(models.Job).filter(models.Job.job_id == job_id).first() if job_id else None
-        )
+        if job is None and job_id:
+            job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
         if job:
-            return f"File · {_resolve_dataset_file_name(db, job)}"
+            return (
+                "File · "
+                + _resolve_dataset_file_name(
+                    db, job, source_config=source_config, first_table=first_table
+                )
+            )
         return "CSV file"
 
     if not job_id:
         return (row.description or "—")[:120]
 
-    job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
+    if job is None:
+        job = db.query(models.Job).filter(models.Job.job_id == job_id).first()
     if not job:
         return row.classification or "—"
 
-    cfg = read_job_source_config(job)
+    cfg = source_config if isinstance(source_config, dict) else read_job_source_config(job)
     if isinstance(cfg, dict) and cfg.get("kind") == "postgres_tables":
         host = str(cfg.get("host") or "").strip() or "—"
         dbname = str(cfg.get("dbname") or "").strip() or "—"
@@ -1160,25 +1194,92 @@ def list_datasets(db: Session, page: int, page_size: int, name_q: str | None = N
         q = q.filter(models.EnterpriseDataset.name.ilike(f"%{name_q}%"))
     total = q.count()
     rows = q.offset(offset).limit(page_size).all()
+    job_ids = sorted({int(row.job_id) for row in rows if row.job_id is not None})
+    jobs_by_id = {
+        row.job_id: row
+        for row in (
+            db.query(models.Job)
+            .filter(models.Job.job_id.in_(job_ids))
+            .all()
+            if job_ids
+            else []
+        )
+    }
+    tables_by_job: dict[int, list[models.TableMetadata]] = {}
+    for table in (
+        db.query(models.TableMetadata)
+        .filter(models.TableMetadata.job_id.in_(job_ids))
+        .order_by(models.TableMetadata.job_id, models.TableMetadata.table_id)
+        .all()
+        if job_ids
+        else []
+    ):
+        tables_by_job.setdefault(table.job_id, []).append(table)
+    first_table_by_job = {
+        job_id: tables[0] for job_id, tables in tables_by_job.items() if tables
+    }
+    source_configs = {
+        job_id: read_job_source_config(job)
+        for job_id, job in jobs_by_id.items()
+    }
+    column_counts = {
+        int(job_id): int(count)
+        for job_id, count in (
+            db.query(models.ColumnMetadata.job_id, func.count(models.ColumnMetadata.column_id))
+            .filter(models.ColumnMetadata.job_id.in_(job_ids))
+            .group_by(models.ColumnMetadata.job_id)
+            .all()
+            if job_ids
+            else []
+        )
+    }
+    latest_stats = (
+        db.query(models.TableStats)
+        .filter(models.TableStats.job_id.in_(job_ids))
+        .distinct(models.TableStats.job_id, models.TableStats.table_id)
+        .order_by(
+            models.TableStats.job_id,
+            models.TableStats.table_id,
+            models.TableStats.stat_id.desc(),
+        )
+        .all()
+        if job_ids
+        else []
+    )
+    dq_totals: dict[int, tuple[int, int]] = {}
+    for stat in latest_stats:
+        if not (stat.total_rows or 0):
+            continue
+        total_rows, good_rows = dq_totals.get(stat.job_id, (0, 0))
+        dq_totals[stat.job_id] = (
+            total_rows + int(stat.total_rows or 0),
+            good_rows + int(stat.good_rows or 0),
+        )
+
     items = []
-    from services.dataset_db_import import sync_registered_table_columns_from_source
 
     for r in rows:
-        scores = compute_dataset_scores(db, r)
-        jid = scores.get("job_id") or r.job_id
-        job = db.query(models.Job).filter(models.Job.job_id == jid).first() if jid else None
-        col_count = dataset_column_count(db, jid)
-        if col_count == 0 and job and not dataset_has_loaded_data(db, jid):
-            first_table = (
-                db.query(models.TableMetadata)
-                .filter(models.TableMetadata.job_id == jid)
-                .order_by(models.TableMetadata.table_id.asc())
-                .first()
-            )
-            if first_table:
-                sync_registered_table_columns_from_source(db, job=job, table=first_table)
-                col_count = dataset_column_count(db, jid)
-        last_refreshed = dataset_last_refreshed_at(db, jid)
+        jid = r.job_id
+        job = jobs_by_id.get(jid) if jid is not None else None
+        tables = tables_by_job.get(jid, []) if jid is not None else []
+        source_config = source_configs.get(jid) if jid is not None else None
+        first_table = first_table_by_job.get(jid) if jid is not None else None
+        loaded = bool(job and (job.status or "").strip().lower() not in ("registered", "importing")) and any(
+            (table.row_count or 0) > 0 for table in tables
+        )
+        last_refreshed = max(
+            (table.data_updated_at for table in tables if table.data_updated_at is not None),
+            default=None,
+        )
+        manual_score = int(r.quality_score) if r.quality_score is not None else None
+        total_rows, good_rows = dq_totals.get(jid, (0, 0)) if jid is not None else (0, 0)
+        if manual_score is not None:
+            dq_score, dq_score_source, has_dq_run = manual_score, "manual", True
+        elif total_rows > 0:
+            dq_score = round((good_rows / total_rows) * 100.0, 1)
+            dq_score_source, has_dq_run = "job_stats", True
+        else:
+            dq_score, dq_score_source, has_dq_run = None, "pending", False
         items.append(
             {
                 "id": r.id,
@@ -1190,19 +1291,37 @@ def list_datasets(db: Session, page: int, page_size: int, name_q: str | None = N
                 "description": _ellipsis_text(r.description),
                 "created_at": r.created_at.isoformat() if r.created_at else None,
                 "last_refreshed_at": last_refreshed.isoformat() if last_refreshed else None,
-                "source_kind": dataset_source_kind(db, r, jid),
-                "source_details": format_dataset_source_details(db, r, jid),
-                "source_tooltip": format_dataset_source_tooltip(db, r, jid),
-                "column_count": col_count or None,
+                "source_kind": dataset_source_kind(
+                    db, r, jid, job=job, source_config=source_config
+                ),
+                "source_details": format_dataset_source_details(
+                    db,
+                    r,
+                    jid,
+                    job=job,
+                    source_config=source_config,
+                    first_table=first_table,
+                ),
+                "source_tooltip": format_dataset_source_tooltip(
+                    db,
+                    r,
+                    jid,
+                    job=job,
+                    source_config=source_config,
+                    first_table=first_table,
+                ),
+                "column_count": (column_counts.get(jid) or None) if jid is not None else None,
                 "import_status": job.status if job else None,
-                "data_loaded": dataset_has_loaded_data(db, jid),
-                "eda_report_ready": dataset_has_loaded_data(db, jid),
-                "eda_score": scores.get("eda_score"),
-                "eda_score_source": scores.get("eda_score_source"),
-                "dq_score": scores.get("dq_score"),
-                "dq_score_source": scores.get("dq_score_source"),
-                "dq_job_linked": scores.get("dq_job_linked"),
-                "has_dq_run": scores.get("has_dq_run"),
+                "data_loaded": loaded,
+                "eda_report_ready": loaded,
+                # EDA profiling reads thousands of raw rows. It belongs to the
+                # explicit preview/report flow, not a paginated list poll.
+                "eda_score": None,
+                "eda_score_source": "on_demand",
+                "dq_score": dq_score,
+                "dq_score_source": dq_score_source,
+                "dq_job_linked": bool(jid),
+                "has_dq_run": has_dq_run,
             }
         )
     return paginated_response(items, total, page, page_size)

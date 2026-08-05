@@ -3,7 +3,7 @@ if True:
     from fastapi import BackgroundTasks, FastAPI, UploadFile, File, Form, Depends, HTTPException, Body
     from fastapi.middleware.cors import CORSMiddleware
     from sqlalchemy.orm import Session
-    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.exc import IntegrityError, OperationalError
     from sqlalchemy import func, distinct, inspect, update, create_engine, text, or_, and_, exists
     from pydantic import BaseModel
     from typing import List, Optional
@@ -193,12 +193,28 @@ if True:
         models.DatasetSource.__table__.create(bind=engine, checkfirst=True)
         models.DataSource.__table__.create(bind=engine, checkfirst=True)
         with engine.begin() as conn:
-            conn.execute(
+            # Do not issue an ALTER TABLE at every application startup.  PostgreSQL
+            # needs an ACCESS EXCLUSIVE lock even when IF NOT EXISTS is a no-op,
+            # which can prevent the API from starting while another request is
+            # reading metadata.table_metadata.
+            dq_run_status_exists = conn.execute(
                 text(
-                    "ALTER TABLE metadata.table_metadata "
-                    "ADD COLUMN IF NOT EXISTS dq_run_status TEXT NOT NULL DEFAULT 'N'"
+                    """
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = 'metadata'
+                      AND table_name = 'table_metadata'
+                      AND column_name = 'dq_run_status'
+                    """
                 )
-            )
+            ).first()
+            if not dq_run_status_exists:
+                conn.execute(
+                    text(
+                        "ALTER TABLE metadata.table_metadata "
+                        "ADD COLUMN dq_run_status TEXT NOT NULL DEFAULT 'N'"
+                    )
+                )
             # Backfill datasets.datasets from enterprise catalog if empty/missing rows
             # Drop legacy enterprise_dataset_id if a rename left it on the table
             conn.execute(
@@ -459,20 +475,24 @@ if True:
                     """
                 )
             )
-        # Raw physical dataset tables are stored in their own raw_column schema.
+        # Raw physical dataset tables are stored in their own raw schema.
         from services.physical_table_manager import (
             ensure_raw_columns_schema,
             migrate_legacy_physical_tables,
+            migrate_raw_column_schema,
             migrate_raw_table_names,
         )
+        schema_moved = migrate_raw_column_schema(engine)
         ensure_raw_columns_schema(engine)
         moved = migrate_legacy_physical_tables(engine)
         renamed = migrate_raw_table_names(engine)
+        if schema_moved:
+            print("[mdqm] Renamed raw_column schema to raw.", file=sys.stderr, flush=True)
         if moved:
-            print(f"[mdqm] Moved {moved} physical table(s) to raw_column.", file=sys.stderr, flush=True)
+            print(f"[mdqm] Moved {moved} physical table(s) to raw.", file=sys.stderr, flush=True)
         if renamed:
             print(f"[mdqm] Renamed {renamed} physical raw table(s).", file=sys.stderr, flush=True)
-        print("[mdqm] Database schema ready (including raw_column physical storage).", file=sys.stderr, flush=True)
+        print("[mdqm] Database schema ready (including raw physical storage).", file=sys.stderr, flush=True)
 
     def _migrate_job_source_config():
         from services.job_source_config_service import migrate_job_source_json_to_columns
@@ -494,28 +514,6 @@ if True:
         finally:
             db.close()
 
-    try:
-        _init_database_schema()
-        _migrate_job_source_config()
-        _seed_users()
-    except Exception as exc:
-        print(f"[mdqm] FATAL: Database startup failed: {exc}", file=sys.stderr, flush=True)
-        raise
-
-    try:
-        _access_ddl = [
-            "ALTER TABLE auth.access_requests ADD COLUMN IF NOT EXISTS username VARCHAR(64)",
-            "ALTER TABLE auth.access_requests ADD COLUMN IF NOT EXISTS dataset_name VARCHAR(255)",
-            "ALTER TABLE auth.access_requests ADD COLUMN IF NOT EXISTS access_type VARCHAR(32)",
-            "ALTER TABLE auth.access_requests ADD COLUMN IF NOT EXISTS duration VARCHAR(64)",
-            "ALTER TABLE auth.access_requests ADD COLUMN IF NOT EXISTS approver_name VARCHAR(255)",
-        ]
-        for ddl in _access_ddl:
-            with engine.begin() as conn:
-                conn.execute(text(ddl))
-    except Exception:
-        pass
-
     app.include_router(auth_router)
     app.include_router(access_router)
     app.include_router(admin_router)
@@ -528,6 +526,119 @@ if True:
     app.include_router(reports_router)
     app.include_router(platform_admin_router)
     app.include_router(enterprise_router)
+
+    def _run_database_startup() -> None:
+        """Initialize the database once per serving worker.
+
+        Module-level initialization also runs in Uvicorn's reload supervisor on
+        Windows. That led to two concurrent schema checks and intermittent
+        PostgreSQL connection resets during development startup.
+        """
+        retries = 3
+        for attempt in range(1, retries + 1):
+            try:
+                engine.dispose()
+                _init_database_schema()
+                _migrate_job_source_config()
+                _seed_users()
+                break
+            except OperationalError as exc:
+                engine.dispose()
+                if attempt == retries:
+                    print(
+                        f"[mdqm] FATAL: Database startup failed after {retries} attempts: {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    raise
+                delay_seconds = attempt * 2
+                print(
+                    f"[mdqm] Database connection dropped during startup; "
+                    f"retrying in {delay_seconds}s ({attempt}/{retries})...",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                time.sleep(delay_seconds)
+            except Exception as exc:
+                print(f"[mdqm] FATAL: Database startup failed: {exc}", file=sys.stderr, flush=True)
+                raise
+
+        # Kept after schema creation because the table may be created on first
+        # startup. Avoid failing the whole API if an older database lacks it.
+        try:
+            access_columns = {
+                "username": "VARCHAR(64)",
+                "dataset_name": "VARCHAR(255)",
+                "access_type": "VARCHAR(32)",
+                "duration": "VARCHAR(64)",
+                "approver_name": "VARCHAR(255)",
+            }
+            with engine.begin() as conn:
+                existing_columns = {
+                    row[0]
+                    for row in conn.execute(
+                        text(
+                            """
+                            SELECT column_name
+                            FROM information_schema.columns
+                            WHERE table_schema = 'auth'
+                              AND table_name = 'access_requests'
+                            """
+                        )
+                    )
+                }
+                for name, data_type in access_columns.items():
+                    if name not in existing_columns:
+                        conn.execute(
+                            text(f"ALTER TABLE auth.access_requests ADD COLUMN {name} {data_type}")
+                        )
+        except Exception as exc:
+            print(f"[mdqm] Access-request migration skipped: {exc}", file=sys.stderr, flush=True)
+
+        # These indexes support the high-traffic list and dashboard queries.
+        # CONCURRENTLY avoids blocking reads/writes in production; it must run
+        # outside a transaction, hence the AUTOCOMMIT connection.
+        performance_indexes = (
+            (
+                "ix_table_stats_job_table_latest",
+                "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_table_stats_job_table_latest "
+                "ON metadata.table_stats (job_id, table_id, stat_id DESC)",
+            ),
+            (
+                "ix_rules_job_active",
+                "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_rules_job_active "
+                "ON metadata.rules (job_id, is_active)",
+            ),
+            (
+                "ix_column_metadata_job",
+                "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_column_metadata_job "
+                "ON metadata.column_metadata (job_id)",
+            ),
+            (
+                "ix_dataset_rows_job_table",
+                "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_dataset_rows_job_table "
+                "ON metadata.dataset_rows (job_id, table_id)",
+            ),
+            (
+                "ix_notifications_unread_user",
+                "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_notifications_unread_user "
+                "ON enterprise.notifications (user_id, id DESC) WHERE read_at IS NULL",
+            ),
+        )
+        for index_name, ddl in performance_indexes:
+            try:
+                with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+                    conn.execute(text(ddl))
+            except Exception as exc:
+                print(
+                    f"[mdqm] Performance index {index_name} skipped: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+    @app.on_event("startup")
+    def initialize_database_on_startup() -> None:
+        _run_database_startup()
 
 
     @app.middleware("http")
@@ -3730,21 +3841,60 @@ if True:
     def get_all_jobs(db: Session = Depends(get_db)):
         # Keep newest jobs first so recent inserts are visible at the top in UI.
         jobs = db.query(models.Job).order_by(models.Job.job_id.desc()).all()
+        job_ids = [job.job_id for job in jobs]
+        if not job_ids:
+            return []
+
+        tables_by_job: dict[int, list] = {}
+        for table in (
+            db.query(models.TableMetadata)
+            .filter(models.TableMetadata.job_id.in_(job_ids))
+            .all()
+        ):
+            tables_by_job.setdefault(table.job_id, []).append(table)
+        latest_stats = (
+            db.query(models.TableStats)
+            .filter(models.TableStats.job_id.in_(job_ids))
+            .distinct(models.TableStats.job_id, models.TableStats.table_id)
+            .order_by(
+                models.TableStats.job_id,
+                models.TableStats.table_id,
+                models.TableStats.stat_id.desc(),
+            )
+            .all()
+        )
+        stats_by_table = {(stat.job_id, stat.table_id): stat for stat in latest_stats}
+        covered_columns = dict(
+            db.query(
+                models.Rule.job_id,
+                func.count(func.distinct(models.Rule.column_name)),
+            )
+            .filter(models.Rule.job_id.in_(job_ids))
+            .group_by(models.Rule.job_id)
+            .all()
+        )
+        column_counts = dict(
+            db.query(models.ColumnMetadata.job_id, func.count(models.ColumnMetadata.column_id))
+            .filter(models.ColumnMetadata.job_id.in_(job_ids))
+            .group_by(models.ColumnMetadata.job_id)
+            .all()
+        )
+        active_rule_counts = dict(
+            db.query(models.Rule.job_id, func.count(models.Rule.rule_id))
+            .filter(models.Rule.job_id.in_(job_ids), models.Rule.is_active.is_(True))
+            .group_by(models.Rule.job_id)
+            .all()
+        )
         result = []
-        
+
         for job in jobs:
-            tables = db.query(models.TableMetadata).filter(models.TableMetadata.job_id == job.job_id).all()
-            
+            tables = tables_by_job.get(job.job_id, [])
             total_rows = 0
             good_rows = 0
             error_rows = 0
-            
+
             for t in tables:
-                stat = db.query(models.TableStats).filter(
-                    models.TableStats.job_id == job.job_id, 
-                    models.TableStats.table_id == t.table_id
-                ).order_by(models.TableStats.stat_id.desc()).first()
-                
+                stat = stats_by_table.get((job.job_id, t.table_id))
                 if stat:
                     total_rows += (stat.total_rows or 0)
                     good_rows += (stat.good_rows or 0)
@@ -3754,9 +3904,6 @@ if True:
                     # show uploaded row_count from metadata instead of 0.
                     total_rows += (t.row_count or 0)
 
-            covered_cols = db.query(distinct(models.Rule.column_name)).filter(models.Rule.job_id == job.job_id).count()
-
-            # --- NEW: Calculate Job Duration in ms ---
             job_duration_str = "0ms"
             if getattr(job, 'start_time', None) and getattr(job, 'end_time', None):
                 try:
@@ -3764,7 +3911,6 @@ if True:
                     job_duration_str = f"{duration_ms:.0f}ms"
                 except Exception:
                     pass
-            # -----------------------------------------
 
             result.append({
                 "job_id": job.job_id,
@@ -3774,9 +3920,9 @@ if True:
                 "duration": job_duration_str, # <--- Now sending the ms duration
                 "status": job.status,
                 "total_tables": len(tables),
-                "columns_covered": covered_cols, 
-                "total_columns": db.query(models.ColumnMetadata).filter(models.ColumnMetadata.job_id == job.job_id).count(),
-                "total_rules": db.query(models.Rule).filter(models.Rule.job_id == job.job_id, models.Rule.is_active == True).count(),
+                "columns_covered": covered_columns.get(job.job_id, 0),
+                "total_columns": column_counts.get(job.job_id, 0),
+                "total_rules": active_rule_counts.get(job.job_id, 0),
                 "total_rows": total_rows,
                 "good_rows": good_rows,
                 "error_rows": error_rows
@@ -4935,30 +5081,23 @@ if True:
 
     @app.get("/dashboard/summary")
     def get_dashboard_summary(db: Session = Depends(get_db)):
-        # 1. System Overviews
         total_jobs = db.query(models.Job).count()
         total_tables = db.query(models.TableMetadata).count()
         total_rules = db.query(models.Rule).filter_by(is_active=True).count()
-
-        # 2. Data Volume & Health (Calculated from the most recent run of every table)
-        tables = db.query(models.TableMetadata).all()
-        
-        total_rows_processed = 0
-        total_clean_rows = 0
-        total_validation_errors = 0
-        total_fuzzy_errors = 0
-
-        for t in tables:
-            # Get the absolute latest stat for this specific table
-            latest_stat = db.query(models.TableStats).filter_by(table_id=t.table_id).order_by(models.TableStats.stat_id.desc()).first()
-            
-            if latest_stat:
-                total_rows_processed += (latest_stat.total_rows or 0)
-                total_clean_rows += (latest_stat.good_rows or 0)
-                total_validation_errors += (latest_stat.validation_errors or 0)
-                total_fuzzy_errors += (latest_stat.fuzzy_errors or 0)
-
-        # 3. Calculate Overall Data Quality Score
+        latest_stats = (
+            db.query(models.TableStats)
+            .distinct(models.TableStats.job_id, models.TableStats.table_id)
+            .order_by(
+                models.TableStats.job_id,
+                models.TableStats.table_id,
+                models.TableStats.stat_id.desc(),
+            )
+            .all()
+        )
+        total_rows_processed = sum(int(stat.total_rows or 0) for stat in latest_stats)
+        total_clean_rows = sum(int(stat.good_rows or 0) for stat in latest_stats)
+        total_validation_errors = sum(int(stat.validation_errors or 0) for stat in latest_stats)
+        total_fuzzy_errors = sum(int(stat.fuzzy_errors or 0) for stat in latest_stats)
         dq_score = 0.0
         if total_rows_processed > 0:
             dq_score = round((total_clean_rows / total_rows_processed) * 100, 2)
@@ -4982,10 +5121,20 @@ if True:
     @app.get("/dashboard/data-quality-metrics")
     def get_data_quality_metrics(db: Session = Depends(get_db)):
         tables = db.query(models.TableMetadata).all()
-        stats = db.query(models.TableStats).order_by(models.TableStats.stat_id.desc()).all()
-        print("Raw TableStats:", stats)
+        latest_stats = (
+            db.query(models.TableStats)
+            .distinct(models.TableStats.job_id, models.TableStats.table_id)
+            .order_by(
+                models.TableStats.job_id,
+                models.TableStats.table_id,
+                models.TableStats.stat_id.desc(),
+            )
+            .all()
+        )
+        latest_stats_by_table = {
+            (stat.job_id, stat.table_id): stat for stat in latest_stats
+        }
         metrics = []
-        all_rows_clean = True
 
         def _pct(numerator: float, denominator: float) -> float:
             if denominator <= 0:
@@ -4993,15 +5142,7 @@ if True:
             return round((numerator / denominator) * 100, 2)
 
         for t in tables:
-            latest_stat = (
-                db.query(models.TableStats)
-                .filter(
-                    models.TableStats.job_id == t.job_id,
-                    models.TableStats.table_id == t.table_id,
-                )
-                .order_by(models.TableStats.stat_id.desc())
-                .first()
-            )
+            latest_stat = latest_stats_by_table.get((t.job_id, t.table_id))
             if not latest_stat:
                 continue
 
@@ -5009,10 +5150,6 @@ if True:
             good_rows = int(latest_stat.good_rows or 0)
             validation_errors = int(latest_stat.validation_errors or 0)
             fuzzy_errors = int(latest_stat.fuzzy_errors or 0)
-            if total_rows == 0:
-                print("Warning: total_rows is zero")
-            if validation_errors > 0 or fuzzy_errors > 0 or good_rows < total_rows:
-                all_rows_clean = False
 
             metrics.append(
                 {
@@ -5026,10 +5163,6 @@ if True:
                     "timeliness": 95.0,
                 }
             )
-
-        if metrics and all_rows_clean:
-            print("All rows are clean, no errors found")
-        print("Computed Metrics:", metrics)
 
         return metrics
         
