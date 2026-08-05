@@ -320,6 +320,7 @@ function GovernanceDatasetSection() {
   const lastRefreshedRef = useRef({});
   const seenNotifIdsRef = useRef(readSeenRefreshNotifIds());
   const pollReadyRef = useRef(false);
+  const pollInFlightRef = useRef(false);
   const importingJobsRef = useRef(new Set());
   const toastTimeoutsRef = useRef([]);
 
@@ -479,9 +480,11 @@ function GovernanceDatasetSection() {
 
   useEffect(() => {
     const hasSchedules = Object.keys(refreshSchedules).length > 0;
-    const pollMs = hasSchedules ? 5000 : 20000;
+    const pollMs = importingJobIds.length ? 5000 : hasSchedules ? 15000 : 60000;
 
     const poll = async () => {
+      if (document.hidden || pollInFlightRef.current) return;
+      pollInFlightRef.current = true;
       try {
         const [dsRes, notifRes] = await Promise.all([
           enterpriseGovernanceDatasets({ page: 1, page_size: 100 }),
@@ -566,6 +569,8 @@ function GovernanceDatasetSection() {
         }
       } catch {
         /* ignore poll errors */
+      } finally {
+        pollInFlightRef.current = false;
       }
     };
 
@@ -576,14 +581,15 @@ function GovernanceDatasetSection() {
       toastTimeoutsRef.current.forEach((tid) => window.clearTimeout(tid));
       toastTimeoutsRef.current = [];
     };
-  }, [refreshSchedules, pushToast]);
+  }, [refreshSchedules, importingJobIds.length, pushToast]);
 
   useEffect(() => {
     if (!importingJobIds.length) return undefined;
 
     let cancelled = false;
     const poll = async () => {
-      if (cancelled) return;
+      if (cancelled || document.hidden || pollInFlightRef.current) return;
+      pollInFlightRef.current = true;
       refreshDatasetsTable();
       try {
         const res = await enterpriseGovernanceDatasets({ page: 1, page_size: 100 });
@@ -603,11 +609,13 @@ function GovernanceDatasetSection() {
         });
       } catch {
         /* keep polling until timeout */
+      } finally {
+        pollInFlightRef.current = false;
       }
     };
 
     poll();
-    const intervalId = window.setInterval(poll, 3000);
+    const intervalId = window.setInterval(poll, 5000);
     const stopId = window.setTimeout(() => {
       setImportingJobIds([]);
       refreshDatasetsTable();
@@ -974,7 +982,6 @@ function GovernanceDatasetSection() {
         </button>
       </div>
       <EnterpriseDataPanel
-        key={`ds-${refreshKey}`}
         title="Registered datasets"
         columns={dsCols}
         refreshEventName={GOVERNANCE_DATASETS_REFRESH}

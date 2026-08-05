@@ -21,7 +21,7 @@ export default function AppLayout({ children }) {
       <div className="flex min-w-0 flex-1 flex-col">
         <TopNavbar onMenuClick={() => setMobileOpen(true)} />
         <motion.main
-          key={`${location.pathname}${location.search}`}
+          key={location.pathname}
           initial={{ opacity: 0, y: 6 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.25, ease: "easeOut" }}

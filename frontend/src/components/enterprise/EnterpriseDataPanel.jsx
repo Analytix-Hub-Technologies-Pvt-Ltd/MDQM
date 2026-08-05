@@ -102,6 +102,7 @@ export default function EnterpriseDataPanel({
   const [error, setError] = useState("");
   const fetchPageRef = useRef(fetchPage);
   fetchPageRef.current = fetchPage;
+  const requestIdRef = useRef(0);
 
   const setPage = useCallback(
     (updater) => {
@@ -126,19 +127,22 @@ export default function EnterpriseDataPanel({
   }, [query]);
 
   const load = useCallback(async ({ silent = false } = {}) => {
+    const requestId = ++requestIdRef.current;
     if (!silent) setLoading(true);
     setError("");
     try {
       const res = await fetchPageRef.current({ page, pageSize, query: debouncedQuery });
+      if (requestId !== requestIdRef.current) return;
       const body = res?.data ?? res;
       setItems(Array.isArray(body.items) ? body.items : []);
       setTotal(Number(body.total) || 0);
     } catch (e) {
+      if (requestId !== requestIdRef.current) return;
       setItems([]);
       setTotal(0);
       setError(e?.response?.data?.detail || e?.message || "Failed to load");
     } finally {
-      if (!silent) setLoading(false);
+      if (!silent && requestId === requestIdRef.current) setLoading(false);
     }
   }, [page, pageSize, debouncedQuery]);
 
@@ -147,6 +151,9 @@ export default function EnterpriseDataPanel({
 
   useEffect(() => {
     load();
+    return () => {
+      requestIdRef.current += 1;
+    };
   }, [load]);
 
   useEffect(() => {

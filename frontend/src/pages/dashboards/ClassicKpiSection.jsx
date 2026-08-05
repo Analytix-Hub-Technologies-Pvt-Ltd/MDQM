@@ -3,8 +3,10 @@ import LegacyKpiDashboard from "../Dashboard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
-export default function ClassicKpiSection({ defaultOpen = false }) {
-  const [show, setShow] = useState(defaultOpen);
+export default function ClassicKpiSection() {
+  // The legacy KPI dashboard issues three summary requests. Keep it available,
+  // but defer that work until the user explicitly opens it.
+  const [show, setShow] = useState(false);
 
   return (
     <Card className="mt-6">

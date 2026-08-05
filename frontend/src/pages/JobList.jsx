@@ -218,6 +218,7 @@ export default function JobList({ readOnly = false }) {
   const previousJobStatusRef = useRef({});
   const previousJobEndTimeRef = useRef({});
   const lastToastTsRef = useRef({});
+  const fetchJobsInFlightRef = useRef(false);
   const [schedulesByJob, setSchedulesByJob] = useState({});
   const [, setToastNowMs] = useState(Date.now());
   const [createdJobId, setCreatedJobId] = useState(null);
@@ -637,11 +638,20 @@ export default function JobList({ readOnly = false }) {
   }, []);
 
   useEffect(() => {
-    // Poll jobs so scheduler-triggered runs are reflected in UI automatically.
-    const id = window.setInterval(() => {
-      fetchJobs();
-    }, 10000);
-    return () => window.clearInterval(id);
+    // Avoid continuous work while the tab is hidden; completed jobs do not need
+    // second-by-second refreshes.
+    const poll = () => {
+      if (!document.hidden) fetchJobs();
+    };
+    const onVisibilityChange = () => {
+      if (!document.hidden) fetchJobs();
+    };
+    const id = window.setInterval(poll, 30000);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, []);
 
   useEffect(() => {
@@ -681,6 +691,8 @@ export default function JobList({ readOnly = false }) {
   }, [showSchedule]);
 
   const fetchJobs = async () => {
+    if (fetchJobsInFlightRef.current) return;
+    fetchJobsInFlightRef.current = true;
     try {
       const [res, schedRes] = await Promise.all([getAllJobs(), getAllSchedules()]);
       const items = res.data || [];
@@ -715,6 +727,8 @@ export default function JobList({ readOnly = false }) {
       });
     } catch (err) {
       console.error(err);
+    } finally {
+      fetchJobsInFlightRef.current = false;
     }
   };
 
