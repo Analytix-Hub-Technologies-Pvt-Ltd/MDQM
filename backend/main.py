@@ -34,6 +34,7 @@ if True:
         rename_table_csv,
         resolve_table_csv_path,
     )
+    from services.file_upload_archive_service import archive_user_upload
     from engine.orchestrator import run_data_quality_job
     from fastapi.responses import StreamingResponse
     import io
@@ -2842,7 +2843,29 @@ if True:
                 file_path=temp_path,
                 snapshot_fn=_snapshot_dataframe_to_job_table,
             )
-            return {"message": "Join source added and dataset materialized.", **result}
+            archive_meta = None
+            if source_kind == "file" and temp_path and os.path.isfile(temp_path):
+                orig_name = (
+                    (file.filename if file and file.filename else None)
+                    or payload.get("file_name")
+                    or os.path.basename(temp_path)
+                )
+                ds_id = payload.get("datasource_id") or payload.get("data_source_id")
+                archive_meta = _archive_upload_for_request(
+                    db,
+                    request,
+                    source_path=temp_path,
+                    original_filename=str(orig_name),
+                    job_id=job_id,
+                    source_role="join",
+                    datasource_id=int(ds_id) if ds_id not in (None, "") else None,
+                )
+            out = {"message": "Join source added and dataset materialized.", **result}
+            if archive_meta:
+                out["upload_relative_path"] = archive_meta.get("relative_path")
+                out["upload_absolute_path"] = archive_meta.get("absolute_path")
+                out["upload_id"] = archive_meta.get("id")
+            return out
         except HTTPException:
             raise
         except ValueError as e:
@@ -3382,9 +3405,48 @@ if True:
 
         return apply_selected_columns_to_dataframe(df, selected_columns)
 
+    def _resolve_request_user(db: Session, request: Request | None) -> models.User | None:
+        if request is None:
+            return None
+        uid = getattr(request.state, "user_id", None)
+        if uid is None:
+            return None
+        try:
+            return db.query(models.User).filter(models.User.id == int(uid)).first()
+        except Exception:
+            return None
+
+    def _archive_upload_for_request(
+        db: Session,
+        request: Request | None,
+        *,
+        source_path: str,
+        original_filename: str | None,
+        job_id: int | None = None,
+        table_id: int | None = None,
+        source_role: str = "primary",
+        datasource_id: int | None = None,
+    ) -> dict | None:
+        user = _resolve_request_user(db, request)
+        uid = getattr(user, "id", None) if user else getattr(getattr(request, "state", None), "user_id", None)
+        return archive_user_upload(
+            db,
+            source_path=source_path,
+            original_filename=original_filename,
+            user=user,
+            user_id=int(uid) if uid is not None else None,
+            job_id=job_id,
+            table_id=table_id,
+            source_role=source_role,
+            datasource_id=datasource_id,
+            commit=True,
+            patch_datasource=True,
+        )
+
     @app.post("/jobs/{job_id}/upload")
     async def upload_file(
         job_id: int,
+        request: Request,
         file: UploadFile = File(...),
         source_path: Optional[str] = Form(None),
         selected_columns: Optional[str] = Form(None),
@@ -3472,15 +3534,34 @@ if True:
 
             save_dataframe(db, job_id, next_table_id, df, commit=True)
 
+            archive_meta = None
             normalized_source_path = _normalize_local_path(source_path or "")
             if normalized_source_path and os.path.isfile(normalized_source_path):
                 _save_table_source_path(job_id, next_table_id, normalized_source_path)
+                archive_meta = _archive_upload_for_request(
+                    db,
+                    request,
+                    source_path=normalized_source_path,
+                    original_filename=file.filename,
+                    job_id=job_id,
+                    table_id=next_table_id,
+                    source_role="primary",
+                )
             else:
                 # Browser uploads have no client path available to the server. Preserve
                 # the original file locally so Manual Refresh can reload it later.
                 saved_upload_path = job_source_upload_path(job_id, next_table_id, file.filename)
                 shutil.copy2(temp_file_path, saved_upload_path)
                 _save_table_source_path(job_id, next_table_id, saved_upload_path)
+                archive_meta = _archive_upload_for_request(
+                    db,
+                    request,
+                    source_path=temp_file_path,
+                    original_filename=file.filename,
+                    job_id=job_id,
+                    table_id=next_table_id,
+                    source_role="primary",
+                )
             if os.path.exists(temp_file_path):
                 os.remove(temp_file_path)
 
@@ -3493,7 +3574,16 @@ if True:
                 row_count,
                 elapsed_ms,
             )
-            return {"job_id": job_id, "message": "File Uploaded and Processed Successfully"}
+            payload = {
+                "job_id": job_id,
+                "table_id": next_table_id,
+                "message": "File Uploaded and Processed Successfully",
+            }
+            if archive_meta:
+                payload["upload_relative_path"] = archive_meta.get("relative_path")
+                payload["upload_absolute_path"] = archive_meta.get("absolute_path")
+                payload["upload_id"] = archive_meta.get("id")
+            return payload
         except HTTPException as exc:
             if os.path.exists(temp_file_path):
                 try:
@@ -3523,7 +3613,12 @@ if True:
 
 
     @app.post("/jobs/{job_id}/upload-from-path")
-    def upload_file_from_path(job_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
+    def upload_file_from_path(
+        job_id: int,
+        request: Request,
+        payload: dict = Body(...),
+        db: Session = Depends(get_db),
+    ):
         file_path = _normalize_local_path(payload.get("file_path"))
         if not file_path:
             raise HTTPException(status_code=400, detail="file_path is required")
@@ -3595,11 +3690,31 @@ if True:
 
         save_dataframe(db, job_id, next_table_id, df, commit=True)
         _save_table_source_path(job_id, next_table_id, file_path)
+        archive_meta = _archive_upload_for_request(
+            db,
+            request,
+            source_path=file_path,
+            original_filename=file_name,
+            job_id=job_id,
+            table_id=next_table_id,
+            source_role="path",
+        )
 
-        return {"job_id": job_id, "message": "File Uploaded from path and Processed Successfully"}
+        result = {"job_id": job_id, "table_id": next_table_id, "message": "File Uploaded from path and Processed Successfully"}
+        if archive_meta:
+            result["upload_relative_path"] = archive_meta.get("relative_path")
+            result["upload_absolute_path"] = archive_meta.get("absolute_path")
+            result["upload_id"] = archive_meta.get("id")
+        return result
 
     @app.post("/jobs/{job_id}/tables/{table_id}/replace-from-path")
-    def replace_table_file_from_path(job_id: int, table_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
+    def replace_table_file_from_path(
+        job_id: int,
+        table_id: int,
+        request: Request,
+        payload: dict = Body(...),
+        db: Session = Depends(get_db),
+    ):
         file_path = _normalize_local_path(payload.get("file_path"))
         if not file_path:
             raise HTTPException(status_code=400, detail="file_path is required")
@@ -3623,17 +3738,32 @@ if True:
 
         _snapshot_dataframe_to_job_table(db, job_id, table_id, table.table_name, df)
         _save_table_source_path(job_id, table_id, file_path)
-        return {
+        archive_meta = _archive_upload_for_request(
+            db,
+            request,
+            source_path=file_path,
+            original_filename=os.path.basename(file_path),
+            job_id=job_id,
+            table_id=table_id,
+            source_role="replace",
+        )
+        result = {
             "message": "Table source file replaced successfully",
             "job_id": job_id,
             "table_id": table_id,
             "row_count": int(len(df)),
         }
+        if archive_meta:
+            result["upload_relative_path"] = archive_meta.get("relative_path")
+            result["upload_absolute_path"] = archive_meta.get("absolute_path")
+            result["upload_id"] = archive_meta.get("id")
+        return result
 
     @app.post("/jobs/{job_id}/tables/{table_id}/replace-file")
     async def replace_table_file_upload(
         job_id: int,
         table_id: int,
+        request: Request,
         file: UploadFile = File(...),
         source_path: Optional[str] = Form(None),
         db: Session = Depends(get_db),
@@ -3646,6 +3776,8 @@ if True:
             raise HTTPException(status_code=404, detail="Table not found for this job")
 
         temp_file_path = job_temp_upload_path(job_id, file.filename)
+        archive_meta = None
+        df = None
 
         with open(temp_file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -3655,24 +3787,54 @@ if True:
                 df = pd.read_excel(temp_file_path)
             else:
                 df = pd.read_csv(temp_file_path)
+
+            _snapshot_dataframe_to_job_table(db, job_id, table_id, table.table_name, df)
+
+            normalized_source_path = _normalize_local_path(source_path or "")
+            if normalized_source_path and os.path.isfile(normalized_source_path):
+                _save_table_source_path(job_id, table_id, normalized_source_path)
+                archive_meta = _archive_upload_for_request(
+                    db,
+                    request,
+                    source_path=normalized_source_path,
+                    original_filename=file.filename,
+                    job_id=job_id,
+                    table_id=table_id,
+                    source_role="replace",
+                )
+            else:
+                saved_upload_path = job_source_upload_path(job_id, table_id, file.filename)
+                shutil.copy2(temp_file_path, saved_upload_path)
+                _save_table_source_path(job_id, table_id, saved_upload_path)
+                archive_meta = _archive_upload_for_request(
+                    db,
+                    request,
+                    source_path=temp_file_path,
+                    original_filename=file.filename,
+                    job_id=job_id,
+                    table_id=table_id,
+                    source_role="replace",
+                )
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid file format: {str(e)}")
         finally:
             if os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
+                try:
+                    os.remove(temp_file_path)
+                except OSError:
+                    pass
 
-        _snapshot_dataframe_to_job_table(db, job_id, table_id, table.table_name, df)
-
-        normalized_source_path = _normalize_local_path(source_path or "")
-        if normalized_source_path and os.path.isfile(normalized_source_path):
-            _save_table_source_path(job_id, table_id, normalized_source_path)
-
-        return {
+        result = {
             "message": "Table source file replaced successfully",
             "job_id": job_id,
             "table_id": table_id,
-            "row_count": int(len(df)),
+            "row_count": int(len(df)) if df is not None else 0,
         }
+        if archive_meta:
+            result["upload_relative_path"] = archive_meta.get("relative_path")
+            result["upload_absolute_path"] = archive_meta.get("absolute_path")
+            result["upload_id"] = archive_meta.get("id")
+        return result
 
     @app.post("/jobs/{job_id}/run")
     def run_job(job_id: int, db: Session = Depends(get_db)):

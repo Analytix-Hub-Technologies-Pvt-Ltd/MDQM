@@ -1,17 +1,28 @@
 """Legacy uploads CSV paths (read-only fallback) and local cache for temp/EDA/join files.
 
-Dataset row data is stored in PostgreSQL (metadata.dataset_rows). Nothing new is written
+Dataset row data is stored in PostgreSQL (raw schema / metadata). Nothing new is written
 under uploads/ — only legacy jobs may still have CSV files there for backward compatibility.
+
+Per-user original files are archived under Upload/{username}/yyyy/mm/ for audit browsing.
 """
 
 from __future__ import annotations
 
 import os
 import shutil
+from datetime import datetime
 
 _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UPLOAD_ROOT = os.path.join(_BACKEND_ROOT, "uploads")
+USER_UPLOAD_ROOT = os.path.join(_BACKEND_ROOT, "Upload")
 CACHE_ROOT = os.path.join(_BACKEND_ROOT, ".cache")
+
+
+def safe_path_segment(value: str | None, *, fallback: str = "file", max_len: int = 120) -> str:
+    """Sanitize a path segment (username or filename piece)."""
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in (value or fallback))
+    safe = safe.strip("._-") or fallback
+    return safe[:max_len]
 
 
 def ensure_cache_subdir(*parts: str) -> str:
@@ -23,6 +34,12 @@ def ensure_cache_subdir(*parts: str) -> str:
 def ensure_upload_root() -> str:
     """Legacy uploads root — not created automatically for new datasets."""
     return UPLOAD_ROOT
+
+
+def ensure_user_upload_root() -> str:
+    """Per-user archive root: backend/Upload/{role}/{user}/..."""
+    os.makedirs(USER_UPLOAD_ROOT, exist_ok=True)
+    return USER_UPLOAD_ROOT
 
 
 def ensure_job_upload_dir(job_id: int) -> str:
@@ -43,16 +60,84 @@ def legacy_table_csv_path(table_name: str) -> str:
 
 def job_temp_upload_path(job_id: int, filename: str) -> str:
     """Temporary upload staging — stored under .cache, not uploads/."""
-    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in (filename or "upload"))[:200]
+    safe = safe_path_segment(filename, fallback="upload", max_len=200)
     base = ensure_cache_subdir("tmp", f"job_{job_id}")
     return os.path.join(base, f"tmp_{safe}")
 
 
 def job_source_upload_path(job_id: int, table_id: int, filename: str) -> str:
     """Persistent server-side copy of a browser-uploaded source file."""
-    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in (filename or "source.csv"))[:200]
+    safe = safe_path_segment(filename, fallback="source.csv", max_len=200)
     base = ensure_cache_subdir("sources", f"job_{job_id}")
     return os.path.join(base, f"table_{table_id}_{safe}")
+
+
+# Dashboard / role folder labels under Upload/ (readable in Explorer)
+ROLE_UPLOAD_FOLDER = {
+    "ADMIN": "Admin",
+    "CDO": "CDO",
+    "DATA_STEWARD": "Data_Steward",
+    "DATA_OWNER": "Data_Owner",
+    "DEVELOPER": "Developer",
+    "AUDITOR": "Auditor",
+    "ANALYST": "Analyst",
+    "BUSINESS_USER": "Business_User",
+}
+
+
+def role_upload_folder(role: str | None) -> str:
+    """Map auth role → Upload/{Role}/ folder name."""
+    key = (role or "UNKNOWN").strip().upper()
+    aliases = {
+        "OWNER": "DATA_OWNER",
+        "STEWARD": "DATA_STEWARD",
+        "BU": "BUSINESS_USER",
+        "BUSINESS": "BUSINESS_USER",
+    }
+    key = aliases.get(key, key)
+    return ROLE_UPLOAD_FOLDER.get(key, safe_path_segment(key, fallback="Unknown_Role", max_len=40))
+
+
+def user_upload_dir(
+    username: str,
+    *,
+    role: str | None = None,
+    when: datetime | None = None,
+) -> str:
+    """Directory Upload/{Role}/{username}/yyyy/mm/ — created if missing."""
+    stamp = when or datetime.utcnow()
+    role_folder = role_upload_folder(role)
+    user_folder = safe_path_segment(username, fallback="anonymous", max_len=80)
+    path = os.path.join(
+        ensure_user_upload_root(),
+        role_folder,
+        user_folder,
+        f"{stamp:%Y}",
+        f"{stamp:%m}",
+    )
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def user_upload_archive_path(
+    username: str,
+    original_filename: str,
+    *,
+    role: str | None = None,
+    when: datetime | None = None,
+) -> tuple[str, str, str]:
+    """Return (absolute_path, relative_path from backend root, stored_filename).
+
+    Layout: Upload/{Role}/{user}/yyyy/mm/{yyyymmdd_HHMMSS}_{safe_original}
+    Example: Upload/Data_Owner/dataowner/2026/08/20260806_110000_customers.csv
+    """
+    stamp = when or datetime.utcnow()
+    original = os.path.basename(original_filename or "upload.csv")
+    safe_name = safe_path_segment(original, fallback="upload.csv", max_len=160)
+    stored_filename = f"{stamp:%Y%m%d_%H%M%S}_{safe_name}"
+    abs_path = os.path.join(user_upload_dir(username, role=role, when=stamp), stored_filename)
+    rel_path = os.path.relpath(abs_path, _BACKEND_ROOT).replace("\\", "/")
+    return abs_path, rel_path, stored_filename
 
 
 def eda_cache_dir(job_id: int) -> str:

@@ -733,3 +733,42 @@ class DataSource(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+class FileUpload(Base):
+    """Per-user archive under backend/Upload/{Role}/{username}/..."""
+
+    __tablename__ = "uploads"
+    __table_args__ = {"schema": "datasets"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("auth.users.id"), nullable=True, index=True)
+    username = Column(Text, nullable=False, index=True)
+    user_role = Column(Text, nullable=True, index=True)  # ADMIN | DATA_OWNER | ...
+    original_filename = Column(Text, nullable=False)
+    stored_filename = Column(Text, nullable=False)
+    relative_path = Column(Text, nullable=False)
+    absolute_path = Column(Text, nullable=False)
+    file_ext = Column(Text, nullable=True)
+    file_size_bytes = Column(Integer, nullable=True)
+    dataset_id = Column(
+        Integer,
+        ForeignKey("enterprise.datasets.id"),
+        nullable=True,
+        index=True,
+    )
+    job_id = Column(
+        Integer,
+        ForeignKey("metadata.jobs.job_id"),
+        nullable=True,
+        index=True,
+    )
+    datasource_id = Column(
+        Integer,
+        ForeignKey("datasets.datasources.id"),
+        nullable=True,
+        index=True,
+    )
+    table_id = Column(Integer, nullable=True)
+    source_role = Column(Text, nullable=True)  # primary | join | replace | path
+    uploaded_at = Column(DateTime, default=func.now(), nullable=False, index=True)

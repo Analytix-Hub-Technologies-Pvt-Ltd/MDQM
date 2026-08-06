@@ -473,6 +473,37 @@ CREATE TABLE datasets.datasources (
 	FOREIGN KEY(created_by) REFERENCES auth.users (id)
 );
 
+CREATE TABLE datasets.uploads (
+	id SERIAL NOT NULL,
+	user_id INTEGER,
+	username TEXT NOT NULL,
+	user_role TEXT,
+	original_filename TEXT NOT NULL,
+	stored_filename TEXT NOT NULL,
+	relative_path TEXT NOT NULL,
+	absolute_path TEXT NOT NULL,
+	file_ext TEXT,
+	file_size_bytes INTEGER,
+	dataset_id INTEGER,
+	job_id INTEGER,
+	datasource_id INTEGER,
+	table_id INTEGER,
+	source_role TEXT,
+	uploaded_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+	PRIMARY KEY (id),
+	FOREIGN KEY(user_id) REFERENCES auth.users (id),
+	FOREIGN KEY(dataset_id) REFERENCES enterprise.datasets (id),
+	FOREIGN KEY(job_id) REFERENCES metadata.jobs (job_id),
+	FOREIGN KEY(datasource_id) REFERENCES datasets.datasources (id)
+);
+
+CREATE INDEX ix_datasets_uploads_user_id ON datasets.uploads (user_id);
+CREATE INDEX ix_datasets_uploads_username ON datasets.uploads (username);
+CREATE INDEX ix_datasets_uploads_user_role ON datasets.uploads (user_role);
+CREATE INDEX ix_datasets_uploads_dataset_id ON datasets.uploads (dataset_id);
+CREATE INDEX ix_datasets_uploads_job_id ON datasets.uploads (job_id);
+CREATE INDEX ix_datasets_uploads_uploaded_at ON datasets.uploads (uploaded_at);
+
 CREATE TABLE enterprise.glossary (
 	id SERIAL NOT NULL, 
 	term TEXT NOT NULL, 

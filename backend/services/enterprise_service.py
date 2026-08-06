@@ -692,6 +692,32 @@ def create_data_source(
     db.add(row)
     db.commit()
     db.refresh(row)
+
+    # Link per-user Upload/ archive row when frontend passes upload_id from job upload response
+    try:
+        upload_id = None
+        if isinstance(mapping_config, dict):
+            raw_uid = mapping_config.get("upload_id")
+            if raw_uid is not None and str(raw_uid).strip() != "":
+                upload_id = int(raw_uid)
+        if upload_id is not None:
+            fu = (
+                db.query(models.FileUpload)
+                .filter(models.FileUpload.id == upload_id)
+                .first()
+            )
+            if fu is not None:
+                fu.datasource_id = row.id
+                if fu.dataset_id is None:
+                    fu.dataset_id = dataset_id
+                db.commit()
+                db.refresh(row)
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
     return row
 
 
