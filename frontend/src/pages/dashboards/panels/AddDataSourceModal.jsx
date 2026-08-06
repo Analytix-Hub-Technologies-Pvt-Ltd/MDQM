@@ -347,12 +347,16 @@ export default function AddDataSourceModal({
     setBusy(true);
     setError("");
     try {
-      const persistDataSource = async ({ sourceType, joinConfiguration = null }) => {
+      const persistDataSource = async ({ sourceType, joinConfiguration = null, uploadMeta = null }) => {
         if (datasetId == null) return null;
         const serverPath = mode === "file" && filePath.trim() ? filePath.trim() : null;
         const uploadedName = mode === "file" && file?.name ? file.name : null;
-        // Prefer full server path; otherwise store uploaded file name (or schema.table for DB)
-        let sourceFile = serverPath || uploadedName || null;
+        const archivedPath =
+          uploadMeta?.upload_relative_path ||
+          uploadMeta?.upload_absolute_path ||
+          null;
+        // Prefer Upload/ archive path from backend, then server path, then filename
+        let sourceFile = archivedPath || serverPath || uploadedName || null;
         if (!sourceFile && mode === "table" && selectedTable) {
           sourceFile = selectedSchema ? `${selectedSchema}.${selectedTable}` : selectedTable;
         }
@@ -365,8 +369,10 @@ export default function AddDataSourceModal({
           ),
           schema_name: mode === "table" ? selectedSchema : null,
           table_name: mode === "table" ? selectedTable : null,
-          file_path: serverPath,
+          file_path: archivedPath || serverPath,
           file_name: uploadedName || (serverPath ? serverPath.split(/[/\\]/).pop() || null : null),
+          upload_relative_path: uploadMeta?.upload_relative_path || null,
+          upload_id: uploadMeta?.upload_id || null,
         };
         const res = await enterpriseGovernanceDataSourceCreate(datasetId, {
           source_type: sourceType,
@@ -381,12 +387,15 @@ export default function AddDataSourceModal({
       };
 
       if (isPrimary) {
+        let uploadMeta = null;
         if (mode === "file") {
           const cols = selectedColumns.length ? selectedColumns : undefined;
           if (filePath.trim()) {
-            await uploadCsvPathToJob(jobId, filePath.trim(), cols);
+            const uploadRes = await uploadCsvPathToJob(jobId, filePath.trim(), cols);
+            uploadMeta = uploadRes?.data ?? uploadRes;
           } else {
-            await uploadCsvToJob(jobId, file, [], "", cols);
+            const uploadRes = await uploadCsvToJob(jobId, file, [], "", cols);
+            uploadMeta = uploadRes?.data ?? uploadRes;
           }
         } else {
           await updateJobDbSource(jobId, {
@@ -410,6 +419,7 @@ export default function AddDataSourceModal({
           dataSourceRow = await persistDataSource({
             sourceType: mode === "file" ? "file" : "table",
             joinConfiguration: { role: "primary" },
+            uploadMeta,
           });
         } catch {
           /* catalog row is best-effort after physical attach */
@@ -418,6 +428,7 @@ export default function AddDataSourceModal({
           primary: true,
           kind: mode === "file" ? "file" : "table",
           data_source: dataSourceRow,
+          upload: uploadMeta,
         });
         reset();
         onClose();
@@ -457,6 +468,10 @@ export default function AddDataSourceModal({
             catalogErr?.message ||
             "Failed to save mapping_config to datasources.",
         );
+      }
+
+      if (dataSourceRow?.id != null) {
+        payload.datasource_id = dataSourceRow.id;
       }
 
       let res;
