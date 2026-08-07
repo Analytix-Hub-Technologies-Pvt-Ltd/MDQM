@@ -50,3 +50,4 @@ backend/saved_connections.json
 
 # Ignore local test data and results
 backend/uploads/
+backend/Upload/
